@@ -1,0 +1,444 @@
+# Disposable diagnostic derivative. Never merge this workflow or its instrumented source.
+name: Temporary ARM heartbeat diagnostic producer
+on:
+  pull_request:
+    types: [opened]
+    branches: [main]
+    paths: [.github/workflows/arm-heartbeat-startup-diagnostic.yml]
+permissions:
+  contents: read
+concurrency:
+  group: arm-heartbeat-startup-diagnostic-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  candidate-package:
+    if: >-
+      github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
+      github.event_name == 'pull_request' && github.event.action == 'opened' &&
+      github.event.pull_request.state == 'open' && github.event.pull_request.draft &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
+      github.event.pull_request.head.repo.full_name == 'openclaw/openclaw' &&
+      github.event.pull_request.head.ref == 'test/arm-heartbeat-startup-boundaries' &&
+      github.event.pull_request.user.login == 'vincentkoc'
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      CI: "true"
+      NODE_OPTIONS: --max-old-space-size=8192
+      OPENCLAW_VITEST_MAX_WORKERS: "2"
+      CANDIDATE_SHA: cd488985182fbf0a7a43899ac1b84bc1a1a91054
+      CANDIDATE_TREE: 9356615b6e6525373835bda8381565973cbf8022
+      PRODUCT_SHA: 10725d8613c64f5efdc8ea58eae70a3b8f4276ac
+      PRODUCT_TREE: 74bddc0882c455c519931e40040c260df9951ee8
+      CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 5
+          persist-credentials: false
+      - name: Bind the diagnostic derivative and sole workflow carrier
+        run: |
+          set -euo pipefail
+          [[ "$CARRIER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
+          test "$(git show -s --format=%P HEAD)" = "$CANDIDATE_SHA"
+          test "$(git show -s --format=%P "$CANDIDATE_SHA")" = "$PRODUCT_SHA"
+          test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
+          test "$(git rev-parse "$PRODUCT_SHA^{tree}")" = "$PRODUCT_TREE"
+          test "$(git show -s --format=%P "$PRODUCT_SHA")" = "67214ac792717ee72cee7a4ae32b678ff12663fd a7c27c04a3d6e797b8974ad6ee22724724918e8a"
+          test "$(git diff --name-only "$CANDIDATE_SHA" HEAD)" = .github/workflows/arm-heartbeat-startup-diagnostic.yml
+          test -z "$(git status --porcelain)"
+          git -c gc.auto=0 -c maintenance.auto=false fetch --no-tags --depth=1 --no-write-fetch-head origin "$WORKFLOW_SHA"
+          test "$(git rev-parse "$CARRIER_SHA:.github/workflows/arm-heartbeat-startup-diagnostic.yml")" = "$(git rev-parse "$WORKFLOW_SHA:.github/workflows/arm-heartbeat-startup-diagnostic.yml")"
+          mkdir "$RUNNER_TEMP/arm-heartbeat-diagnostic-proof"
+          python3 - <<'BIND'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          def git(*args): return subprocess.check_output(['git', *args])
+          product,candidate=os.environ['PRODUCT_SHA'],os.environ['CANDIDATE_SHA']
+          patch=git('diff','--full-index','--no-renames','--binary',product,candidate)
+          assert len(patch)==17515
+          assert hashlib.sha256(patch).hexdigest()=='d3e9c89fd87811ac7bdda4bb4a20cbc56088b7023d08f5f36c3132cda4ba8952'
+          paths=git('diff','--name-only',product,candidate).decode().splitlines()
+          expected=['src/state/openclaw-state-lease-heartbeat-shared.ts','src/state/openclaw-state-lease-heartbeat.ts','src/state/openclaw-state-lease-heartbeat.worker.ts']
+          assert paths==expected
+          receipt=dict(product=product,productTree=os.environ['PRODUCT_TREE'],candidate=candidate,candidateTree=os.environ['CANDIDATE_TREE'],
+              patchSha256=hashlib.sha256(patch).hexdigest(),paths=paths,carrier=os.environ['CARRIER_SHA'],workflow=os.environ['WORKFLOW_SHA'],
+              eventMerge=os.environ['GITHUB_SHA'],run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+              scope='temporary numeric startup observations only; never a shipping repair or B4 timing qualification')
+          Path(os.environ['RUNNER_TEMP'],'arm-heartbeat-diagnostic-proof','source-binding.json').write_text(json.dumps(receipt,indent=2)+'\n')
+          print(json.dumps(receipt))
+          BIND
+      - name: Prepare the canonical Git lifecycle owner
+        uses: ./.github/actions/git-owner
+      - name: Set up one frozen toolchain without a harness dependency install
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.21.0"
+          install-bun: "false"
+          install-deps: "false"
+          cache-mode: "off"
+      - name: Create one isolated product root and frozen dependency install
+        run: |
+          set -euo pipefail
+          test "$(node -p process.versions.node)" = 24.21.0
+          test "$(pnpm --version)" = 12.4.0
+          test ! -e node_modules
+          python3 -I -S "$CI_GIT_OWNER" --git 120 worktree add --detach "$RUNNER_TEMP/sqlite-candidate" "$CANDIDATE_SHA"
+          cd "$RUNNER_TEMP/sqlite-candidate"
+          CI=true DEPENDENCY_CACHE=false DEPENDENCY_CACHE_HIT=false FROZEN_LOCKFILE=true \
+            bash .github/actions/setup-node-env/install-dependencies.sh
+          git diff --exit-code
+          git diff --cached --exit-code
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'; import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+          import {createHash} from 'node:crypto'; import {execFileSync} from 'node:child_process'; import {createRequire} from 'node:module';
+          const root=process.cwd(),sha=b=>createHash('sha256').update(b).digest('hex');
+          const fingerprint=execFileSync(process.execPath,[`${root}/.github/actions/setup-node-env/dependency-fingerprint.mjs`,'--workspace',root,'--frozen-lockfile','true'],{encoding:'utf8'}).trim();
+          assert(!fs.lstatSync(`${root}/node_modules`).isSymbolicLink());
+          assert.equal(process.platform,'linux'); assert.equal(process.arch,'x64');
+          assert(process.report.getReport().header.glibcVersionRuntime,'this producer requires the selected GNU native package');
+          const require=createRequire(`${root}/package.json`),fsSafeMeta=require.resolve('@openclaw/fs-safe/package.json');
+          const fsSafeRoot=path.dirname(fs.realpathSync(fsSafeMeta)),meta=JSON.parse(fs.readFileSync(fsSafeMeta));
+          assert.equal(meta.name,'@openclaw/fs-safe'); assert.equal(meta.version,'0.18.0');
+          const nativeNames=['darwin-arm64','darwin-x64','linux-arm64-gnu','linux-arm64-musl','linux-x64-gnu','linux-x64-musl','win32-x64-msvc'].map(t=>`@openclaw/fs-safe-${t}`);
+          assert.deepEqual(Object.keys(meta.optionalDependencies).filter(n=>n.startsWith('@openclaw/fs-safe-')).sort(),nativeNames.toSorted());
+          for(const name of nativeNames) assert.equal(meta.optionalDependencies[name],'0.18.0');
+          const nativeName='@openclaw/fs-safe-linux-x64-gnu';
+          const nativeEntry=fs.realpathSync(createRequire(fsSafeMeta).resolve(nativeName));
+          let nativeRoot=path.dirname(nativeEntry);
+          while(!fs.existsSync(path.join(nativeRoot,'package.json'))) { const parent=path.dirname(nativeRoot); assert.notEqual(parent,nativeRoot); nativeRoot=parent; }
+          const nativeMeta=JSON.parse(fs.readFileSync(path.join(nativeRoot,'package.json')));
+          assert.equal(nativeMeta.name,nativeName); assert.equal(nativeMeta.version,'0.18.0');
+          function inventory(directory) {
+            const files=[];
+            function walk(relative) {
+              for(const name of fs.readdirSync(path.join(directory,relative)).sort()) {
+                if(name==='node_modules') continue;
+                const member=path.join(relative,name),file=path.join(directory,member),stat=fs.lstatSync(file);
+                assert(!stat.isSymbolicLink(),`unexpected package symlink: ${member}`);
+                if(stat.isDirectory()) walk(member);
+                else { assert(stat.isFile()); files.push({path:member,bytes:stat.size,sha256:sha(fs.readFileSync(file))}); }
+              }
+            }
+            walk(''); assert(files.length>0); return {files,inventorySha256:sha(JSON.stringify(files))};
+          }
+          const fsSafe=inventory(fsSafeRoot),native=inventory(nativeRoot);
+          for(const file of ['package.json','dist/advanced.js','dist/native.js','dist/file-hash.js']) assert(fsSafe.files.some(f=>f.path===file));
+          assert(native.files.some(f=>f.path.endsWith('.node')));
+          const inputPaths=['package.json','pnpm-lock.yaml','pnpm-workspace.yaml',...['file-transfer','llama-cpp','migrate-claude','onepassword','openshell','signal'].map(n=>`extensions/${n}/package.json`)];
+          const inputs=Object.fromEntries(inputPaths.map(p=>[p,sha(fs.readFileSync(p))]));
+          const receipt={source:process.env.CANDIDATE_SHA,node:process.versions.node,pnpm:execFileSync('pnpm',['--version'],{encoding:'utf8'}).trim(),
+            platform:process.platform,arch:process.arch,cpus:os.cpus().length,memory:os.totalmem(),dependencyFingerprint:fingerprint,
+            toolchainSha256:sha(fs.readFileSync(process.execPath)),inputs,
+            fsSafe:{version:meta.version,...fsSafe},native:{name:nativeName,version:nativeMeta.version,entry:path.relative(nativeRoot,nativeEntry),...native},
+            scope:'actual frozen producer install; final operator dependency custody remains separate'};
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/arm-heartbeat-diagnostic-proof/toolchain.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
+          console.log(JSON.stringify(receipt));
+          NODE
+      - name: Build the final canonical package once
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/sqlite-candidate"
+          node scripts/package-openclaw-for-docker.mjs --allow-unreleased-changelog \
+            --output-dir "$RUNNER_TEMP/sqlite-candidate-package" --output-name candidate.tgz \
+            --pack-json "$RUNNER_TEMP/sqlite-candidate-pack.json"
+          git diff --exit-code
+          git diff --cached --exit-code
+      - name: Authenticate actual packaged worker emission and preserved dependencies
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, tarfile
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP']); proof=root/'arm-heartbeat-diagnostic-proof'
+          worker='dist/state/openclaw-state-lease-heartbeat.worker.js'
+          receipts=[]
+          for role, key in [('candidate','CANDIDATE_SHA')]:
+              package=root/f'sqlite-{role}-package/candidate.tgz'
+              with tarfile.open(package,'r:gz') as archive:
+                  members=archive.getmembers()
+                  def read(name):
+                      matches=[m for m in members if m.name=='package/'+name]
+                      assert len(matches)==1 and matches[0].isfile(), name
+                      return archive.extractfile(matches[0]).read()
+                  emitted=read(worker); build=json.loads(read('dist/build-info.json')); meta=json.loads(read('package.json'))
+                  assert build['commit']==os.environ[key]
+                  assert emitted==(root/f'sqlite-{role}'/worker).read_bytes()
+                  assert meta['dependencies']['@openclaw/fs-safe']=='0.18.0'
+                  assert meta['dependencies']['semver']=='7.8.5'
+                  (proof/f'{role}-heartbeat.worker.js').write_bytes(emitted)
+                  receipts.append(dict(role=role, source=os.environ[key], build=build,
+                      packageBytes=package.stat().st_size, packageSha256=hashlib.file_digest(package.open('rb'),'sha256').hexdigest(),
+                      workerBytes=len(emitted), workerSha256=hashlib.sha256(emitted).hexdigest(),
+                      fsSafe=meta['dependencies']['@openclaw/fs-safe'], semver=meta['dependencies']['semver']))
+          (proof/'packages.json').write_text(json.dumps(receipts,indent=2)+'\n')
+          print(json.dumps(receipts))
+          PY
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'; import fs from 'node:fs';
+          import {createRequire} from 'node:module'; import {createHash} from 'node:crypto';
+          const require=createRequire(`${process.env.RUNNER_TEMP}/sqlite-candidate/package.json`);
+          const {parse}=require('acorn'); const dir=`${process.env.RUNNER_TEMP}/arm-heartbeat-diagnostic-proof`;
+          const removed=['src/infra/sqlite-transaction.ts','src/logging/subsystem.ts','src/logging/logger.ts','src/logging/logger-file-transport.ts'];
+          const preserved=['src/infra/node-sqlite.ts','src/infra/sqlite-coordinator.ts','src/infra/state-database-coordinator-paths.ts','src/logging/redact.ts','src/logging/config.ts'];
+          const emissions=[];
+          for(const role of ['candidate']) {
+            const source=fs.readFileSync(`${dir}/${role}-heartbeat.worker.js`,'utf8'),comments=[];
+            const ast=parse(source,{ecmaVersion:'latest',sourceType:'module',onComment:comments});
+            const regions=comments.filter(c=>c.value.startsWith('#region ')).map(c=>c.value.slice(8).trim());
+            assert(regions.length>0,'canonical bundle source regions must be observable');
+            const imports=ast.body.filter(n=>n.type==='ImportDeclaration'||n.type==='ExportAllDeclaration'||n.type==='ExportNamedDeclaration').flatMap(n=>n.source?[n.source.value]:[]);
+            assert(!imports.some(s=>s.startsWith('.')||s.startsWith('/')),'standalone worker must have no uninspected static chunk');
+            const calls=[],functions=[],literals=[];
+            function visit(n) {
+              if(!n||typeof n!=='object') return;
+              if(n.type==='CallExpression') calls.push(n);
+              if(n.type==='FunctionDeclaration'&&n.id) functions.push(n.id.name);
+              if(n.type==='Literal') literals.push(n.value);
+              for(const value of Object.values(n)) if(Array.isArray(value)) value.forEach(visit); else if(value&&typeof value==='object') visit(value);
+            }
+            visit(ast);
+            const defaultTransactionCalls=calls.filter(n=>n.callee.type==='Identifier'&&/^createSubsystemLogger(?:\$\d+)?$/.test(n.callee.name)&&n.arguments[0]?.value==='sqlite/transaction').length;
+            const fileHooks=calls.filter(n=>n.callee.type==='MemberExpression'&&n.callee.object.name==='process'&&n.callee.property.name==='on'&&['beforeExit','exit'].includes(n.arguments[0]?.value)&&['handleProcessBeforeExit','handleProcessExit'].includes(n.arguments[1]?.name)).length;
+            for(const file of preserved) assert(regions.includes(file),`${role}: missing required ${file}`);
+            for(const name of ['@openclaw/fs-safe/advanced','semver']) assert(imports.includes(name),`${role}: missing ${name}`);
+            for(const file of removed) assert(!regions.includes(file),`candidate retains ${file}`);
+            for(const name of ['chalk','tslog']) assert(!imports.includes(name));
+            assert.equal(defaultTransactionCalls,0); assert.equal(fileHooks,0);
+            assert(!literals.includes('sqlite/transaction'));
+            assert(regions.includes('src/infra/sqlite-transaction-core.ts'));
+            assert(functions.includes('runSqliteTransactionSync'));
+            assert(!functions.includes('installProcessHooks'));
+            emissions.push({role,sha256:createHash('sha256').update(source).digest('hex'),imports,regions,defaultTransactionCalls,fileHooks});
+          }
+          const requiredFsSafe=['config','advanced','secret','errors','output','root','path','secure-file','walk','durability'].map(s=>`@openclaw/fs-safe/${s}`).sort();
+          assert.deepEqual(emissions[0].imports.filter(s=>s.startsWith('@openclaw/fs-safe/')).sort(),requiredFsSafe);
+          fs.writeFileSync(`${dir}/emission.json`,JSON.stringify({emissions,source:process.env.CANDIDATE_SHA,fsSafe:'0.18.0',claim:'diagnostic emitted heartbeat retains the reviewed reporter boundary and storage guards; observations perturb timing and are not atomic; no historical cause or B4 native qualification claim'},null,2)+'\n',{flag:'wx'});
+          console.log(JSON.stringify({emittedBoundaryPassed:true,emissions}));
+          NODE
+      - name: Authenticate actual worker and parent observation sites
+        run: |
+          set -euo pipefail
+          python3 - <<'EMIT'
+          import hashlib,json,os,tarfile
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP']);proof=root/'arm-heartbeat-diagnostic-proof'
+          worker='dist/state/openclaw-state-lease-heartbeat.worker.js'
+          parent_region='src/state/openclaw-state-lease-heartbeat.ts'
+          parents=[]
+          with tarfile.open(root/'sqlite-candidate-package/candidate.tgz','r:gz') as archive:
+              for member in archive.getmembers():
+                  if not member.isfile() or not member.name.startswith('package/dist/') or not member.name.endswith('.js'): continue
+                  data=archive.extractfile(member).read()
+                  if ('#region '+parent_region).encode() not in data: continue
+                  relative=member.name.removeprefix('package/')
+                  assert data==(root/'sqlite-candidate'/relative).read_bytes()
+                  assert b'[lease-startup-observation]' in data
+                  parents.append(dict(file=relative,bytes=len(data),sha256=hashlib.sha256(data).hexdigest()))
+                  (proof/f'parent-observation-{len(parents)}.js').write_bytes(data)
+          assert parents,'actual packaged parent observation code must exist'
+          (proof/'observation-emissions.json').write_text(json.dumps(dict(source=os.environ['CANDIDATE_SHA'],parents=parents),indent=2)+'\n')
+          print(json.dumps(dict(packagedParentObservations=parents)))
+          EMIT
+          node --input-type=module <<'EMIT'
+          import assert from 'node:assert/strict'; import fs from 'node:fs'; import {createRequire} from 'node:module';
+          const require=createRequire(`${process.env.RUNNER_TEMP}/sqlite-candidate/package.json`),{parse}=require('acorn');
+          const dir=`${process.env.RUNNER_TEMP}/arm-heartbeat-diagnostic-proof`;
+          const roles=[
+            {file:'candidate-heartbeat.worker.js',required:['workerBody','openStart','openReturned','renewStart','coordinatorStart','coordinatorOperation','busyPolicyStart','transactionStart','transactionCallback','renewalQueryStart','renewalQueryReturned','transactionCallbackReturned','transactionReturned','busyPolicyReturned','coordinatorReturned','renewalCatch','expiryReadStart','expiryReadReturned','renewReturned','readyCasStart','readyCasReturned']},
+            ...JSON.parse(fs.readFileSync(`${dir}/observation-emissions.json`)).parents.map((_,i)=>({file:`parent-observation-${i+1}.js`,required:['parentConstructStart','parentConstructReturned','parentTimerArmed','parentTimerCallback','parentSettleCasStart','parentSettleCasReturned','parentFailure','parentStopRequested','parentStopJoined']})),
+          ];
+          const receipts=[];
+          for(const role of roles) {
+            const source=fs.readFileSync(`${dir}/${role.file}`,'utf8'),ast=parse(source,{ecmaVersion:'latest',sourceType:'module'}),seen=new Set();
+            function visit(n) {
+              if(!n||typeof n!=='object')return;
+              if(n.type==='CallExpression'&&n.callee.type==='Identifier'&&/^mark(?:\$\d+)?$/.test(n.callee.name)) {
+                const arg=n.arguments[0];if(arg?.type==='MemberExpression'&&!arg.computed)seen.add(arg.property.name);
+              }
+              for(const value of Object.values(n))if(Array.isArray(value))value.forEach(visit);else if(value&&typeof value==='object')visit(value);
+            }
+            visit(ast);for(const phase of role.required)assert(seen.has(phase),`${role.file}: missing actual marker call ${phase}`);
+            assert(source.includes('process.hrtime.bigint()'));assert(source.includes('Atomics.compareExchange'));
+            receipts.push({file:role.file,requiredMarkers:role.required});
+          }
+          fs.writeFileSync(`${dir}/observation-sites.json`,JSON.stringify({source:process.env.CANDIDATE_SHA,receipts},null,2)+'\n',{flag:'wx'});
+          console.log(JSON.stringify({observationSitesPassed:true,receipts}));
+          EMIT
+      - name: Prove unchanged startup, diagnostics and real heartbeat behavior
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/sqlite-candidate"
+          tests=(
+            src/state/openclaw-state-lease-heartbeat.startup.test.ts
+            src/state/openclaw-state-lease-heartbeat.diagnostics.test.ts
+            src/state/openclaw-state-lease-heartbeat.test.ts
+          )
+          export TEST_STARTED_MS="$(date +%s%3N)"
+          node scripts/run-vitest.mjs "${tests[@]}" --reporter=default --reporter=json \
+            --outputFile.json="$RUNNER_TEMP/arm-heartbeat-diagnostic-proof/heartbeat-tests.json"
+          export TEST_FINISHED_MS="$(date +%s%3N)"
+          node --input-type=module - "${tests[@]}" <<'TESTS'
+          import assert from 'node:assert/strict'; import fs from 'node:fs'; import path from 'node:path'; import {createHash} from 'node:crypto';
+          const expected=process.argv.slice(2);assert.equal(expected.length,3);assert.equal(new Set(expected).size,3);
+          const report=`${process.env.RUNNER_TEMP}/arm-heartbeat-diagnostic-proof/heartbeat-tests.json`,bytes=fs.readFileSync(report),r=JSON.parse(bytes);
+          assert.equal(r.success,true);assert.equal(r.numTotalTests,36);assert.equal(r.numPassedTests,r.numTotalTests);
+          for(const key of ['numFailedTests','numPendingTests','numTodoTests','numFailedTestSuites']) assert.equal(r[key],0);
+          const files=r.testResults.map(f=>path.relative(process.cwd(),f.name));
+          assert.equal(files.length,3);assert.equal(new Set(files).size,3);assert.deepEqual(files.toSorted(),expected.toSorted());
+          const assertions=r.testResults.flatMap(f=>f.assertionResults);assert.equal(assertions.length,r.numTotalTests);
+          assert(r.testResults.every(f=>f.assertionResults.length>0));assert(assertions.every(a=>a.status==='passed'));
+          const start=Number(process.env.TEST_STARTED_MS),end=Number(process.env.TEST_FINISHED_MS);
+          assert(Number.isFinite(start)&&Number.isFinite(end)&&end>=start);
+          const receipt={source:process.env.CANDIDATE_SHA,files,passed:r.numPassedTests,skipped:0,
+            command:['node','scripts/run-vitest.mjs',...expected,'--reporter=default','--reporter=json','--outputFile.json=<proof>/heartbeat-tests.json'],
+            startedMs:start,finishedMs:end,commandWallMs:end-start,nativeReportSha256:createHash('sha256').update(bytes).digest('hex'),
+            assertions:r.testResults.map(f=>({file:path.relative(process.cwd(),f.name),reportedDurationMs:f.endTime-f.startTime,tests:f.assertionResults.map(a=>({title:a.fullName,status:a.status,durationMs:a.duration??null}))}))};
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/arm-heartbeat-diagnostic-proof/tests.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
+          console.log(JSON.stringify(receipt));
+          TESTS
+          pnpm run lint:kysely
+          pnpm run lint:tmp:sqlite-transaction-boundary
+          pnpm run plugin-sdk:surface:check
+          git diff --exit-code
+          git diff --cached --exit-code
+      - name: Seal only the diagnostic candidate for later ARM observation
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/sqlite-candidate"
+          proof="$RUNNER_TEMP/arm-heartbeat-diagnostic-proof"
+          git archive --format=tar.gz --prefix=openclaw/ "$CANDIDATE_SHA" > "$proof/source.tar.gz"
+          node scripts/install-smoke-candidate-payload.mts seal \
+            --archive "$proof/source.tar.gz" --package-dir "$RUNNER_TEMP/sqlite-candidate-package" \
+            --output-dir "$proof/payload" --repository "$GITHUB_REPOSITORY" --target-sha "$CANDIDATE_SHA" \
+            --harness-repository "$GITHUB_REPOSITORY" --harness-sha "$CARRIER_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+          git diff --exit-code
+          git diff --cached --exit-code
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'; import fs from 'node:fs'; import {createHash} from 'node:crypto';
+          const dir=`${process.env.RUNNER_TEMP}/arm-heartbeat-diagnostic-proof`,sha=f=>createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+          const packages=JSON.parse(fs.readFileSync(`${dir}/packages.json`));
+          for(const p of packages) assert.equal(sha(`${process.env.RUNNER_TEMP}/sqlite-${p.role}-package/candidate.tgz`),p.packageSha256);
+          const manifest=JSON.parse(fs.readFileSync(`${dir}/payload/install-smoke-candidate-payload.json`));
+          assert.equal(manifest.targetSha,process.env.CANDIDATE_SHA);
+          assert.equal(manifest.files.find(f=>f.name==='candidate.tgz').sha256,packages[0].packageSha256);
+          const receipt={source:process.env.CANDIDATE_SHA,tree:process.env.CANDIDATE_TREE,carrier:process.env.CARRIER_SHA,
+            run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT,emissionPassed:true,focusedTestsPassed:true,
+            guardsPassed:true,fsSafe:'0.18.0',selectedFiles:3,manifestSha256:sha(`${dir}/payload/install-smoke-candidate-payload.json`),
+            sourceArchiveSha256:sha(`${dir}/source.tar.gz`),packageVersion:manifest.packageVersion,
+            nativeOperatorProof:'not run; diagnostic derivative only'};
+          fs.writeFileSync(`${dir}/complete.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'}); console.log(JSON.stringify(receipt));
+          NODE
+      - name: Retain the minimum reusable candidate and emission evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: arm-heartbeat-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/arm-heartbeat-diagnostic-proof
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+  validator-command-cost:
+    if: >-
+      github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
+      github.event_name == 'pull_request' && github.event.action == 'opened' &&
+      github.event.pull_request.state == 'open' && github.event.pull_request.draft &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
+      github.event.pull_request.head.repo.full_name == 'openclaw/openclaw' &&
+      github.event.pull_request.head.ref == 'test/arm-heartbeat-startup-boundaries' &&
+      github.event.pull_request.user.login == 'vincentkoc'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      CI: "true"
+      NODE_OPTIONS: --max-old-space-size=8192
+      VALIDATOR_SHA: 3cca71afbc1156df8af0fdacfa8eb1a82ca68d4c
+      VALIDATOR_TREE: bd884a2658e0189e6ee570d1df2c75ffe06708aa
+      CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VALIDATOR_SHA }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Bind the unchanged validator source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$VALIDATOR_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$VALIDATOR_TREE"
+          test "$(git show -s --format=%P HEAD)" = "09f1894d3a7b9b45d27f8cbf48e343e51be9450e e8ea99af959c5f22cbd48c13996ea4cc387c52ed"
+          test -z "$(git status --porcelain)"
+          mkdir "$RUNNER_TEMP/validator-command-cost"
+      - name: Set up the original validator runtime
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.19.0"
+          install-bun: "false"
+          install-deps: "false"
+          cache-mode: "off"
+      - name: Install the frozen validator inputs once
+        run: |
+          set -euo pipefail
+          test "$(node -p process.versions.node)" = 24.19.0
+          test "$(pnpm --version)" = 12.4.0
+          test ! -e node_modules
+          CI=true DEPENDENCY_CACHE=false DEPENDENCY_CACHE_HIT=false FROZEN_LOCKFILE=true \
+            bash .github/actions/setup-node-env/install-dependencies.sh
+          git diff --exit-code
+          git diff --cached --exit-code
+      - name: Measure the one owning-file command with one worker
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'COST'
+          import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+          import {createHash} from 'node:crypto';import {spawnSync} from 'node:child_process';
+          const dir=`${process.env.RUNNER_TEMP}/validator-command-cost`,file='src/cli/update-cli/update-command-fresh-doctor.test.ts';
+          const report=`${dir}/fresh-doctor-tests.json`,args=['test',file,'--maxWorkers=1','--reporter=default','--reporter=json',`--outputFile.json=${report}`];
+          const sha=b=>createHash('sha256').update(b).digest('hex');
+          assert(!fs.lstatSync('node_modules').isSymbolicLink());
+          const receipt={source:process.env.VALIDATOR_SHA,tree:process.env.VALIDATOR_TREE,carrier:process.env.CARRIER_SHA,workflow:process.env.WORKFLOW_SHA,run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT,
+            command:['pnpm','test',file,'--maxWorkers=1','--reporter=default','--reporter=json','--outputFile.json=<proof>/fresh-doctor-tests.json'],
+            node:process.versions.node,platform:process.platform,arch:process.arch,cpus:os.cpus().length,memory:os.totalmem(),
+            inputs:Object.fromEntries(['package.json','pnpm-lock.yaml','pnpm-workspace.yaml',file,'src/cli/update-cli/update-command-fresh-doctor-diagnostics.test-support.ts'].map(p=>[p,sha(fs.readFileSync(p))])),
+            complete:false,scope:'one owning-file command after ordinary frozen install; includes canonical prerequisite preparation; not a cold-start benchmark'};
+          fs.writeFileSync(`${dir}/command.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
+          const start=process.hrtime.bigint(),child=spawnSync('pnpm',args,{stdio:'inherit'}),end=process.hrtime.bigint();
+          Object.assign(receipt,{commandWallMs:Number(end-start)/1e6,exitCode:child.status,signal:child.signal??null,spawnErrorCode:child.error?.code??null});
+          fs.writeFileSync(`${dir}/command.json`,JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));
+          if(child.error||child.signal||child.status!==0)process.exit(child.status&&child.status>0?child.status:1);
+          const bytes=fs.readFileSync(report),r=JSON.parse(bytes);
+          assert.equal(r.success,true);assert.equal(r.numTotalTests,64);assert.equal(r.numPassedTests,64);
+          for(const key of ['numFailedTests','numPendingTests','numTodoTests','numFailedTestSuites'])assert.equal(r[key],0);
+          assert.equal(r.testResults.length,1);assert.equal(path.relative(process.cwd(),r.testResults[0].name),file);
+          const cases=r.testResults[0].assertionResults;assert.equal(cases.length,64);assert(cases.every(c=>c.status==='passed'));
+          Object.assign(receipt,{complete:true,passed:64,skipped:0,nativeReportSha256:sha(bytes),reportedFileDurationMs:r.testResults[0].endTime-r.testResults[0].startTime,
+            assertions:cases.map(c=>({title:c.fullName,status:c.status,durationMs:c.duration??null}))});
+          fs.writeFileSync(`${dir}/command.json`,JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));
+          COST
+          git diff --exit-code
+          git diff --cached --exit-code
+      - name: Retain the exact validator command receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: validator-command-cost-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/validator-command-cost
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
