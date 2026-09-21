@@ -1,6 +1,7 @@
 /** Executes new turns and active-run steering for sessions_send. */
 import crypto from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { GatewayProtocolRequestTimeoutError } from "../../../packages/gateway-client/src/protocol-request.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewaySessionStoreTarget } from "../../gateway/session-utils-store.types.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
@@ -83,6 +84,9 @@ export async function startSessionsSendAgentRun(params: {
     }
   | { ok: false; result: ReturnType<typeof jsonResult> }
 > {
+  let dispatchedSessionKey = params.sessionKey;
+  let dispatchedRunId = params.runId;
+  let gatewayDispatchStarted = false;
   try {
     let fallbackSessionKey: string | undefined;
     const activeRunSessionId =
@@ -161,19 +165,24 @@ export async function startSessionsSendAgentRun(params: {
         );
       }
     }
+    const sendParams = fallbackSessionKey
+      ? {
+          ...params.sendParams,
+          sessionKey: fallbackSessionKey,
+          idempotencyKey: crypto.randomUUID(),
+        }
+      : params.sendParams;
+    dispatchedSessionKey = fallbackSessionKey ?? params.sessionKey;
+    dispatchedRunId =
+      typeof sendParams.idempotencyKey === "string" ? sendParams.idempotencyKey : params.runId;
+    gatewayDispatchStarted = true;
     const response = await params.callGateway<{ runId: string; admissionPending?: boolean }>({
       method: "agent",
-      params: fallbackSessionKey
-        ? {
-            ...params.sendParams,
-            sessionKey: fallbackSessionKey,
-            idempotencyKey: crypto.randomUUID(),
-          }
-        : params.sendParams,
+      params: sendParams,
       timeoutMs: 10_000,
     });
     const responseRunId =
-      typeof response?.runId === "string" && response.runId ? response.runId : params.runId;
+      typeof response?.runId === "string" && response.runId ? response.runId : dispatchedRunId;
     if (response?.admissionPending === true) {
       return {
         ok: false,
@@ -195,13 +204,29 @@ export async function startSessionsSendAgentRun(params: {
   } catch (err) {
     const messageText =
       err instanceof Error ? err.message : typeof err === "string" ? err : "error";
+    const dispatchTimeout =
+      gatewayDispatchStarted && err instanceof GatewayProtocolRequestTimeoutError ? err : undefined;
     return {
       ok: false,
       result: jsonResult({
-        runId: params.runId,
+        runId: dispatchedRunId,
         status: "error",
-        error: messageText,
-        sessionKey: params.sessionKey,
+        error: dispatchTimeout?.requestSent
+          ? `${messageText}. Session send is unconfirmed: the request may still be accepted. Inspect the original run and target session before retrying; a new send can duplicate the message.`
+          : messageText,
+        sessionKey: dispatchedSessionKey,
+        ...(dispatchTimeout
+          ? {
+              dispatch: {
+                outcome: dispatchTimeout.requestSent ? "unknown" : "not_sent",
+                code: dispatchTimeout.code,
+                method: dispatchTimeout.method,
+                requestSent: dispatchTimeout.requestSent,
+                timeoutMs: dispatchTimeout.timeoutMs,
+                idempotencyKey: dispatchedRunId,
+              },
+            }
+          : {}),
       }),
     };
   }
