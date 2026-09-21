@@ -596,6 +596,7 @@ function runCiManifestFixture(options: {
   nodeTestShards?: Record<string, unknown>[];
   nodeTestGroupsCodec?: boolean;
   bunTestRuntime?: boolean;
+  bunUiTestRuntime?: boolean;
   startupCorpusCoverage?: boolean;
   changedPlannerSource?: string | null;
   changedPlannerDependencies?: string[];
@@ -636,8 +637,10 @@ function runCiManifestFixture(options: {
     if (options.bunTestRuntime) {
       writeFileSync(
         path.join(scriptsDir, "ci-test-runtime.mts"),
-        `export const ciTestShardRequiresBun = (shard, policy) =>
-          policy !== "node" && shard.configs?.includes("fixture-bun.config.ts");`,
+        `${options.bunUiTestRuntime ? `import { ciTestShardRequiresBun as currentRuntime } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/ci-test-runtime.mts")).href)};` : ""}
+        export const ciTestShardRequiresBun = (shard, policy) =>
+          policy !== "node" && (shard.configs?.includes("fixture-bun.config.ts") ||
+            ${options.bunUiTestRuntime ? `currentRuntime(shard, policy, ${JSON.stringify(process.cwd())})` : "false"});`,
       );
     }
     for (const dependency of options.changedPlannerDependencies ?? []) {
@@ -13227,16 +13230,74 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
   );
 
   it.each([
-    { eventName: "pull_request", capability: true, policy: "bun-compatible", bun: true },
-    { eventName: "workflow_dispatch", capability: true, policy: "dual", bun: true },
-    { eventName: "push", capability: true, policy: "node", bun: false },
-    { eventName: "workflow_dispatch", capability: false, policy: "node", bun: false },
+    {
+      eventName: "pull_request",
+      capability: true,
+      uiCapability: true,
+      policy: "bun-compatible",
+      uiPolicy: "bun-compatible",
+      bun: true,
+    },
+    {
+      eventName: "workflow_dispatch",
+      capability: true,
+      uiCapability: true,
+      policy: "dual",
+      uiPolicy: "dual",
+      bun: true,
+    },
+    {
+      eventName: "workflow_dispatch",
+      releaseGate: true,
+      capability: true,
+      uiCapability: true,
+      policy: "bun-compatible",
+      uiPolicy: "bun-compatible",
+      bun: true,
+    },
+    {
+      eventName: "push",
+      capability: true,
+      uiCapability: true,
+      policy: "node",
+      uiPolicy: "node",
+      bun: false,
+    },
+    {
+      eventName: "workflow_dispatch",
+      capability: false,
+      uiCapability: false,
+      policy: "node",
+      uiPolicy: "node",
+      bun: false,
+    },
+    {
+      eventName: "pull_request",
+      capability: true,
+      uiCapability: false,
+      policy: "bun-compatible",
+      uiPolicy: "node",
+      bun: true,
+    },
+    {
+      eventName: "workflow_dispatch",
+      historicalCompatibility: true,
+      capability: true,
+      uiCapability: true,
+      policy: "dual",
+      uiPolicy: "node",
+      bun: true,
+    },
   ] as const)(
     "routes test runtimes without adding jobs ($eventName, capability=$capability)",
-    ({ eventName, capability, policy, bun }) => {
+    (scenario) => {
+      const { eventName, capability, uiCapability, policy, uiPolicy, bun } = scenario;
       const manifest = runCiManifestFixture({
+        historicalCompatibility: false,
+        ...scenario,
         bundledPlanner: true,
         bunTestRuntime: capability,
+        bunUiTestRuntime: uiCapability,
         eventName,
         nodeTestShards: [
           {
@@ -13255,6 +13316,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       ).include;
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ test_runtime_policy: policy, requires_bun: bun });
+      expect(manifest.outputs.ui_test_runtime_policy).toBe(uiPolicy);
       const job = readCiWorkflow().jobs["checks-node-core-test-nondist-shard"];
       const context = {
         eventName,
@@ -13272,6 +13334,19 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       expect(evaluateWorkflowExpression(`\${{ ${bunSetup.if} }}`, context)).toBe(bun);
       expect(evaluateWorkflowExpression(run.env.OPENCLAW_CI_TEST_RUNTIME_POLICY, context)).toBe(
         policy,
+      );
+      const ui = readCiWorkflow().jobs["checks-ui"];
+      const uiContext = { ...context, preflightOutputs: manifest.outputs };
+      const uiBunSetup = ui.steps.find(
+        (step: WorkflowStep) => step.name === "Setup pinned Bun test runtime",
+      );
+      expect(uiBunSetup.uses).toBe("./.ci-harness/.github/actions/setup-test-bun");
+      expect(evaluateWorkflowExpression(`\${{ ${uiBunSetup.if} }}`, uiContext)).toBe(
+        uiPolicy !== "node",
+      );
+      const uiRun = ui.steps.find((step: WorkflowStep) => step.name === "Test Control UI");
+      expect(evaluateWorkflowExpression(uiRun.env.OPENCLAW_CI_TEST_RUNTIME_POLICY, uiContext)).toBe(
+        uiPolicy,
       );
     },
   );
@@ -14860,11 +14935,46 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
   });
 
   it.each([
-    { label: "current", frozenTarget: false, compatibilityTarget: false, shards: [1, 2, 3] },
-    { label: "frozen current", frozenTarget: true, compatibilityTarget: false, shards: [1] },
-    { label: "frozen legacy", frozenTarget: true, compatibilityTarget: true, shards: [1] },
+    {
+      label: "current",
+      frozenTarget: false,
+      compatibilityTarget: false,
+      policy: "bun-compatible",
+      runtimes: ["node", "bun"],
+      shards: [1, 2, 3],
+    },
+    {
+      label: "frozen current",
+      frozenTarget: true,
+      compatibilityTarget: false,
+      policy: "dual",
+      runtimes: ["node", "bun"],
+      shards: [1],
+    },
+    {
+      label: "frozen legacy",
+      frozenTarget: true,
+      compatibilityTarget: true,
+      policy: "node",
+      runtimes: ["node"],
+      shards: [1],
+    },
   ])("executes the $label standalone UI envelope", async (scenario) => {
     const workflow = readCiWorkflow();
+    expect(workflow.env?.BUN_JSC_useFTLJIT).toBeUndefined();
+    const ftlSteps: string[] = [];
+    for (const [name, job] of Object.entries<{
+      env?: Record<string, unknown>;
+      steps?: WorkflowStep[];
+    }>(workflow.jobs)) {
+      expect(job.env?.BUN_JSC_useFTLJIT).toBeUndefined();
+      for (const step of job.steps ?? []) {
+        if (step.env?.BUN_JSC_useFTLJIT !== undefined) {
+          ftlSteps.push(`${name}/${step.name}`);
+        }
+      }
+    }
+    expect(ftlSteps).toEqual(["checks-ui/Test Control UI"]);
     const ui = workflow.jobs["checks-ui"];
     const lint = ui.steps.find(
       (step: WorkflowStep) => step.name === "Lint Control UI window.open usage",
@@ -14888,7 +14998,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     const context = {
       eventName: scenario.frozenTarget ? "workflow_dispatch" : "pull_request",
       frozenTarget: scenario.frozenTarget,
-      preflightOutputs: { compatibility_target: String(scenario.compatibilityTarget) },
+      preflightOutputs: {
+        compatibility_target: String(scenario.compatibilityTarget),
+        ui_test_runtime_policy: scenario.policy,
+      },
       repository: "openclaw/openclaw",
       runAttempt: 1,
       runnerBackend: "hybrid",
@@ -14941,6 +15054,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         ]),
       );
       expect(env.OPENCLAW_NODE_TEST_PLAN_CONCURRENCY).toBe("1");
+      expect(env.BUN_JSC_useFTLJIT).toBe("false");
       expect(env.OPENCLAW_UI_E2E_DIAGNOSTIC_DIR).toBe(
         `${root}/.artifacts/control-ui-e2e-timeouts/ui-shard-${shard}-attempt-1`,
       );
@@ -14973,6 +15087,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         env.OPENCLAW_NODE_TEST_VITEST_ARGS_JSON = readFileSync(argsPath, "utf8");
         expect(JSON.parse(env.OPENCLAW_NODE_TEST_VITEST_ARGS_JSON)).toEqual(flags);
         const forwarded: string[][] = [];
+        const runtimes: Array<string | undefined> = [];
         expect(
           await runShardPlans(resolveShardPlans(env), {
             concurrency: Number(env.OPENCLAW_NODE_TEST_PLAN_CONCURRENCY),
@@ -14980,6 +15095,29 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
             scratchDir: root,
             runChild: async (args, childEnv) => {
               forwarded.push(args);
+              runtimes.push(childEnv.OPENCLAW_VITEST_RUNTIME);
+              expect(childEnv.BUN_JSC_useFTLJIT).toBe("false");
+              expect(childEnv.OPENCLAW_VITEST_INCLUDE_FILE).toBeUndefined();
+              const includeFile = childEnv.OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE;
+              if (
+                childEnv.OPENCLAW_VITEST_RUNTIME === "bun" ||
+                scenario.policy === "bun-compatible"
+              ) {
+                expect(includeFile).toBeTruthy();
+                const included = JSON.parse(readFileSync(includeFile!, "utf8"));
+                const nodeFiles = [
+                  "ui/src/pages/chat/chat-pane-retained-presentation.test.ts",
+                  "ui/src/pages/usage/usage-page-details.test.ts",
+                ];
+                if (childEnv.OPENCLAW_VITEST_RUNTIME === "node") {
+                  expect(included.toSorted()).toEqual(nodeFiles);
+                } else {
+                  expect(included.length).toBeGreaterThan(1000);
+                  expect(included.filter((file: string) => nodeFiles.includes(file))).toEqual([]);
+                }
+              } else {
+                expect(includeFile).toBeUndefined();
+              }
               expect(childEnv.OPENCLAW_TEST_PROJECTS_PARALLEL).toBe("1");
               expect(childEnv.OPENCLAW_UI_E2E_DIAGNOSTIC_DIR).toBe(
                 resolveValue(test.env.OPENCLAW_UI_E2E_DIAGNOSTIC_DIR),
@@ -14988,7 +15126,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
             },
           }),
         ).toBe(0);
-        expect(forwarded).toEqual([["ui/vitest.config.ts", "--", ...flags]]);
+        expect(runtimes).toEqual(scenario.runtimes);
+        expect(forwarded).toEqual(
+          scenario.runtimes.map(() => ["ui/vitest.config.ts", "--", ...flags]),
+        );
       }
     }
     const calls = readFileSync(callsPath, "utf8").trim().split("\n");

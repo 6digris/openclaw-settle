@@ -49,7 +49,12 @@ Source-only Linux Node shards can reuse content-validated compiled workers from 
 
 Vitest transform-cache fingerprints exclude the generated `.ci-harness` checkout so CI consumers and the protected warmer hash the same source inputs. Node bytecode caching remains enabled for ordinary Vitest runs; Vitest owns the worker-level coverage safeguard described in [local testing](/reference/test/local#core-commands).
 
-Linux PR tests use Bun for the measured compatible lanes. Full Release Validation
+Transform keys also include each project's dependency optimizer directory. This
+prevents cached UI imports from mixing separate projects' Lit instances when a
+focused run and a full run share the persistent cache.
+
+Linux PR tests use Bun for the measured compatible unit lanes and Control UI
+Vitest job, with the UI-only FTL mitigation. Full Release Validation
 keeps their Node coverage and runs them on Bun too; see [test runtime selection](/ci/pipeline#test-runtime-selection).
 
 The complete [startup corpus](/ci/pipeline) uses eight state test files so existing workers can share its release/config matrix. Its explicit fallback prepares the runtime once and uses four workers; historical frozen targets retain their legacy process layout.

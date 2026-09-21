@@ -387,6 +387,33 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
   });
 
   it.each([
+    { vitestArgs: ["--root=another-root"] },
+    { vitestArgs: ["--config", "another.config.ts"] },
+    { vitestArgs: ["--pool=threads"] },
+    { vitestArgs: ["--watch"] },
+    { vitestArgs: ["--shard=4/3"] },
+    { vitestArgs: ["--reporter=custom.mts"] },
+    { vitestArgs: ["--maxWorkers"] },
+    { includePatterns: ["ui/src/pages/skills/view.test.ts"] },
+    { targets: ["ui/src/pages/skills/view.test.ts"] },
+    { configs: [], targets: ["ui/src/pages/skills/view.test.ts"], env: {} },
+    { configs: ["ui/vitest.config.ts", bunConfig] },
+    { env: {} },
+    { env: { BUN_JSC_useFTLJIT: "true" } },
+    {
+      env: { BUN_JSC_useFTLJIT: "false", OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE: "external.json" },
+    },
+  ])("keeps unproven UI execution envelopes on Node: %s", (overrides) => {
+    const selection = {
+      configs: ["ui/vitest.config.ts"],
+      env: { BUN_JSC_useFTLJIT: "false" },
+      ...overrides,
+    };
+    expect(resolveCiTestRuntimeSelections(selection, "dual")).toEqual([{ runtime: "node" }]);
+    expect(ciTestShardRequiresBun(selection, "bun-compatible")).toBe(false);
+  });
+
+  it.each([
     { shard: { configs: [bunConfig] }, expected: true },
     { shard: { configs: [] }, expected: false },
     { shard: { configs: [bunConfig, "unknown.config.ts"] }, expected: false },

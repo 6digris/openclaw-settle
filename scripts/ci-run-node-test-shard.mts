@@ -590,6 +590,11 @@ export async function runShardPlans(plans: ShardPlan[], options: RunShardOptions
               cacheSlot,
               runtime,
             });
+            if (selection.includeAfterShard) {
+              childEnv.OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE =
+                childEnv.OPENCLAW_VITEST_INCLUDE_FILE;
+              delete childEnv.OPENCLAW_VITEST_INCLUDE_FILE;
+            }
             const timingKey = entry.kind === "group" ? (entry.timingKey ?? entry.name) : entry.name;
             const timingPrefix =
               runtime === "bun" ? "bun:" : selection.includePatterns ? "node-subset:" : "";

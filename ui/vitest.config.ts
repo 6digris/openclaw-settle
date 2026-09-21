@@ -12,7 +12,10 @@ import {
   matchesVitestGlob,
   relativizeScopedPatterns,
 } from "../test/vitest/vitest.pattern-file.ts";
-import { loadVitestPerformanceConfig } from "../test/vitest/vitest.performance-config.ts";
+import {
+  createVitestProjectCachePlugin,
+  loadVitestPerformanceConfig,
+} from "../test/vitest/vitest.performance-config.ts";
 import { createRedactingReporterPlugin } from "../test/vitest/vitest.reporters.ts";
 import {
   jsdomOptimizedDeps,
@@ -24,6 +27,7 @@ import {
   uiNodeDrivenBrowserTestFiles,
   uiTimingTestFiles,
 } from "../test/vitest/vitest.ui-paths.mjs";
+import { UiRuntimePartitionSequencer } from "../test/vitest/vitest.ui-runtime-sequencer.ts";
 import { controlUiLocaleModulesPlugin } from "./config/control-ui-locales.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -172,7 +176,11 @@ const chromiumLaunchOptions = resolveChromiumLaunchOptions();
 export function createUiBrowserVitestConfig(env = process.env): ViteUserConfig {
   return defineProject({
     root: here,
-    plugins: [controlUiLocaleModulesPlugin(), createRedactingReporterPlugin()],
+    plugins: [
+      controlUiLocaleModulesPlugin(),
+      createVitestProjectCachePlugin(),
+      createRedactingReporterPlugin(),
+    ],
     optimizeDeps: {
       include: [
         // These controls share wa-popup's eager registration. Optimize them together
@@ -250,19 +258,22 @@ export function createUiBrowserVitestConfig(env = process.env): ViteUserConfig {
 
 export default defineConfig({
   root: here,
-  plugins: [createRedactingReporterPlugin()],
+  plugins: [createVitestProjectCachePlugin(), createRedactingReporterPlugin()],
   resolve: {
     alias: workspaceSourceAliases,
   },
   test: {
     ...sharedUiTestConfig,
+    ...(process.env.OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE
+      ? { sequence: { sequencer: UiRuntimePartitionSequencer } }
+      : {}),
     maxWorkers: sharedVitestConfig.test.maxWorkers,
     reporters: sharedVitestConfig.test.reporters,
     // These projects already own their complete plugins, aliases, and test config.
     projects: [
       {
         extends: false,
-        plugins: [controlUiLocaleModulesPlugin()],
+        plugins: [controlUiLocaleModulesPlugin(), createVitestProjectCachePlugin()],
         resolve: {
           alias: workspaceSourceAliases,
         },
@@ -292,7 +303,7 @@ export default defineConfig({
       },
       {
         extends: false,
-        plugins: [controlUiLocaleModulesPlugin()],
+        plugins: [controlUiLocaleModulesPlugin(), createVitestProjectCachePlugin()],
         resolve: {
           alias: workspaceSourceAliases,
         },
@@ -310,7 +321,7 @@ export default defineConfig({
       },
       {
         extends: false,
-        plugins: [controlUiLocaleModulesPlugin()],
+        plugins: [controlUiLocaleModulesPlugin(), createVitestProjectCachePlugin()],
         resolve: {
           alias: workspaceSourceAliases,
         },
@@ -334,7 +345,7 @@ export default defineConfig({
       { ...createUiBrowserVitestConfig(), extends: false },
       {
         extends: false,
-        plugins: [controlUiLocaleModulesPlugin()],
+        plugins: [controlUiLocaleModulesPlugin(), createVitestProjectCachePlugin()],
         resolve: { alias: workspaceSourceAliases },
         test: {
           ...sharedUiTestConfig,

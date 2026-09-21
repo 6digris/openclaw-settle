@@ -85,6 +85,24 @@ actual Vitest process and workers while retaining Node for orchestration and
 compiler preparation. It does not use Bun's native test runner. `bun run` alone
 does not select Bun for tests. Node remains the local default.
 
+For the CI Control UI comparison, run the full Node selection followed by its
+compatible Bun partition:
+
+```sh
+OPENCLAW_NODE_TEST_CONFIGS_JSON='["ui/vitest.config.ts"]' \
+OPENCLAW_NODE_TEST_VITEST_ARGS_JSON='["--maxWorkers", "3"]' \
+OPENCLAW_CI_TEST_RUNTIME_POLICY=dual BUN_JSC_useFTLJIT=false \
+node --import tsx scripts/ci-run-node-test-shard.mts
+```
+
+The pinned fork can loop in CSS tokenization with FTL enabled after particular
+UI file orders. This disables only that optimization tier; baseline and DFG JIT
+remain enabled, and Chromium's JIT is unaffected. See the
+[CI runtime policy](/ci/pipeline#test-runtime-selection) for the removal proof.
+The Bun partition deliberately excludes two whole GC-sensitive files, which
+remain covered by Node. Running the complete UI config directly with
+`OPENCLAW_VITEST_RUNTIME=bun` also runs those currently incompatible assertions.
+
 Test processes and their CLI fixtures keep Sparkplug baseline compilation enabled
 but run it synchronously. This avoids a Node 24 shutdown deadlock where a
 background compiler waits for main-thread garbage collection while `process.exit`
