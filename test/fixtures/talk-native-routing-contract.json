@@ -1,0 +1,136 @@
+{
+  "cases": [
+    {
+      "id": "literal-global",
+      "scope": "per-sender",
+      "requestKey": "global",
+      "canonicalKey": "global",
+      "isMain": false,
+      "stored": true,
+      "agentId": "beta",
+      "mainKey": "main",
+      "nativeWritable": false
+    },
+    {
+      "id": "fresh-global",
+      "scope": "global",
+      "requestKey": "global",
+      "canonicalKey": "global",
+      "isMain": true,
+      "stored": false,
+      "agentId": "beta",
+      "mainKey": "main",
+      "nativeWritable": true
+    },
+    {
+      "id": "stored-global",
+      "scope": "global",
+      "requestKey": "global",
+      "canonicalKey": "global",
+      "isMain": true,
+      "stored": true,
+      "agentId": "beta",
+      "mainKey": "main",
+      "nativeWritable": true
+    },
+    {
+      "id": "main-global",
+      "scope": "global",
+      "requestKey": "main",
+      "canonicalKey": "global",
+      "isMain": true,
+      "stored": false,
+      "agentId": "beta",
+      "mainKey": "main",
+      "nativeWritable": true
+    },
+    {
+      "id": "shared-global",
+      "scope": "global",
+      "requestKey": "shared",
+      "canonicalKey": "agent:beta:shared",
+      "isMain": false,
+      "stored": false,
+      "agentId": "beta",
+      "mainKey": "main",
+      "nativeWritable": true
+    },
+    {
+      "id": "main-per-agent",
+      "scope": "per-sender",
+      "requestKey": "main",
+      "canonicalKey": "agent:beta:main",
+      "isMain": true,
+      "stored": false,
+      "agentId": "beta",
+      "mainKey": "main",
+      "nativeWritable": true
+    },
+    {
+      "id": "shared-per-agent",
+      "scope": "per-sender",
+      "requestKey": "shared",
+      "canonicalKey": "agent:beta:shared",
+      "isMain": false,
+      "stored": false,
+      "agentId": "beta",
+      "mainKey": "main",
+      "nativeWritable": true
+    },
+    {
+      "id": "qualified-main",
+      "scope": "per-sender",
+      "requestKey": "agent:beta:main",
+      "canonicalKey": "agent:beta:main",
+      "isMain": true,
+      "stored": false,
+      "agentId": "beta",
+      "mainKey": "main",
+      "nativeWritable": true
+    },
+    {
+      "id": "qualified-global-main",
+      "scope": "global",
+      "requestKey": "agent:beta:main",
+      "canonicalKey": "global",
+      "isMain": true,
+      "stored": false,
+      "agentId": "beta",
+      "mainKey": "main",
+      "nativeWritable": true
+    },
+    {
+      "id": "qualified-chat",
+      "scope": "per-sender",
+      "requestKey": "agent:beta:conversation",
+      "canonicalKey": "agent:beta:conversation",
+      "isMain": false,
+      "stored": true,
+      "agentId": "beta",
+      "mainKey": "main",
+      "nativeWritable": true
+    },
+    {
+      "id": "legacy-chat",
+      "scope": "per-sender",
+      "requestKey": "legacy-chat",
+      "canonicalKey": "agent:beta:legacy-chat",
+      "isMain": false,
+      "stored": true,
+      "agentId": "beta",
+      "mainKey": "main",
+      "nativeWritable": true
+    },
+    {
+      "id": "qualified-global-is-distinct",
+      "scope": "per-sender",
+      "requestKey": "agent:beta:global",
+      "canonicalKey": "agent:beta:global",
+      "isMain": false,
+      "stored": true,
+      "agentId": "beta",
+      "mainKey": "main",
+      "nativeWritable": true
+    }
+  ]
+}

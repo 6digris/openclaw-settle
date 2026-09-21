@@ -257,6 +257,20 @@ class TalkModeManager internal constructor(
   ) {
     private enum class Admission { Pending, Admitted, Retired }
 
+    internal data class NativeAddress(
+      val sessionKey: String,
+      val agentId: String,
+    )
+
+    // Frozen at admission; recognition restarts must not acquire another conversation.
+    internal var nativeAddress: NativeAddress? = null
+      private set
+
+    internal fun prepareNativeAddress(address: NativeAddress) {
+      check(nativeAddress == null || nativeAddress == address)
+      nativeAddress = address
+    }
+
     private val admission = AtomicReference(Admission.Pending)
     private val startClaimed = AtomicBoolean(false)
 
@@ -377,6 +391,7 @@ class TalkModeManager internal constructor(
     var runId: String,
     val sessionKey: String,
     var awaitingAck: Boolean,
+    val agentId: String? = null,
   ) {
     val final = CompletableDeferred<Boolean>()
 
@@ -439,6 +454,7 @@ class TalkModeManager internal constructor(
       onError = { _, message -> Log.w(tag, message) },
       onUnhandledCompletion = { completion ->
         handleNonRealtimeAgentChatEvent(
+          agentId = null,
           sessionKey = completion.sessionKey,
           runId = completion.runId,
           state = completion.state,
@@ -969,6 +985,7 @@ class TalkModeManager internal constructor(
     }
 
     handleNonRealtimeAgentChatEvent(
+      agentId = obj["agentId"].asStringOrNull(),
       sessionKey = eventSession,
       runId = runId,
       state = state,
@@ -977,6 +994,7 @@ class TalkModeManager internal constructor(
   }
 
   private fun handleNonRealtimeAgentChatEvent(
+    agentId: String?,
     sessionKey: String?,
     runId: String,
     state: String,
@@ -989,6 +1007,7 @@ class TalkModeManager internal constructor(
       val pending = pendingRun
       if (pending != null && (pending.runId == runId || pending.awaitingAck)) {
         if (sessionKey != null && sessionKey != pending.sessionKey) return
+        if (agentId != null && pending.agentId != null && agentId != pending.agentId) return
         val successful =
           when (state) {
             "final" -> true
@@ -1094,7 +1113,7 @@ class TalkModeManager internal constructor(
           startNativeTalk(generation, route, target)
         }
       } catch (err: Throwable) {
-        if (err is CancellationException) {
+        if (err is CancellationException || target?.canStart() == false) {
           disableRealtimeModeAndNotifyOwner(generation, nativeText("Off"), state = TalkStatusState.Off)
           return@launch
         }
@@ -1533,6 +1552,57 @@ class TalkModeManager internal constructor(
     }
   }
 
+  private suspend fun prepareNativeAddress(target: ChatStart) {
+    fun current() = chatStart === target && target.canStart() && _isEnabled.value && !stopRequested
+
+    fun requireCurrent() {
+      if (!current()) throw CancellationException("Talk owner changed")
+    }
+    requireCurrent()
+    if (target.nativeAddress != null) return
+    val params =
+      buildJsonObject {
+        put("sessionKey", JsonPrimitive(target.owner.sessionKey))
+        put("agentId", JsonPrimitive(target.owner.agentId))
+        put("limit", JsonPrimitive(1))
+        put("maxChars", JsonPrimitive(1))
+      }.toString()
+    val response =
+      try {
+        target.lease.request("chat.history", params) { enqueue ->
+          synchronized(realtimeCapturePauseLock) {
+            requireCurrent()
+            enqueue()
+          }
+        }
+      } catch (err: Throwable) {
+        requireCurrent()
+        throw err
+      }
+    requireCurrent()
+    val info =
+      json
+        .parseToJsonElement(response)
+        .asObjectOrNull()
+        ?.get("sessionInfo")
+        .asObjectOrNull()
+    val key = info?.get("key").asStringOrNull()?.takeIf { it.isNotBlank() }
+    val agent = info?.get("agentId").asStringOrNull()
+    check(
+      key != null && agent == target.owner.agentId &&
+        (resolveAgentIdFromMainSessionKey(key)?.let { it == agent } != false),
+    ) {
+      "Cannot verify this conversation's Talk owner. Select the intended agent conversation and try again."
+    }
+    check(key != "global" || info?.get("isMain").asBooleanOrNull() == true) {
+      "Talk cannot write to this legacy global conversation. Select the intended agent conversation and try again."
+    }
+    synchronized(realtimeCapturePauseLock) {
+      requireCurrent()
+      target.prepareNativeAddress(ChatStart.NativeAddress(key, checkNotNull(agent)))
+    }
+  }
+
   private suspend fun startNativeTalk(
     generation: Long,
     route: TalkModeRoute,
@@ -1554,6 +1624,7 @@ class TalkModeManager internal constructor(
       disableRealtimeModeAndNotifyOwner(generation, nativeText("Speech recognizer unavailable"))
       return
     }
+    target?.let { prepareNativeAddress(it) }
     synchronized(realtimeCapturePauseLock) {
       if (generation != startGeneration.get() || !_isEnabled.value || stopRequested) return
       retireRecognizer()
@@ -2718,7 +2789,7 @@ class TalkModeManager internal constructor(
     transcript: String,
     target: ChatStart? = null,
   ) {
-    val sessionKey = target?.owner?.sessionKey ?: mainSessionKey.ifBlank { "main" }
+    val sessionKey = target?.let { checkNotNull(it.nativeAddress).sessionKey } ?: mainSessionKey.ifBlank { "main" }
     val generation = startGeneration.get()
     listeningMode = false
     _isListening.value = false
@@ -2925,7 +2996,7 @@ class TalkModeManager internal constructor(
     target: ChatStart?,
   ): ChatSendAck {
     val runId = UUID.randomUUID().toString()
-    val pending = armPendingRun(runId, sessionKey, awaitingAck = true)
+    val pending = armPendingRun(runId, sessionKey, awaitingAck = true, agentId = target?.nativeAddress?.agentId)
     val params =
       buildJsonObject {
         put("sessionKey", JsonPrimitive(sessionKey))
@@ -2974,10 +3045,11 @@ class TalkModeManager internal constructor(
     runId: String,
     sessionKey: String,
     awaitingAck: Boolean,
+    agentId: String? = null,
   ): PendingChatRun =
     synchronized(completedRunsLock) {
       pendingRun?.final?.cancel()
-      PendingChatRun(runId, sessionKey, awaitingAck).also { pendingRun = it }
+      PendingChatRun(runId, sessionKey, awaitingAck, agentId).also { pendingRun = it }
     }
 
   private fun clearPendingRun(expected: PendingChatRun) =

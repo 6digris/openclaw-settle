@@ -1050,8 +1050,14 @@ class TalkModeManagerTest {
           }
 
           "chat.history" -> {
-            historyReads.add(frame)
-            """{"messages":[]}"""
+            val params = frame.getValue("params").jsonObject
+            if (params["maxChars"]?.jsonPrimitive?.content == "1") {
+              val key = params.getValue("sessionKey").jsonPrimitive.content
+              """{"sessionInfo":{"key":"$key","agentId":"beta","isMain":false},"messages":[]}"""
+            } else {
+              historyReads.add(frame)
+              """{"messages":[]}"""
+            }
           }
 
           else -> {
@@ -1262,6 +1268,310 @@ class TalkModeManagerTest {
         assertEquals(listOf("Synthetic native reply"), proof.synthesizer.texts)
       }
     }
+
+  @Test
+  fun capturedNativePreparedAddressSurvivesTwoTurnsAndTerminalHistory() =
+    runBlocking {
+      installSpeechRecognitionService()
+      val preparations = ConcurrentLinkedQueue<JsonObject>()
+      val sends = ConcurrentLinkedQueue<JsonObject>()
+      val history = ConcurrentLinkedQueue<JsonObject>()
+      withStartedTalk(responseForRequest = { request, socket ->
+        val params = request["params"]?.jsonObject
+        when (request.getValue("method").jsonPrimitive.content) {
+          "talk.config" -> {
+            nativeTalkConfig("en-US")
+          }
+
+          "chat.history" -> {
+            if (params?.get("maxChars")?.jsonPrimitive?.content == "1") {
+              preparations.add(params)
+              """{"sessionKey":"main","sessionInfo":{"key":"agent:beta:shared","agentId":"beta","isMain":true},"messages":[]}"""
+            } else {
+              history.add(params!!)
+              """{"messages":[{"role":"assistant","content":[{"type":"text","text":"Terminal history reply"}]}]}"""
+            }
+          }
+
+          "chat.send" -> {
+            sends.add(params!!)
+            if (sends.size == 1) {
+              val run = "remapped-native-run"
+              for ((agent, text) in listOf("alpha" to "Wrong owner reply", "beta" to "First native reply")) {
+                socket.send("""{"type":"event","event":"chat","payload":{"sessionKey":"agent:beta:shared","agentId":"$agent","runId":"$run","state":"final","message":{"role":"assistant","content":"$text"}}}""")
+              }
+              """{"runId":"$run","status":"started"}"""
+            } else {
+              """{"runId":"terminal-native-run","status":"ok"}"""
+            }
+          }
+
+          else -> {
+            null
+          }
+        }
+      }) { proof ->
+        proof.manager.stopAllCapture()
+        proof.drainCancelledCapture()
+        completeRemoteSynthesis(proof.synthesizer)
+        proof.manager.setEnabled(true, capturedStart(proof, "main"))
+        awaitTalkWork(proof) { proof.manager.isListening.value }
+        val firstTime = proof.scheduler.currentTime
+        currentRecognizer().triggerOnResults(recognitionResults("First question"))
+        advanceTalkSilence(proof)
+        awaitTalkWork(proof) { proof.player.playCalls == 1 }
+        assertEquals(listOf("First native reply"), proof.synthesizer.texts)
+        assertTrue("Canonical before-ACK final must not wait 45 seconds", proof.scheduler.currentTime - firstTime < 5_000)
+        assertTrue(history.isEmpty())
+        proof.player.finished.complete(Unit)
+        awaitTalkWork(proof) { proof.manager.isListening.value }
+        proof.manager.setMainSessionKey("agent:alpha:different")
+        currentRecognizer().triggerOnResults(recognitionResults("Second question"))
+        advanceTalkSilence(proof)
+        awaitTalkWork(proof) { proof.synthesizer.texts.size == 2 }
+        assertEquals(listOf("First native reply", "Terminal history reply"), proof.synthesizer.texts)
+        assertEquals(1, preparations.size)
+        assertEquals(2, sends.size)
+        assertEquals(1, history.size)
+        for (params in sends + history) {
+          assertEquals("agent:beta:shared", params.getValue("sessionKey").jsonPrimitive.content)
+          assertEquals("beta", params.getValue("agentId").jsonPrimitive.content)
+        }
+      }
+    }
+
+  @Test
+  fun capturedNativePreparationRejectsRetirementAndInvalidOwners() =
+    runBlocking {
+      installSpeechRecognitionService()
+      for (boundary in listOf("selection", "stop", "disconnect", "reconnect", "replacement", "wrong-agent", "wrong-key-owner", "blank-key", "missing-info")) {
+        val pending = CompletableDeferred<Pair<String, WebSocket>>()
+        val sends = ConcurrentLinkedQueue<JsonObject>()
+        withStartedTalk(
+          responseForRequest = { request, _ ->
+            when (request.getValue("method").jsonPrimitive.content) {
+              "talk.config" -> {
+                nativeTalkConfig("en-US")
+              }
+
+              "chat.send" -> {
+                sends.add(request)
+                "{}"
+              }
+
+              "chat.history" -> {
+                """{"sessionInfo":{"key":"agent:beta:replacement","agentId":"beta","isMain":false}}"""
+              }
+
+              else -> {
+                null
+              }
+            }
+          },
+          interceptRequest = { request, socket ->
+            if (request.getValue("method").jsonPrimitive.content == "chat.history" &&
+              request["params"]
+                ?.jsonObject
+                ?.get("sessionKey")
+                ?.jsonPrimitive
+                ?.content == "agent:beta:conversation"
+            ) {
+              pending.complete(request.getValue("id").jsonPrimitive.content to socket)
+              true
+            } else {
+              false
+            }
+          },
+        ) { proof ->
+          proof.manager.stopAllCapture()
+          proof.drainCancelledCapture()
+          val selected = AtomicBoolean(true)
+          proof.manager.setEnabled(true, capturedStart(proof, "agent:beta:conversation", selected))
+          awaitTalkWork(proof) { pending.isCompleted }
+          assertFalse("Preparation must precede listening", proof.manager.isListening.value)
+          when (boundary) {
+            "selection" -> {
+              selected.set(false)
+            }
+
+            "stop" -> {
+              proof.manager.stopAllCapture()
+            }
+
+            "disconnect" -> {
+              withContext(Dispatchers.Default) { proof.session.disconnectAndJoin() }
+            }
+
+            "reconnect" -> {
+              proof.session.reconnect()
+            }
+
+            "replacement" -> {
+              proof.manager.stopAllCapture()
+              proof.manager.setEnabled(true, capturedStart(proof, "agent:beta:replacement"))
+              awaitTalkWork(proof) { proof.manager.isListening.value }
+            }
+          }
+          val key =
+            when (boundary) {
+              "wrong-key-owner" -> "agent:alpha:conversation"
+              "blank-key" -> " "
+              else -> "agent:beta:conversation"
+            }
+          val agent = if (boundary == "wrong-agent") "alpha" else "beta"
+          val payload = if (boundary == "missing-info") "{}" else """{"sessionInfo":{"key":"$key","agentId":"$agent","isMain":false}}"""
+          val (id, socket) = pending.await()
+          socket.send("""{"type":"res","id":"$id","ok":true,"payload":$payload}""")
+          if (boundary == "replacement") {
+            val barrier = proof.scope.async { proof.session.request("health", "{}") }
+            awaitTalkWork(proof) { barrier.isCompleted }
+            barrier.await()
+            proof.scheduler.runCurrent()
+            assertTrue(proof.manager.isEnabled.value)
+            assertTrue(proof.manager.isListening.value)
+          } else {
+            awaitTalkWork(proof) { !proof.manager.isEnabled.value }
+            assertFalse(proof.manager.isListening.value)
+          }
+          assertTrue(sends.isEmpty())
+          if (boundary in listOf("selection", "stop", "disconnect", "reconnect", "replacement")) {
+            assertNull("A retired preparation is cancellation, not a persistent failure", proof.manager.failureText.value)
+          } else {
+            assertNotNull(proof.manager.failureText.value)
+          }
+        }
+      }
+    }
+
+  @Test
+  fun capturedNativeUsesSharedGatewayRoutingContract() =
+    runBlocking {
+      val fixture =
+        generateSequence(java.io.File(checkNotNull(System.getProperty("user.dir"))).absoluteFile) { it.parentFile }
+          .map { java.io.File(it, "test/fixtures/talk-native-routing-contract.json") }
+          .first { it.isFile }
+      for (row in Json
+        .parseToJsonElement(fixture.readText())
+        .jsonObject
+        .getValue("cases")
+        .jsonArray
+        .map { it.jsonObject }) {
+        assertCapturedNativeGlobalRoute(
+          globalScope = row.getValue("scope").jsonPrimitive.content == "global",
+          original = row.getValue("requestKey").jsonPrimitive.content,
+          canonical = row.getValue("canonicalKey").jsonPrimitive.content,
+          isMain = row.getValue("isMain").jsonPrimitive.content == "true",
+        )
+      }
+    }
+
+  @Test
+  fun capturedNativeGlobalScopeCorrelatesCanonicalFinal() = assertCapturedNativeGlobalRoute(globalScope = true)
+
+  @Test
+  fun capturedNativeLiteralGlobalCannotSendToDifferentMain() = assertCapturedNativeGlobalRoute(globalScope = false)
+
+  @Test
+  fun capturedNativeQualifiedGlobalMainCorrelatesCanonicalFinal() = assertCapturedNativeGlobalRoute(globalScope = true, original = "agent:beta:shared")
+
+  @Test
+  fun capturedNativeMainAliasCorrelatesCanonicalFinal() = assertCapturedNativeGlobalRoute(globalScope = false, original = "main")
+
+  private fun assertCapturedNativeGlobalRoute(
+    globalScope: Boolean,
+    original: String = "global",
+    canonical: String = if (globalScope || original == "global") "global" else "agent:beta:shared",
+    isMain: Boolean = globalScope || original != "global",
+  ) = runBlocking {
+    installSpeechRecognitionService()
+    val sends = ConcurrentLinkedQueue<JsonObject>()
+    val history = ConcurrentLinkedQueue<JsonObject>()
+    val preparations = ConcurrentLinkedQueue<JsonObject>()
+    withStartedTalk(responseForRequest = { request, socket ->
+      val params = request["params"]?.jsonObject
+      when (request.getValue("method").jsonPrimitive.content) {
+        "connect" -> {
+          val main = if (globalScope) "global" else "agent:alpha:shared"
+          val scope = if (globalScope) "global" else "per-sender"
+          """{"features":{"methods":[]},"snapshot":{"sessionDefaults":{"mainSessionKey":"$main","mainKey":"shared","scope":"$scope"}}}"""
+        }
+
+        "talk.config" -> {
+          """{"config":{"talk":{"realtime":{"model":"gpt-live"},"silenceTimeoutMs":800}}}"""
+        }
+
+        "sessions.resolve" -> {
+          val key = params!!.getValue("key").jsonPrimitive.content
+          val canonical = if (globalScope || key == "global") "global" else "agent:beta:shared"
+          """{"ok":true,"key":"$canonical","agentId":"beta"}"""
+        }
+
+        "chat.send" -> {
+          sends.add(params!!)
+          val run = params.getValue("idempotencyKey").jsonPrimitive.content
+          val eventKey = if (!globalScope && canonical == "global") "agent:beta:shared" else canonical
+          socket.send("""{"type":"event","event":"chat","payload":{"sessionKey":"$eventKey","runId":"$run","state":"final","message":{"role":"assistant","content":"Canonical native reply"}}}""")
+          """{"runId":"$run","status":"started"}"""
+        }
+
+        "chat.history" -> {
+          val key = params!!.getValue("sessionKey").jsonPrimitive.content
+          if (params["maxChars"]?.jsonPrimitive?.content == "1") {
+            preparations.add(params)
+            """{"sessionKey":"$key","sessionInfo":{"key":"$canonical","agentId":"beta","isMain":$isMain},"messages":[]}"""
+          } else {
+            history.add(params)
+            """{"messages":[]}"""
+          }
+        }
+
+        else -> {
+          null
+        }
+      }
+    }) { proof ->
+      proof.manager.stopAllCapture()
+      proof.drainCancelledCapture()
+      val lease = checkNotNull(proof.session.captureRequestLease())
+      val target =
+        TalkModeManager.ChatStart(
+          owner = ChatComposerOwner(lease.endpointStableId, "beta", original),
+          lease = lease,
+          mainAlias = proof.session.sessionRouting?.mainSessionKey,
+          mainKey = proof.session.sessionRouting?.mainKey,
+          withCurrentSelection = { it() },
+        )
+      proof.manager.setEnabled(true, target)
+      awaitTalkWork(proof) { proof.manager.isListening.value || proof.manager.failureText.value != null }
+      if (proof.manager.isListening.value) {
+        currentRecognizer().triggerOnResults(recognitionResults("Keep this conversation"))
+        advanceTalkSilence(proof)
+      }
+      assertEquals(1, preparations.size)
+      if (canonical != "global" || isMain) {
+        awaitTalkWork(proof) { proof.synthesizer.requested.isCompleted }
+        assertEquals(
+          "beta",
+          sends
+            .single()
+            .getValue("agentId")
+            .jsonPrimitive.content,
+        )
+        assertEquals(listOf("Canonical native reply"), proof.synthesizer.texts)
+        assertTrue("Canonical final must not fall through to history", history.isEmpty())
+      } else {
+        awaitTalkWork(proof) { proof.manager.failureText.value != null || sends.isNotEmpty() }
+        assertTrue("A literal global conversation must not be sent to the agent's different main thread", sends.isEmpty())
+        assertTrue(history.isEmpty())
+        assertNotNull(proof.manager.failureText.value)
+        assertFalse(proof.manager.isListening.value)
+        assertTrue(
+          proof.manager.failureText.value!!
+            .contains("Select the intended agent conversation"),
+        )
+      }
+    }
+  }
 
   @Test
   fun capturedRelayUsesSelectedChatAndRejectsRetiredPermission() =
@@ -1976,7 +2286,10 @@ class TalkModeManagerTest {
           }
 
           "chat.history" -> {
-            """{"messages":[{"role":"assistant","content":[{"type":"text","text":"Synthetic native reply"}]}]}"""
+            val params = request.getValue("params").jsonObject
+            val key = params.getValue("sessionKey").jsonPrimitive.content
+            val agent = params["agentId"]?.jsonPrimitive?.content ?: "main"
+            """{"sessionInfo":{"key":"$key","agentId":"$agent","isMain":false},"messages":[{"role":"assistant","content":[{"type":"text","text":"Synthetic native reply"}]}]}"""
           }
 
           else -> {

@@ -11,6 +11,7 @@ import ai.openclaw.app.NodeRuntime
 import ai.openclaw.app.SecurePrefs
 import ai.openclaw.app.chat.ChatController
 import ai.openclaw.app.closeNodeRuntimeTestFixture
+import ai.openclaw.app.gateway.GatewaySession
 import ai.openclaw.app.gatewayTalkSetupDescription
 import ai.openclaw.app.node.InvokeDispatcher
 import ai.openclaw.app.ui.UnifiedChatShellScreen
@@ -82,7 +83,10 @@ class ChatRealtimeTalkPermissionTest {
     withLauncher { runtime, result ->
       compose.onNodeWithText("Talk").performClick()
       compose.runOnIdle {
+        val operator = ReflectionHelpers.getField<GatewaySession>(runtime, "operatorSession")
+        val lease = checkNotNull(operator.captureRequestLease())
         result(true)
+        assertTrue("The permission callback tail must preserve the captured operator lease", lease.isCurrent())
         assertTrue("The existing Talk gesture must consume the captured start", runtime.talkModeEnabled.value)
         runtime.setTalkModeEnabled(false)
       }
@@ -244,6 +248,7 @@ class ChatRealtimeTalkPermissionTest {
       block(runtime) { granted ->
         if (granted) shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
         registry.dispatchResult(checkNotNull(pendingRequestCode), granted)
+        runtime.refreshNodePermissionSurface()
       }
     } finally {
       compose.runOnIdle { runtime.setTalkModeEnabled(false) }

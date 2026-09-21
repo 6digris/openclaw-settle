@@ -1422,17 +1422,19 @@ class GatewayBootstrapAuthTest {
   @Test
   fun permissionSurfaceReconnectsOnlyAfterAndroidAuthorityChanges() {
     val app: android.app.Application = RuntimeEnvironment.getApplication()
-    shadowOf(app).denyPermissions(Manifest.permission.CAMERA)
+    shadowOf(app).denyPermissions(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
     val (runtime, prefs) = createNeutralizedRuntime()
     armSavedActiveManualGateway(prefs)
     runBlocking { assertTrue(runtime.connectSwitchingGateway(gatewayEndpoint())) }
     val original = waitForDesiredConnection(runtime, "nodeSession")
+    val originalOperator = waitForDesiredConnection(runtime, "operatorSession")
 
     runtime.refreshNodePermissionSurface()
     assertSame(original, desiredConnection(runtime, "nodeSession"))
 
-    shadowOf(app).grantPermissions(Manifest.permission.CAMERA)
+    shadowOf(app).grantPermissions(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
     runtime.refreshNodePermissionSurface()
+    assertSame("Node permission changes must preserve the operator connection", originalOperator, desiredConnection(runtime, "operatorSession"))
 
     val options =
       readField<GatewayConnectOptions>(
@@ -1440,6 +1442,7 @@ class GatewayBootstrapAuthTest {
         "options",
       )
     assertTrue(options.permissions.getValue("camera"))
+    assertTrue(options.permissions.getValue("microphone"))
   }
 
   @Test

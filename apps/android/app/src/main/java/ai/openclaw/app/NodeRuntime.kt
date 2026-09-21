@@ -3432,7 +3432,7 @@ class NodeRuntime private constructor(
         mobileUiHandler.isConnected.collect { connected ->
           if (connected == lastMobileUiConnected) return@collect
           lastMobileUiConnected = connected
-          refreshAcceptedGatewayConnection()
+          refreshAcceptedGatewayConnection(nodeSurfaceOnly = true)
         }
       }
     }
@@ -3882,19 +3882,19 @@ class NodeRuntime private constructor(
   fun refreshNodePermissionSurface() {
     val permissions = connectionManager.buildPermissions()
     if (permissions == lastNodePermissions) return
-    refreshAcceptedGatewayConnection()
+    refreshAcceptedGatewayConnection(nodeSurfaceOnly = true)
   }
 
   fun setCameraEnabled(value: Boolean) {
     if (prefs.cameraEnabled.value == value) return
     prefs.setCameraEnabled(value)
-    refreshAcceptedGatewayConnection()
+    refreshAcceptedGatewayConnection(nodeSurfaceOnly = true)
   }
 
   fun setLocationMode(mode: LocationMode) {
     if (prefs.locationMode.value == mode) return
     prefs.setLocationMode(mode)
-    refreshAcceptedGatewayConnection()
+    refreshAcceptedGatewayConnection(nodeSurfaceOnly = true)
   }
 
   fun setManualEnabled(value: Boolean) {
@@ -3916,13 +3916,13 @@ class NodeRuntime private constructor(
   fun grantInstalledAppsDisclosureConsent() {
     if (prefs.installedAppsSharingEnabled.value) return
     prefs.grantInstalledAppsDisclosureConsent()
-    refreshAcceptedGatewayConnection()
+    refreshAcceptedGatewayConnection(nodeSurfaceOnly = true)
   }
 
   fun revokeInstalledAppsDisclosureConsent() {
     if (!prefs.installedAppsSharingEnabled.value) return
     prefs.revokeInstalledAppsDisclosureConsent()
-    refreshAcceptedGatewayConnection()
+    refreshAcceptedGatewayConnection(nodeSurfaceOnly = true)
   }
 
   fun setNotificationForwardingEnabled(value: Boolean) {
@@ -4470,7 +4470,7 @@ class NodeRuntime private constructor(
     val enabled = isVoiceWakeCapabilityEnabled()
     if (enabled == lastVoiceWakeCapabilityEnabled) return
     lastVoiceWakeCapabilityEnabled = enabled
-    refreshAcceptedGatewayConnection()
+    refreshAcceptedGatewayConnection(nodeSurfaceOnly = true)
   }
 
   suspend fun runVoiceE2e(
@@ -4850,7 +4850,7 @@ class NodeRuntime private constructor(
     }
   }
 
-  private fun refreshAcceptedGatewayConnection() {
+  private fun refreshAcceptedGatewayConnection(nodeSurfaceOnly: Boolean = false) {
     val connection = activeGatewayConnection ?: return
     val endpoint = connectedEndpoint ?: return
     launchGatewayLifecycle({
@@ -4861,7 +4861,12 @@ class NodeRuntime private constructor(
         connectedEndpoint?.stableId == endpoint.stableId
     }) {
       if (preferredGatewayReconnectSuppressed) return@launchGatewayLifecycle
-      connectWithAuth(endpoint = endpoint, auth = resolveGatewayConnectAuth(endpoint))
+      if (nodeSurfaceOnly) {
+        // Node authority changes must preserve the operator socket and bootstrap owner.
+        runGatewayConnectOperation { connectNodeSession(endpoint, connection) }
+      } else {
+        connectWithAuth(endpoint = endpoint, auth = resolveGatewayConnectAuth(endpoint))
+      }
     }
   }
 
@@ -5058,18 +5063,26 @@ class NodeRuntime private constructor(
           onReady = { publishOperatorReadiness(connection) },
         )
       }
-      val nodeConnectOptions = connectionManager.buildNodeConnectOptions()
-      lastNodePermissions = nodeConnectOptions.permissions
-      nodeSession.connect(
-        endpoint,
-        auth.token,
-        auth.bootstrapToken,
-        auth.password,
-        nodeConnectOptions,
-        tls,
-        bootstrapHandoff = connection.bootstrapHandoff,
-      )
+      connectNodeSession(endpoint, connection)
     }
+
+  private fun connectNodeSession(
+    endpoint: GatewayEndpoint,
+    connection: GatewayConnectionContext,
+  ) {
+    val auth = connection.auth
+    val options = connectionManager.buildNodeConnectOptions()
+    lastNodePermissions = options.permissions
+    nodeSession.connect(
+      endpoint,
+      auth.token,
+      auth.bootstrapToken,
+      auth.password,
+      options,
+      connectionManager.resolveTlsParams(endpoint),
+      bootstrapHandoff = connection.bootstrapHandoff,
+    )
+  }
 
   // Auth reset waits for claimed connection starts before disconnecting. Session calls stay outside
   // this monitor because GatewaySession invokes callbacks while holding its own lifecycle monitor.
