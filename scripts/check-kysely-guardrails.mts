@@ -47,7 +47,7 @@ const rawSqliteAllowPathGroups = {
     "src/infra/sqlite-pragma.test-support.ts",
     "src/infra/sqlite-schema-contract.ts",
     "src/infra/sqlite-strict.ts",
-    "src/infra/sqlite-transaction.ts",
+    "src/infra/sqlite-transaction-core.ts",
     "src/infra/sqlite-user-version.ts",
     "src/infra/sqlite-wal.ts",
     "src/state/openclaw-agent-db-maintenance.ts",
@@ -239,6 +239,7 @@ function collectImports(sourceFile: SourceFile) {
       source === "node:sqlite" ||
       source.endsWith("node-sqlite.js") ||
       source.endsWith("sqlite-transaction.js") ||
+      source.endsWith("sqlite-transaction-core.js") ||
       source.endsWith("sqlite-wal.js") ||
       source.endsWith("openclaw-state-db.js")
     ) {
