@@ -1,6 +1,5 @@
 /** Shared harness for node invoke plugin-policy tests. */
 import { expect, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
 import type { PluginApprovalRequestPayload } from "../infra/plugin-approvals.js";
 import { createPluginRecord } from "../plugins/loader-records.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
@@ -11,6 +10,7 @@ import { trackAsyncWork } from "../shared/async-work-scope.js";
 import type { ExecApprovalManager } from "./exec-approval-manager.js";
 import { applyPluginNodeInvokePolicy } from "./node-invoke-plugin-policy.js";
 import type { NodeRegistry, NodeSession } from "./node-registry.js";
+import { waitForApprovalRequested } from "./server-methods/approval-request.test-support.js";
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
 
 export const DEMO_PLUGIN_ID = "demo";
@@ -198,62 +198,24 @@ export async function invokeDemoPolicy(
   });
 }
 
-/** Own the request through assertions and settlement, not just its pending-record lookup. */
-export async function expectSinglePendingApproval<T, R>(
+export async function expectSinglePendingApproval<T>(
   manager: ExecApprovalManager<PluginApprovalRequestPayload>,
   context: GatewayRequestContext,
   start: () => Promise<T>,
-  check: (record: PluginApprovalRecord, operation: Promise<T>) => Promise<R>,
-): Promise<R> {
-  const requested = createDeferred<unknown>();
-  const broadcast = context.broadcast;
-  const broadcastToConnIds = context.broadcastToConnIds;
-  // Node policies have no accepted RPC response (twoPhase=false). Both real
-  // requested-event routes run only after registration persistence completes.
-  const observe = (event: string, payload: unknown) => {
-    if (event === "plugin.approval.requested") {
-      requested.resolve(payload);
-    }
-  };
-  context.broadcast = vi.fn((...args: Parameters<typeof broadcast>) => {
-    broadcast.apply(context, args);
-    observe(args[0], args[1]);
-  });
-  context.broadcastToConnIds = vi.fn((...args: Parameters<typeof broadcastToConnIds>) => {
-    broadcastToConnIds.apply(context, args);
-    observe(args[0], args[1]);
-  });
-  let operation: Promise<T> | undefined;
-  try {
-    operation = start();
-    const event = await Promise.race([
-      requested.promise,
-      operation.then(() => {
-        throw new Error("node policy completed before requesting approval");
-      }),
-    ]);
-    const records = await manager.listPendingRecords();
-    expect(records).toHaveLength(1);
-    const [record] = records;
-    if (!record) {
-      throw new Error("expected pending approval");
-    }
-    expect(event).toEqual(expect.objectContaining({ id: record.id }));
-    const result = await check(record, operation);
-    await operation;
-    return result;
-  } catch (error) {
-    // An assertion or request failure must not leave an observer running into
-    // the shared manager fixture's database teardown. Closure is not a decision.
-    manager.beginClose();
-    if (operation) {
-      await Promise.allSettled([operation]);
-    }
-    throw error;
-  } finally {
-    context.broadcast = broadcast;
-    context.broadcastToConnIds = broadcastToConnIds;
+) {
+  const { pending, payload } = await waitForApprovalRequested(
+    context,
+    "plugin.approval.requested",
+    start,
+  );
+  const records = await manager.listPendingRecords();
+  expect(records).toHaveLength(1);
+  const [record] = records;
+  if (!record) {
+    throw new Error("expected pending approval");
   }
+  expect(payload).toMatchObject({ id: record.id });
+  return { record, pending };
 }
 
 export async function expectApprovalResolution(
