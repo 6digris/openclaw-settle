@@ -7,6 +7,17 @@ const { fixture, outcomeRef, lockRef, describePosix, unknownProjection } =
   createMergeOutcomeFixtureHarness();
 
 describePosix("native merge outcome with real Git and supervised lock recovery", () => {
+  it("admits the publishing account when a pooled merge snapshot requires another review", () => {
+    const f = fixture();
+    f.save({ ...f.state(), pooledMergeBlocked: true });
+
+    const run = f.run();
+
+    expect(run.status, run.output).toBe(0);
+    expect(f.record()).toMatchObject({ phase: "complete", head: f.head });
+    expect(f.state().mutations).toBe(1);
+  });
+
   it("stops before intent when queue removal invalidates the captured squash body", () => {
     const f = fixture();
     f.save({

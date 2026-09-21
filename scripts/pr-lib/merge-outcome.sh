@@ -336,7 +336,7 @@ merge_outcome_dispatch_squash() (
 )
 
 merge_read() {
-  local mode="$1" pr="$2" repo="${3:-${MERGE_REPO_URL:-}}" first="${MERGE_TRANSPORT:-rest}" second response status query checks_err checks_error
+  local mode="$1" pr="$2" repo="${3:-${MERGE_REPO_URL:-}}" first="${MERGE_TRANSPORT:-rest}" second response status checks_err checks_error
   if [ "$first" = rest ]; then second=graphql; else second=rest; fi
   local transport
   for transport in "$first" "$second"; do
@@ -365,19 +365,12 @@ merge_read() {
           fi
           [ -z "$checks_error" ] || printf '%s\n' "$checks_error" >&2
           ;;
-        observe)
-          query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){id databaseId url nameWithOwner ref(qualifiedName:"refs/heads/main"){target{oid}} pullRequest(number:$number){id number url state headRefOid baseRefName isDraft mergeCommit{oid} autoMergeRequest{mergeMethod} isInMergeQueue isMergeQueueEnabled mergeable mergeStateStatus}}}'
-          ;;
-        preview)
-          query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid author{login __typename} isMergeQueueEnabled viewerMergeBodyText(mergeType:SQUASH) viewerMergeHeadlineText(mergeType:SQUASH)}}}'
+        observe|preview)
+          response=$(node "${BASH_SOURCE[0]%/*}/merge-graphql.mjs" "$mode" \
+            "$MERGE_REPO_HOST" "$MERGE_REPO_NAME" "$pr") || return 1
           ;;
         *) return 2 ;;
       esac
-      if [ "$mode" != checks ]; then
-        response=$(pr_gh_quota_read api graphql --hostname "$MERGE_REPO_HOST" -H 'Cache-Control: max-age=0' \
-          -f owner="${MERGE_REPO_NAME%/*}" -f name="${MERGE_REPO_NAME#*/}" -F number="$pr" \
-          -f "query=$query") || return 1
-      fi
       [ "$status" -eq 0 ] || [ "$status" -eq 8 ] || return "$status"
       if pr_gh_quota_exhausted "$response"; then continue; fi
     fi

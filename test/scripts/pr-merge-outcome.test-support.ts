@@ -363,6 +363,8 @@ if(route==="watch") {
 }
 if(route==="sleep") {s.settlementSleeps.push(Number(args[0]));save();process.exit(0);}
 s.calls.push([route,...args]);save();
+const graphqlPayload=args.includes("graphql")&&args.includes("--input")?JSON.parse(fs.readFileSync(0,"utf8")):null;
+const graphqlQuery=graphqlPayload?.query??args.find(arg=>arg.startsWith("query="))?.slice(6)??"";
 if(args.some(arg=>arg.includes("{owner}")||arg.includes("{repo}"))) fail("protected unresolved repository placeholder");
 const main=()=>git(["--git-dir="+process.env.FIXTURE_REMOTE,"rev-parse","refs/heads/main"]);
 const quota=()=>{
@@ -394,14 +396,14 @@ if(s.restMainReads>0&&args[0]==="api"&&args.includes("repos/fixture/repo/pulls/1
   fail("gh: synthetic REST read rejected (HTTP 403)");
 }
 const quotaRead=s.quotaAt==="checks"&&args[0]==="pr"&&args[1]==="checks"||
-  s.quotaAt==="preview"&&args.some(arg=>arg.includes("viewerMergeBodyText"))||
-  s.quotaAt==="observe"&&s.observationReads>=s.quotaAfterObservations&&args.includes("graphql")&&!args.includes("--input")&&!args.some(arg=>arg.includes("viewerMergeBodyText"));
+  s.quotaAt==="preview"&&graphqlQuery.includes("viewerMergeBodyText")||
+  s.quotaAt==="observe"&&s.observationReads>=s.quotaAfterObservations&&graphqlQuery===${JSON.stringify(landingSnapshotQuery.slice(6))};
 if(quotaRead&&s.quotaFailuresRemaining!==0) {
   if(s.quotaFailuresRemaining!==null) s.quotaFailuresRemaining--;
   quota();
 }
 const restMerge=args[0]==="api"&&args.includes("repos/fixture/repo/pulls/123/merge");
-const graphqlMerge=args[0]==="api"&&args.includes("graphql")&&args.includes("--input");
+const graphqlMerge=args[0]==="api"&&args.includes("graphql")&&graphqlQuery.startsWith("mutation ");
 const restCheckRuns=()=>{
   if(["missing","status-only"].includes(s.restChecks)) return [];
   const check={id:1,head_sha:s.pr.headRefOid,name:s.restContexts[0],status:"completed",conclusion:s.gates==="pass"?"success":"failure",
@@ -562,7 +564,7 @@ else if(args[0]==="pr"&&args[1]==="view") {
     s.mergeBody=s.restMergePayload.commit_message;
   }
   if(graphqlMerge) {
-    const payload=JSON.parse(fs.readFileSync(0,"utf8"));
+    const payload=graphqlPayload;
     if(payload.query!=="mutation PullRequestMerge($input:MergePullRequestInput!){mergePullRequest(input:$input){clientMutationId}}") fail("invalid direct merge mutation");
     const input=payload.variables.input;
     if(JSON.stringify(Object.keys(input).sort())!==JSON.stringify(["commitBody","expectedHeadOid","mergeMethod","pullRequestId"])||
@@ -630,10 +632,13 @@ else if(args[0]==="pr"&&args[1]==="view") {
   s.reads++;save();
   if(s.unavailable) fail("metadata unavailable");
   if(s.invalid) {out({data:{repository:{}}});process.exit(0);}
-  if(args.some(x=>x.includes("viewerMergeBodyText"))) {out({data:{repository:{pullRequest:{...s.pr,viewerMergeBodyText:s.previewBody,...(args.some(x=>x.includes("viewerMergeHeadlineText"))?{viewerMergeHeadlineText:s.previewHeadline}:{})}}}});}
+  if(graphqlPayload) {
+    if(JSON.stringify(graphqlPayload.variables)!==JSON.stringify({owner:"fixture",name:"repo",number:123})) fail("invalid merge read variables");
+  }
+  if(graphqlQuery.includes("viewerMergeBodyText")) {out({data:{repository:{pullRequest:{...s.pr,viewerMergeBodyText:s.previewBody,...(graphqlQuery.includes("viewerMergeHeadlineText")?{viewerMergeHeadlineText:s.previewHeadline}:{})}}}});}
   else {
     if(!args.includes("Cache-Control: max-age=0")) fail("missing independent fresh merge observation");
-    if(args.find(arg=>arg.startsWith("query="))!==${JSON.stringify(landingSnapshotQuery)}) fail("landing snapshot query is not supported by the shipped Octopool shim");
+    if(graphqlQuery!==${JSON.stringify(landingSnapshotQuery.slice(6))}) fail("unexpected merge observation query");
     s.observationReads++;
     const step=s.observations.shift();
     if(step?.pr) Object.assign(s.pr,step.pr);
@@ -642,6 +647,7 @@ else if(args[0]==="pr"&&args[1]==="view") {
     if(step?.unavailable) fail("metadata unavailable");
     if(step?.invalid) {save();out({data:{repository:{}}});process.exit(0);}
     const {headRefName,...pr}=s.pr;if(s.drift&&s.reads%2===0) pr.baseRefName="changed";
+    if(s.pooledMergeBlocked&&!args.includes("--input")) pr.mergeStateStatus="BLOCKED";
     const repository={...s.repoGraphql,ref:{target:{oid:step?.reportedMain??main()}},pullRequest:pr};
     out({data:{repository}});
     if(step?.advanceAfterRead) advanceMain();

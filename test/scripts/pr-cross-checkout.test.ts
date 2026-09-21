@@ -130,7 +130,7 @@ function fixture() {
       base: { ref: baseRef, repo: repoAuthority },
       head: { sha: "" },
     });
-  const snapshotCall = `${owner}\tapi graphql --hostname github.com -H Cache-Control: max-age=0 -f owner=fixture -f name=repo -F number=123 -f ${landingSnapshotQuery}`;
+  const snapshotCall = `${owner}\tapi graphql --hostname github.com -H Cache-Control: max-age=0 --input -`;
   const calls = join(root, "calls.log");
   const gh = join(bin, "gh");
   writeFileSync(
@@ -150,7 +150,9 @@ case "$1 $2" in
       repos/fixture/repo/pulls/123/files?per_page=100) printf '%s\\n' '[[]]' ;;
       *) echo "Unexpected GitHub operation: $*" >&2; exit 99 ;;
     esac ;;
-  "api graphql") printf '%s\\n' '${JSON.stringify(response)}' ;;
+  "api graphql")
+    [ "$(cat)" = '${JSON.stringify({ query: landingSnapshotQuery.slice(6), variables: { owner: "fixture", name: "repo", number: 123 } })}' ] || exit 99
+    printf '%s\\n' '${JSON.stringify(response)}' ;;
   *) echo "Unexpected GitHub operation: $*" >&2; exit 99 ;;
 esac
 `,

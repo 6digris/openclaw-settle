@@ -62,7 +62,7 @@ review metadata reuses the resolved URL.
 Each PR-head observation and merge snapshot explicitly requests
 `Cache-Control: max-age=0`: the relay revalidates that read and may publish its
 result, while separate before/after observations must never reuse one cached fact.
-The landing-snapshot GraphQL query must exactly match the shipped Octopool shim's allowlist; branch identity comes from the existing REST source-acquisition and cleanup reads.
+GraphQL merge observations and squash previews use the publishing account's protected JSON-stdin route through `merge-graphql.mjs`; pooled viewers can have different review requirements. The owner accepts only fixed read operations and preserves primary-quota fallback without classifying mutations as reads. Branch identity comes from the existing REST source-acquisition and cleanup reads.
 Writer identity uses the protected CLI with included headers on both transports
 to retain the native writer route. Reviewer assignment requires REST and verifies
 the retained assignee. The CI watcher polls GraphQL summaries, expanding details
