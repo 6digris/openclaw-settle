@@ -39,6 +39,7 @@ export const en: TranslationMap & {
       Record<
         | "title"
         | "eyebrow"
+        | "move"
         | "minimize"
         | "expand"
         | "lanes"
@@ -83,8 +84,7 @@ export const en: TranslationMap & {
     dashboardTitle: "Session dashboard",
     dashboardEmpty: "This session has no dashboard widgets yet.",
     customPluginsDisabled: "Custom plugin UI is off",
-    customPluginsEnableHint:
-      "Enable Custom plugin UI in Labs, then restart the Gateway and reload this browser tab.",
+    customPluginsEnableHint: "Enable Custom plugin UI in Labs.",
     openLabs: "Open Labs",
     surface: {
       "session-list": "Session list",
@@ -1453,6 +1453,7 @@ export const en: TranslationMap & {
     overlay: {
       title: "System busyness",
       eyebrow: "Live diagnostics",
+      move: "Move system busyness with arrow keys, or drag",
       minimize: "Minimize system busyness",
       expand: "Expand system busyness",
       lanes: "Lanes",
@@ -2565,7 +2566,8 @@ export const en: TranslationMap & {
     intro:
       "Labs contains experimental capabilities that may change, break, or disappear between releases.",
     sectionTitle: "Experimental features",
-    sectionDescription: "Changes save immediately. Some features require a restart to take effect.",
+    sectionDescription:
+      "Changes save without restarting the Gateway. Code Mode and Tool Search apply to future agent runs.",
     documentation: "Documentation",
     restartRequired: "Gateway restart required.",
     saveErrorTitle: "Could not update feature",
@@ -2600,9 +2602,7 @@ export const en: TranslationMap & {
     customPluginUi: {
       title: "Custom plugin UI",
       description:
-        "Let installed plugins add pages, widgets, and custom views. Their JavaScript runs with your signed-in permissions, so enable only plugins you trust. Bundled plugin views remain available.",
-      restartRequired:
-        "Restart the Gateway and reload this browser tab after changing this setting.",
+        "Let installed plugins add pages, widgets, and custom views. Their JavaScript runs with your signed-in permissions, so enable only plugins you trust. Bundled plugin views remain available. Reload this tab to clear previously loaded plugin code.",
     },
 
     hostDesktop: {
