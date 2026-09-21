@@ -4683,7 +4683,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   });
 
   it("retains the changed host plugin test in SDK consumer and fallback plans", () => {
-    const selected = expectDefined(createChangedNodeTestShards(STORE_ALIAS_CHANGED_PATHS));
+    const selected = expectDefined(
+      createChangedNodeTestShards(STORE_ALIAS_CHANGED_PATHS),
+      "SDK consumer plan",
+    );
     expect(
       selected.flatMap((shard) =>
         (shard.targets ?? []).concat(
