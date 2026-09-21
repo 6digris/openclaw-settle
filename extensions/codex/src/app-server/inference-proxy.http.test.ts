@@ -206,16 +206,18 @@ describe("inference HTTP transport ownership", () => {
 
   it("cancels a backpressured upload after early response headers and drains owned sockets", async (context) => {
     const received = createDeferred<IncomingMessage>();
+    const writes = { blocked: 0, drained: 0 };
+    let upstreamSocket: Socket | undefined;
+    let upstreamErrorObserved = false;
     handle = (req, res) => {
       req.pause();
       res.writeHead(200, { "content-type": "text/event-stream" });
-      res.flushHeaders();
+      // The relay exposes downstream headers with the first response body chunk.
+      res.write("data: synthetic early delta\n\n");
       received.resolve(req);
     };
-    const writes = { blocked: 0, drained: 0 };
     const blocked = createDeferred<Socket>();
     const drained = createDeferred<void>();
-    let upstreamSocket: Socket | undefined;
     let headersReceived = false;
     const sendHeaders = channel("undici:client:sendHeaders");
     const observe = (message: unknown) => {
@@ -258,12 +260,27 @@ describe("inference HTTP transport ownership", () => {
     if (upstreamSocket?.writableNeedDrain) {
       blocked.resolve(upstreamSocket);
     }
-    expect((await blocked.promise).writableNeedDrain).toBe(true);
+    const upstreamClient = await blocked.promise;
+    expect(upstreamClient.writableNeedDrain).toBe(true);
     expect(response.statusCode).toBe(200);
     expect(incoming.readableEnded).toBe(false);
     expect(writes.blocked).toBeGreaterThan(0);
+    const upstreamClosed = createDeferred<boolean>();
+    upstreamClient.once("error", () => {
+      upstreamErrorObserved = true;
+    });
+    upstreamClient.once("close", upstreamClosed.resolve);
     response.destroy();
-    await Promise.all([upload.closed, waitForUpstreamClose()]);
+    const [, hadError] = await Promise.all([upload.closed, upstreamClosed.promise]);
+    expect(upstreamClient.closed).toBe(true);
+    if (hadError) {
+      expect(upstreamErrorObserved).toBe(true);
+    }
+    expect(incoming.complete).toBe(false);
+    // The deliberately paused peer must consume EOF only after client teardown.
+    incoming.resume();
+    await waitForUpstreamClose();
+    expect(incoming.complete).toBe(false);
     expect(writes.drained).toBeGreaterThan(0);
     expect(upload.req.socket?.closed).toBe(true);
   });

@@ -244,9 +244,6 @@ export async function createCodexInferenceProxy(params: {
     const abort = () => controller.abort();
     req.once("aborted", abort);
     res.once("close", abort);
-    // A fully read pipelined request can outlive its socket without a response
-    // close event on supported Node versions. The transport owns cancellation.
-    socket.once("close", abort);
     void (async () => {
       try {
         const { target, sampling } = resolveTarget(req);
@@ -309,7 +306,6 @@ export async function createCodexInferenceProxy(params: {
         releasePermit?.();
         req.off("aborted", abort);
         res.off("close", abort);
-        socket.off("close", abort);
         await guarded?.release().catch(() => undefined);
         resident?.finish();
       }

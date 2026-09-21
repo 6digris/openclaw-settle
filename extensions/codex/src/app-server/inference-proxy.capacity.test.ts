@@ -429,23 +429,28 @@ describe("inference relay capacity", () => {
       responses.push(...Array.from({ length: 16 }, () => post()));
       await http.waitFor(responses.length);
     }
-    const controllers = Array.from({ length: 16 }, () => new AbortController());
-    const waiting = [];
-    const closed = [];
-    for (const controller of controllers) {
-      const incoming = once(relayServer(), "request");
-      waiting.push(post(controller.signal).catch(() => undefined));
-      const [req] = await incoming;
-      closed.push(once(req.socket, "close"));
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const controllers = Array.from({ length: 16 }, () => new AbortController());
+      const waiting = [];
+      const closed = [];
+      for (const controller of controllers) {
+        const incoming = once(relayServer(), "request");
+        waiting.push(post(controller.signal).catch(() => undefined));
+        const [req] = await incoming;
+        closed.push(once(req.socket, "close"));
+      }
+      expect(await post()).toMatchObject({ status: 503, retryAfter: "1" });
+      expect(transport.fetch).toHaveBeenCalledTimes(80);
+      for (const controller of controllers) {
+        controller.abort();
+      }
+      await Promise.all(closed);
+      expect(await Promise.all(waiting)).toEqual(Array(16).fill(undefined));
     }
-    expect(await post()).toMatchObject({ status: 503, retryAfter: "1" });
-    expect(transport.fetch).toHaveBeenCalledTimes(80);
-    for (const controller of controllers) {
-      controller.abort();
-    }
-    await Promise.all([...waiting, ...closed]);
     http.streams[0]!.close();
-    expect((await responses[0]).status).toBe(200);
+    const firstResponse = responses[0];
+    assert(firstResponse);
+    expect((await firstResponse).status).toBe(200);
     responses.push(post());
     await http.waitFor(81);
     for (const stream of http.streams.slice(1)) {
@@ -490,9 +495,21 @@ describe("inference relay capacity", () => {
   });
 
   it("cancels every fully read pipelined request when its shared socket closes", async () => {
+    if (process.env.OPENCLAW_VITEST_RUNTIME === "bun") {
+      expect(process.versions.bun).toBeTruthy();
+    }
+    console.info("inference pipeline worker", {
+      pid: process.pid,
+      node: process.version,
+      bun: process.versions.bun ?? null,
+      platform: process.platform,
+      arch: process.arch,
+    });
     const started = createDeferred<void>();
+    const backpressured = createDeferred<void>();
     const released = createDeferred<void>();
     const signals: AbortSignal[] = [];
+    let responseBytes = 0;
     let releaseCount = 0;
     transport.fetch.mockImplementation(async (args) => {
       await new Response(args.init.body).arrayBuffer();
@@ -501,7 +518,15 @@ describe("inference relay capacity", () => {
         started.resolve();
       }
       return {
-        response: new Response(new ReadableStream<Uint8Array>()),
+        response: new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              if (signals.length === 2) {
+                controller.enqueue(new Uint8Array(responseBytes));
+              }
+            },
+          }),
+        ),
         release: async () => {
           if (++releaseCount === 2) {
             released.resolve();
@@ -510,7 +535,20 @@ describe("inference relay capacity", () => {
       };
     });
     const incoming: IncomingMessage[] = [];
-    relayServer().on("request", (req) => incoming.push(req));
+    relayServer().on("request", (req, res) => {
+      incoming.push(req);
+      if (incoming.length === 2) {
+        responseBytes = res.writableHighWaterMark + 1;
+        const write = res.write.bind(res);
+        vi.spyOn(res, "write").mockImplementation((chunk, encoding, callback) => {
+          const accepted = write(chunk, encoding, callback);
+          if (!accepted) {
+            backpressured.resolve();
+          }
+          return accepted;
+        });
+      }
+    });
     const target = new URL(proxy.baseUrl + "/responses");
     const socket = createConnection({ host: target.hostname, port: Number(target.port) });
     socket.on("error", () => {});
@@ -518,7 +556,7 @@ describe("inference relay capacity", () => {
     const body = JSON.stringify(child);
     const wire = `POST ${target.pathname} HTTP/1.1\r\nHost: ${target.host}\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
     socket.write(wire + wire);
-    await started.promise;
+    await Promise.all([started.promise, backpressured.promise]);
     expect(incoming).toHaveLength(2);
     expect(incoming.every((req) => req.complete && req.readableEnded)).toBe(true);
     expect(signals.every((signal) => !signal.aborted)).toBe(true);
@@ -527,7 +565,7 @@ describe("inference relay capacity", () => {
     await closed;
     expect(signals.every((signal) => signal.aborted)).toBe(true);
     await released.promise;
-  });
+  }, 5_000);
 
   it("retains upload admission after early headers until the final body chunk's next pull", async () => {
     const uploads: ReadableStream<Uint8Array>[] = [];
@@ -778,20 +816,23 @@ describe("inference relay capacity", () => {
 
   it("bounds queued HTTP work, cancels waiters, and admits a later request", async () => {
     const streams = await holdUploads();
-    const controllers = Array.from({ length: 16 }, () => new AbortController());
-    const waiting = [];
-    const disconnected = [];
-    for (const controller of controllers) {
-      const received = once(relayServer(), "request");
-      waiting.push(post(controller.signal).catch(() => undefined));
-      const [incoming] = await received;
-      disconnected.push(once(incoming.socket, "close"));
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const controllers = Array.from({ length: 16 }, () => new AbortController());
+      const waiting = [];
+      const disconnected = [];
+      for (const controller of controllers) {
+        const received = once(relayServer(), "request");
+        waiting.push(post(controller.signal).catch(() => undefined));
+        const [incoming] = await received;
+        disconnected.push(once(incoming.socket, "close"));
+      }
+      expect(await post()).toMatchObject({ status: 503, retryAfter: "1" });
+      for (const controller of controllers) {
+        controller.abort();
+      }
+      await Promise.all(disconnected);
+      expect(await Promise.all(waiting)).toEqual(Array(16).fill(undefined));
     }
-    expect(await post()).toMatchObject({ status: 503, retryAfter: "1" });
-    for (const controller of controllers) {
-      controller.abort();
-    }
-    await Promise.all([...waiting, ...disconnected]);
     const first = streams[0];
     assert(first);
     first.releaseUpload();
@@ -819,48 +860,65 @@ describe("inference relay capacity", () => {
   it.each(["generation revoked", "duplicate frame"])(
     "releases queued work after %s without forwarding it or blocking the next frame",
     async (cause) => {
-      const stale = await open();
-      const next = await open();
-      const streams = await holdUploads();
-      const registration = proxy.context.register({
-        threadId: "root",
-        text: "synthetic persona",
-        signal: new AbortController().signal,
-        assertCurrent: () => {},
-      });
-      const staleReceived = once(transport.downstreams[0]!, "message");
-      stale.client.send(
-        JSON.stringify({
-          type: "response.create",
-          client_metadata: {
-            "x-codex-turn-metadata": JSON.stringify({
-              thread_id: "root",
-              request_kind: "turn",
-              [CODEX_INFERENCE_GENERATION_KEY]: registration.generation,
-            }),
-          },
-        }),
-      );
-      await staleReceived;
-      const staleForwarded = vi.fn();
-      stale.upstream.on("message", staleForwarded);
-      const closed = once(stale.client, "close");
-      if (cause === "generation revoked") {
+      for (let cycle = 0; cycle < 3; cycle++) {
+        const offset = transport.downstreams.length;
+        const stale = await open();
+        const next = await open();
+        const streams = await holdUploads();
+        const registration = proxy.context.register({
+          threadId: "root",
+          text: "synthetic persona",
+          signal: new AbortController().signal,
+          assertCurrent: () => {},
+        });
+        const staleReceived = once(transport.downstreams[offset]!, "message");
+        stale.client.send(
+          JSON.stringify({
+            type: "response.create",
+            client_metadata: {
+              "x-codex-turn-metadata": JSON.stringify({
+                thread_id: "root",
+                request_kind: "turn",
+                [CODEX_INFERENCE_GENERATION_KEY]: registration.generation,
+              }),
+            },
+          }),
+        );
+        await staleReceived;
+        const staleForwarded = vi.fn();
+        stale.upstream.on("message", staleForwarded);
+        const closed = once(stale.client, "close");
+        if (cause === "generation revoked") {
+          registration.release();
+        } else {
+          stale.client.send(JSON.stringify(child));
+        }
+        await closed;
+        const nextReceived = once(transport.downstreams[offset + 1]!, "message");
+        const forwarded = once(next.upstream, "message");
+        next.client.send(JSON.stringify(child));
+        await nextReceived;
+        const first = streams[0];
+        assert(first);
+        first.releaseUpload();
+        await forwarded;
+        expect(staleForwarded).not.toHaveBeenCalled();
+        await complete(next.client, next.upstream);
+        for (const stream of streams) {
+          stream.releaseUpload();
+        }
         registration.release();
-      } else {
-        stale.client.send(JSON.stringify(child));
+        const closedSockets: Promise<unknown>[] = [];
+        for (const stream of [stale, next, ...streams]) {
+          for (const socket of [stream.client, stream.upstream]) {
+            if (socket.readyState !== WebSocket.CLOSED) {
+              closedSockets.push(once(socket, "close"));
+            }
+          }
+          stream.client.terminate();
+        }
+        await Promise.all(closedSockets);
       }
-      await closed;
-      const nextReceived = once(transport.downstreams[1]!, "message");
-      const forwarded = once(next.upstream, "message");
-      next.client.send(JSON.stringify(child));
-      await nextReceived;
-      const first = streams[0];
-      assert(first);
-      first.releaseUpload();
-      await forwarded;
-      expect(staleForwarded).not.toHaveBeenCalled();
-      await complete(next.client, next.upstream);
     },
   );
 
