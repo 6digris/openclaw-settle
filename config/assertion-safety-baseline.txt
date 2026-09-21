@@ -1564,7 +1564,7 @@ src/agents/ai-transport-runtime-host.ts	9
 src/agents/anthropic-payload-log.ts	3
 src/agents/apply-patch-file-ops.ts	2
 src/agents/apply-patch-targets.ts	1
-src/agents/apply-patch.ts	3
+src/agents/apply-patch.ts	2
 src/agents/auth-profiles/clone.ts	1
 src/agents/auth-profiles/external-auth.ts	1
 src/agents/auth-profiles/oauth-manager.ts	1

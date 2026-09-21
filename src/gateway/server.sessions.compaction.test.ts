@@ -2,7 +2,6 @@
  * Gateway session compaction RPC tests.
  */
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { expect, test, vi } from "vitest";
 import { closeGatewayTestWebSocket } from "../../test/helpers/gateway-websocket.js";
@@ -57,6 +56,7 @@ import {
   testState,
 } from "./test-helpers.js";
 import { getTestPluginRegistry } from "./test-helpers.plugin-registry.js";
+import { testConfigRoot } from "./test-helpers.runtime-state.js";
 import { holdCompaction } from "./test/server-sessions-checkpoint.test-helpers.js";
 import {
   setupGatewaySessionsTestHarness,
@@ -943,9 +943,7 @@ test("sessions.compact without maxLines runs embedded manual compaction for chec
   expect(compactionCall.workspaceDir).toBe("/tmp/task-repo");
   expect(compactionCall.cwd).toBe("/tmp/task-repo");
   expect(callConfig.agents?.defaults?.model?.primary).toBe("anthropic/claude-opus-4-6");
-  expect(callConfig.agents?.defaults?.workspace).toBe(
-    path.join(os.tmpdir(), "openclaw-gateway-test"),
-  );
+  expect(callConfig.agents?.defaults?.workspace).toBe(path.join(testConfigRoot.value, "workspace"));
   expect(compactionCall.provider).toBe("anthropic");
   expect(compactionCall.model).toBe("claude-opus-4-6");
   expect(compactionCall.allowGatewaySubagentBinding).toBe(true);
