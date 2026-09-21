@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as configModule from "../../../config/config.js";
+import { hashConfigRaw } from "../../../config/io.read-helpers.js";
+import { captureUpdateDoctorConfigWrites } from "../../../infra/update-doctor-result.js";
+import { withEnvAsync } from "../../../test-utils/env.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import {
   assertInstalledPluginIdRecoveryCurrent,
@@ -66,6 +70,125 @@ vi.mock("../../../plugins/official-external-plugin-catalog.js", async (importOri
 });
 
 afterEach(() => vi.restoreAllMocks());
+
+it.each([
+  "standalone",
+  "update",
+  "environment-rotation",
+  "include-drift",
+  "owner-drift",
+  "diagnostic-failure",
+] as const)("sequences a root roster and nested plugin include (%s)", async (scenario) => {
+  const { prepareDoctorContext } = await import("../../doctor-config-flow.test-support.js");
+  const { runWriteConfigHealth } =
+    await import("../../../flows/doctor-health-contribution-runners.config.js");
+  await withOpenClawTestState(
+    {
+      label: "doctor-roster-plugin-include",
+      env: {
+        OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+        RECOVERY_VALUE: "synthetic-resolved",
+        ROOT_VALUE: "synthetic-planning",
+      },
+    },
+    async (state) => {
+      const plugins = {
+        enabled: false,
+        allow: ["qqbot"],
+        deny: ["qqbot"],
+        entries: { qqbot: { enabled: false, config: { token: "${RECOVERY_VALUE}" } } },
+      };
+      const cfg = { agents: { defaults: { workspace: state.path("workspace") } }, plugins };
+      await state.writeConfig({
+        ...cfg,
+        gateway: {
+          mode: "local",
+          ...(scenario === "environment-rotation"
+            ? { auth: { mode: "token", token: "${ROOT_VALUE}" } }
+            : {}),
+        },
+        plugins: { $include: "./plugin-parent.json" },
+      });
+      const parent = state.statePath("plugin-parent.json");
+      const leaf = state.statePath("plugins.json");
+      const parentRaw = JSON.stringify({ $include: "./plugins.json" });
+      const leafRaw = JSON.stringify(plugins);
+      await fs.writeFile(parent, parentRaw);
+      await fs.writeFile(leaf, leafRaw);
+      const owner = await seedRecoveryOwner(state, cfg);
+      const rootRaw = await fs.readFile(state.configPath, "utf8");
+      const ctx = await prepareDoctorContext(state.configPath);
+      expect(ctx.configResult.persistCanonicalAgentRoster).toBe(true);
+      expect(ctx.configResult.skipWizardMetadataForIncludeWrite).toBe(true);
+      expect(ctx.configResult.referenceSource?.installedPluginIdRecovery?.size).toBe(1);
+      const transform = configModule.transformConfigFile;
+      let firstCommit: Awaited<ReturnType<typeof transform>> | undefined;
+      vi.spyOn(configModule, "transformConfigFile").mockImplementation(async (params) => {
+        const result = await transform(params);
+        if (!firstCommit) {
+          firstCommit = result;
+          if (scenario === "include-drift") {
+            await fs.appendFile(leaf, "\n");
+          } else if (scenario === "owner-drift") {
+            await fs.appendFile(path.join(owner.root, "openclaw.plugin.json"), "\n");
+          }
+        }
+        return result;
+      });
+      if (scenario === "diagnostic-failure") {
+        vi.mocked(ctx.runtime.log).mockImplementation(() => {
+          throw new Error("fixture post-roster diagnostic failure");
+        });
+      }
+      const write = () =>
+        captureUpdateDoctorConfigWrites(
+          state.configPath,
+          () => runWriteConfigHealth(ctx, { runPostWriteRepairs: false }),
+          scenario === "standalone"
+            ? undefined
+            : { inputHash: hashConfigRaw(rootRaw), assertCurrent: () => {} },
+        );
+      if (scenario === "diagnostic-failure") {
+        await expect(write()).rejects.toThrow("fixture post-roster diagnostic failure");
+      } else {
+        const success =
+          scenario === "environment-rotation"
+            ? await withEnvAsync({ ROOT_VALUE: "synthetic-write" }, write)
+            : await write();
+        expect(success).toBe(["standalone", "update", "environment-rotation"].includes(scenario));
+      }
+      expect(firstCommit).toBeDefined();
+      const saved = JSON.parse(await fs.readFile(state.configPath, "utf8"));
+      expect(saved.agents.entries).toHaveProperty("main");
+      expect(saved.plugins).toEqual({ $include: "./plugin-parent.json" });
+      await expect(fs.readFile(parent, "utf8")).resolves.toBe(parentRaw);
+      await expect(fs.readFile(state.configPath + ".bak", "utf8")).resolves.toBe(rootRaw);
+      if (["standalone", "update", "environment-rotation"].includes(scenario)) {
+        if (scenario === "environment-rotation") {
+          expect(saved.gateway.auth.token).toBe("${ROOT_VALUE}");
+        }
+        const recovered = JSON.parse(await fs.readFile(leaf, "utf8"));
+        expect(recovered.entries).toEqual({
+          "openclaw-qqbot": { enabled: false, config: { token: "${RECOVERY_VALUE}" } },
+        });
+        expect(recovered.allow).toEqual(["openclaw-qqbot"]);
+        expect(recovered.deny).toEqual(["openclaw-qqbot"]);
+        await expect(fs.readFile(leaf + ".bak", "utf8")).resolves.toBe(leafRaw);
+        expect(ctx.configResultWriteCommitted).toBe(true);
+        expect(ctx.configResult.confirmedConfigSource?.hash).toBe(
+          (await configModule.readConfigFileSnapshot()).hash,
+        );
+      } else {
+        expect(ctx.configResultWriteCommitted).not.toBe(true);
+        expect(ctx.configResult.confirmedConfigSource?.hash).toBe(firstCommit?.persistedHash);
+        await expect(fs.readFile(leaf, "utf8")).resolves.toBe(
+          leafRaw + (scenario === "include-drift" ? "\n" : ""),
+        );
+        await expect(fs.stat(leaf + ".bak")).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    },
+  );
+});
 
 it("persists the early disabled alias after Doctor repairs the same owner", async () => {
   const { prepareDoctorContext } = await import("../../doctor-config-flow.test-support.js");

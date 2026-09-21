@@ -14,7 +14,6 @@ import { readRecentConfigAuditRecords } from "../config/io.audit.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
 import { retainLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
 import { migratePersistedImplicitMainRoster } from "../config/legacy.roster.js";
-import { resolveConfigIncludeWriteBoundary } from "../config/mutate.js";
 import { CONFIG_PATH } from "../config/paths.js";
 import { inspectShippedPluginInstallConfigRecords } from "../config/plugin-install-config-migration.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -55,6 +54,7 @@ import { listDoctorConfiguredChannelIds } from "./doctor/shared/configured-chann
 import { containsAuthoredInclude } from "./doctor/shared/include-migration-ownership.js";
 import { normalizeCompatibilityConfigValues } from "./doctor/shared/legacy-config-core-migrate.js";
 import type { DoctorPluginMetadataSnapshotState } from "./doctor/shared/plugin-metadata-snapshot-scope.js";
+import { canWriteDoctorInclude } from "./doctor/shared/roster-include-write.js";
 import { shouldSkipLegacyUpdateDoctorConfigWrite } from "./doctor/shared/update-phase.js";
 
 async function refreshGatewayAuthStateAfterAuthProfileRepair(): Promise<void> {
@@ -661,12 +661,12 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
   const shouldWriteConfig = finalized.shouldWriteConfig && legacyStep.blocksWrite !== true;
   const includeBoundaryWrite =
     shouldWriteConfig &&
-    resolveConfigIncludeWriteBoundary({
+    canWriteDoctorInclude(
       snapshot,
-      nextConfig: cfg,
-      persistCanonicalAgentRoster,
-      explicitSetPaths,
-    });
+      cfg,
+      { persistCanonicalAgentRoster, explicitSetPaths },
+      referenceSource?.installedPluginIdRecovery,
+    );
 
   const configuredOpencodePluginIds = [
     cfg.models?.providers?.opencode || cfg.models?.providers?.["opencode-zen"]
