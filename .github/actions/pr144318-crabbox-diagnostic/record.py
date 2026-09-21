@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+sys.dont_write_bytecode = True
+from trace_identity import validate as validate_identity
 
 PAYLOAD = Path(__file__).resolve().parent
 OUTPUT = Path('.artifacts/pr144318-crabbox-diagnostic')
@@ -50,9 +52,9 @@ if mode == 'prepare':
     write('binding.json', data)
     assert data['source'] == SOURCE
     for name, sha in manifest['files'].items():
-        if name.endswith(('.mjs', '.patch', '.json')):
-            assert digest(PAYLOAD / name) == sha, name
+        assert digest(PAYLOAD / name) == sha, name
     assert digest(FIXTURE) == manifest['fixturePreimageSha256']
+    assert digest(Path('scripts/lib/managed-child-process.mts')) == manifest['managedPreimageSha256']
     selection = json.loads((PAYLOAD / 'MAIN22-CRABBOX-ORIGINAL-SELECTION.json').read_text())
     assert selection['head'] == SOURCE and selection['workers'] == 2
     assert selection['node'] == '24.20.0' and len(selection['files']) == 57
@@ -73,6 +75,9 @@ elif mode == 'finish':
     if trace.exists():
         try:
             rows = [json.loads(line) for line in trace.read_text().splitlines()]
+            if any(not isinstance(r, dict) for r in rows):
+                reasons.append('malformed-trace')
+                rows = [r for r in rows if isinstance(r, dict)]
         except (ValueError, UnicodeError):
             reasons.append('malformed-trace')
     else:
@@ -84,7 +89,15 @@ elif mode == 'finish':
         reasons.append('missing-shard-log')
     elif '[crabbox-witness-unavailable]' in shard_log.read_text(errors='replace'):
         reasons.append('witness-unavailable')
-    phases = sorted({r.get('phase') for r in rows if r.get('phase')})
+    timeout_mentions = shard_log.read_text(errors='replace').count('Managed command timed out after 30000ms') if shard_log.is_file() else 0
+    timeout_commands = {r.get('command') for r in rows
+                        if r.get('event') == 'timeout-snapshot' and r.get('timeoutMs') == 30000
+                        and isinstance(r.get('command'), str) and r['command']}
+    # Log text has no command identity; count conservatively. Repeated rendering
+    # of one error may mark evidence incomplete, but cannot hide a missing hook.
+    if len(timeout_commands) < timeout_mentions:
+        reasons.append('missing-timeout-snapshot')
+    phases = sorted({r['phase'] for r in rows if isinstance(r.get('phase'), str) and r['phase']})
     if not any(r.get('event') == 'spawn-ready' and r.get('child') for r in rows):
         reasons.append('missing-outer-spawn')
     if not any(r.get('event') == 'process-start' for r in rows):
@@ -98,25 +111,28 @@ elif mode == 'finish':
         '04-recover-released', '05-prepare-namespace', '06-recover-wrong-namespace',
         '07-recover-correct-namespace',
     ]
+    identity_reasons = validate_identity(rows)
+    reasons.extend(identity_reasons)
     if phases != expected_phases:
         reasons.append('incomplete-phase-coverage')
     # Be conservative on a failing run: startup events alone are not terminal
     # evidence. Partial traces remain useful for investigation, never complete.
     for phase in phases:
         outer = [r for r in rows if r.get('phase') == phase
-                 and r.get('event') == 'spawn-begin' and r.get('evalSha256')]
+                 and r.get('event') == 'spawn-begin'
+                 and (r.get('evalSha256') or r.get('entry') == 'crabbox-wrapper.mjs')]
         if not outer:
             reasons.append('missing-outer-begin:' + phase)
         for start in outer:
             events = [r for r in rows if r.get('phase') == phase
-                      and r.get('pid') == start.get('pid') and r.get('id') == start.get('id')]
+                      and r.get('command') == start.get('command')]
             ready = next((r for r in events if r.get('event') == 'spawn-ready' and r.get('child')), None)
             child = ready.get('child') if ready else None
             required = {'child-exit', 'child-close'}
             observed = {r.get('event') for r in events if r.get('child') == child}
             pipes = {r.get('stream') for r in events if r.get('event') == 'pipe-end' and r.get('child') == child}
             child_started = any(r.get('event') == 'process-start' and r.get('pid') == child
-                                and r.get('phase') == phase for r in rows)
+                                and r.get('phase') == phase and r.get('parentCommand') == start.get('command') for r in rows)
             if not child or not child_started or not required <= observed or pipes != {'stdout', 'stderr'}:
                 reasons.append('nonterminal-outer-command:' + phase)
     write('completeness.json', {
@@ -126,6 +142,10 @@ elif mode == 'finish':
         'events': len(rows), 'shardExit': exit_code,
         'stepOutcome': os.environ.get('DIAGNOSTIC_OUTCOME'),
         'overlayFixtureSha256': digest(FIXTURE) if FIXTURE.exists() else None,
+        'overlayManagedSha256': digest(Path('scripts/lib/managed-child-process.mts')) if Path('scripts/lib/managed-child-process.mts').exists() else None,
+        'identityVersion': 2, 'identityReasons': identity_reasons,
+        'timeoutLogMentions': timeout_mentions, 'uniqueTimeoutCommands': len(timeout_commands),
+        'timeoutSnapshots': [r for r in rows if r.get('event') == 'timeout-snapshot'],
         'acceptance': False, 'causeResolved': False,
     })
     if reasons:

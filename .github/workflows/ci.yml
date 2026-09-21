@@ -94,7 +94,7 @@ jobs:
   preflight:
     permissions:
       contents: read
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dispatch_id == 'pr144318-crabbox-diagnostic-v1') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dispatch_id == 'pr144318-crabbox-diagnostic-v2') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt != 1)) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     timeout-minutes: 20
     outputs:
@@ -2094,7 +2094,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight]
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dispatch_id == 'pr144318-crabbox-diagnostic-v1') && !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dispatch_id == 'pr144318-crabbox-diagnostic-v2') && !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && needs.preflight.outputs.hybrid_hosted_offload != 'true' && github.run_attempt == 1 && github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 20
     env:
@@ -3844,7 +3844,7 @@ jobs:
 
   pr144318-crabbox-diagnostic:
     name: DIAGNOSTIC ONLY - original tooling12 Crabbox phase trace
-    if: github.event_name == 'workflow_dispatch' && inputs.dispatch_id == 'pr144318-crabbox-diagnostic-v1'
+    if: github.event_name == 'workflow_dispatch' && inputs.dispatch_id == 'pr144318-crabbox-diagnostic-v2'
     permissions:
       contents: read
     runs-on: ubuntu-24.04
@@ -3934,6 +3934,7 @@ jobs:
       - name: Run original 57-file shard with phase witness
         id: diagnostic
         env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
           NODE_OPTIONS: --max-old-space-size=8192
           FROZEN_TARGET: "false"
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
@@ -6308,7 +6309,7 @@ jobs:
       - docker-seed-e2e
     # Report failed prerequisites, but let superseded runs release their slot
     # without waiting for an aggregate runner after workflow cancellation.
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dispatch_id == 'pr144318-crabbox-diagnostic-v1') && !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dispatch_id == 'pr144318-crabbox-diagnostic-v2') && !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     # The gate only aggregates job results; keep it independent of Blacksmith capacity.
     runs-on: ubuntu-24.04
     timeout-minutes: 5

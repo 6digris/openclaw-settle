@@ -37,3 +37,26 @@
            expect((await f.recover(changed)).report.recovered).toBe(true);
            for (const line of readFileSync(f.calls, "utf8").trim().split("\n")) {
              expect(JSON.parse(line)).toEqual(["claims", "list", "--json"]);
+--- a/scripts/lib/managed-child-process.mts
++++ b/scripts/lib/managed-child-process.mts
+@@ -585,7 +585,19 @@
+     });
+     if (timeoutMs !== undefined) {
+       timeoutTimer = setTimeout(() => {
+-        void stop({ type: "timeout" }, "SIGTERM", timeoutKillGraceMs, timeoutForceKillOnLeaderExit);
++        // Temporary diagnostic overlay: bounded memory only before cancellation.
++        let flushWitness: (() => void) | undefined;
++        try {
++          const witness = (globalThis as typeof globalThis & {
++            [key: symbol]: { captureTimeout?: (child: ChildProcess, timeoutMs: number) => (() => void) | undefined };
++          })[Symbol.for("openclaw.crabbox.witness.v2")];
++          flushWitness = witness?.captureTimeout?.(child, timeoutMs);
++        } catch { /* A witness failure must not prevent cancellation. */ }
++        try {
++          void stop({ type: "timeout" }, "SIGTERM", timeoutKillGraceMs, timeoutForceKillOnLeaderExit);
++        } finally {
++          try { flushWitness?.(); } catch { /* Preserve the command outcome. */ }
++        }
+       }, timeoutMs);
+     }
+     signal?.addEventListener("abort", abort, { once: true });
