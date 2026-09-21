@@ -399,14 +399,19 @@ suite.define(() => {
         });
       };
       await arrive(questionMessage, 2);
-      await card.getByText(title, { exact: true }).waitFor();
+      const initialExpand = card.getByRole("button", { name: "Expand question", exact: true });
+      await initialExpand.waitFor();
+      expect(await initialExpand.textContent()).toContain("Optional · work can continue");
+      expect(await card.getByRole("textbox").count()).toBe(0);
       expect(await composer.evaluate((element) => element === document.activeElement)).toBe(true);
+      await initialExpand.click();
+      await card.getByText(title, { exact: true }).waitFor();
       expect(await composer.inputValue()).toBe("Continue researching while I decide.");
       const custom = card.getByRole("textbox", { name: `Your own answer for ${title}` });
       await custom.fill("Readers new to the project");
       await card.getByRole("button", { name: "Collapse question", exact: true }).click();
       const expand = card.getByRole("button", { name: "Expand question", exact: true });
-      await composer.focus();
+      await expectBrowser(composer).toBeFocused();
       await arrive(secondQuestion, 3);
       await expect.poll(() => expand.textContent()).toContain("2 unanswered questions");
       expect(await expand.textContent()).toContain(title);
@@ -433,6 +438,7 @@ suite.define(() => {
         ],
       });
       await card.getByText(blockingTitle, { exact: true }).waitFor();
+      expect(await card.textContent()).toContain("Waiting for your answer");
       expect(await composer.count()).toBe(0);
       await card.getByRole("button", { name: "Next", exact: true }).click();
       await card.getByText(title, { exact: true }).waitFor();

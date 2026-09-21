@@ -3890,7 +3890,7 @@ export const en: TranslationMap & {
     },
     goals: {},
     asyncQuestions: {
-      title: "Answer when ready",
+      title: "Optional · work can continue",
       pendingOne: "{count} unanswered question",
       pendingMany: "{count} unanswered questions",
       inComposer: "Answer above the message box.",
@@ -3912,7 +3912,7 @@ export const en: TranslationMap & {
       skipped: "Skipped",
       collapse: "Collapse question",
       expand: "Expand question",
-      eyebrow: "Question",
+      eyebrow: "Waiting for your answer",
       summaryLabel: "Question outcome",
       ownAnswerFor: "Your own answer for {header}",
       storeRequestedBy: "Requested by {agent} · {session}",

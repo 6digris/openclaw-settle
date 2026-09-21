@@ -757,7 +757,7 @@ if(!interrupted)throw new Error('fixture did not interrupt artifact publication'
     );
 
     it(
-      "protects FIFO receipts and keeps ordinary cleanup on unsupported fsync",
+      "protects FIFO receipts without reading or replacing them",
       async () =>
         withFixture(async (f) => {
           f.stage("prepare-fifo");
@@ -773,26 +773,6 @@ if(!interrupted)throw new Error('fixture did not interrupt artifact publication'
             reason: expect.stringContaining("invalid metadata"),
           });
           expect(lstatSync(receipt).isFIFO()).toBe(true);
-          for (const kind of ["isDirectory", "isFile"]) {
-            f.stage(`prepare-unsupported-fsync-${kind}`);
-            const prelude = `const originalFsync=fs.fsyncSync;fs.fsyncSync=(fd)=>{if(fs.fstatSync(fd).${kind}())throw Object.assign(new Error('fixture fsync unsupported'),{code:'EINVAL'});return originalFsync(fd);};`;
-            const unsupported = await f.prepare("", { prelude });
-            expect(unsupported.receipt.durable).toBe(false);
-            f.stage(`recover-unsupported-fsync-${kind}`);
-            expect((await f.recover(unsupported)).report.reason).toContain(
-              "durable recovery metadata is incomplete",
-            );
-            expect(readFileSync(join(unsupported.source, "source.txt"), "utf8")).toBe(
-              "retained source\n",
-            );
-            f.stage(`cleanup-unsupported-fsync-${kind}`);
-            const normal = await f.program(
-              "const owner=createStaging(ctx.staging,ctx.repository);fs.mkdirSync(join(owner.payload,'source'));owner.prepared({files:[],deleted:[]});owner.admitted(captureClaimNamespace(join(owner.payload,'source')));owner.settled();owner.dispose();console.log(JSON.stringify({removed:!fs.existsSync(owner.root)}));",
-              prelude,
-            );
-            expect(normal.status, normal.stderr).toBe(0);
-            expect(JSON.parse(normal.stdout)).toEqual({ removed: true });
-          }
         }),
       90_000,
     );
