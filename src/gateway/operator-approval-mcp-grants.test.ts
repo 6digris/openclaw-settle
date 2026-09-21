@@ -25,6 +25,7 @@ import {
 import { createGatewayAuxHandlers } from "./server-aux-handlers.js";
 import { createPluginApprovalHandlers } from "./server-methods/plugin-approval.js";
 import type { GatewayRequestHandlerOptions } from "./server-methods/types.js";
+import { createTestRuntimeSecretsActivator } from "./server-startup-config.test-support.js";
 
 const auxiliaries: ReturnType<typeof createGatewayAuxHandlers>[] = [];
 let fixture: OpenClawTestState | undefined;
@@ -37,9 +38,7 @@ function gateway() {
   const aux = createGatewayAuxHandlers({
     log: {},
     getNativeApprovalRouteCoordinator: () => undefined,
-    activateRuntimeSecrets: async () => {
-      throw new Error("unexpected secrets reload");
-    },
+    activateRuntimeSecrets: createTestRuntimeSecretsActivator(),
     sharedGatewaySessionGenerationState: { current: undefined, required: null },
     resolveSharedGatewaySessionGenerationForConfig: () => undefined,
     clients: [],
