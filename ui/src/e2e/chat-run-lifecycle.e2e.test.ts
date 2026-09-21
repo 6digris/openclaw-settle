@@ -164,6 +164,9 @@ suite.define(() => {
     // the live terminal projection or its retained local timestamps.
     const completedSession = {
       key: sessionKey,
+      sessionId: `session:${sessionKey}`,
+      label: "Main",
+      kind: "direct",
       hasActiveRun: false,
       activeRunIds: [],
       status: "done",
@@ -173,9 +176,10 @@ suite.define(() => {
       runtimeMs: 13_000,
       updatedAt: firstStartedAt + 994_000,
     };
+    await gateway.setSessionsListResponse({ sessions: [completedSession] });
     await gateway.setMethodResponse("chat.history", {
       ...prepareChatHistoryFixture(messages),
-      sessionId: `session:${sessionKey}`,
+      sessionId: completedSession.sessionId,
       sessionInfo: completedSession,
     });
     await gateway.emitGatewayEvent("chat", { sessionKey, runId, state: "final", message: reply });
