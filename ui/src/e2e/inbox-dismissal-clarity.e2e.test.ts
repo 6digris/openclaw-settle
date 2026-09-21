@@ -101,9 +101,6 @@ suite.define(() => {
             await mention.getByRole("button", { name: "Dismiss", exact: true }).textContent()
           )?.trim(),
         ).toBe("Dismiss");
-        expect(await panel.textContent()).toContain(
-          "Dismiss clears notifications in this tab. It does not approve requests or stop work.",
-        );
 
         // A scoped bulk action must not acknowledge another tab's mention.
         await panel.getByRole("tab", { name: /Automations/ }).click();

@@ -300,15 +300,6 @@
   overflow-wrap: anywhere;
 }
 
-.sidebar-issues-panel__dismiss-help {
-  flex: none;
-  margin: 0;
-  padding: 8px 12px;
-  color: var(--muted);
-  font-size: var(--control-ui-text-xs);
-  line-height: 1.4;
-}
-
 footer.sidebar-issues-panel__mentions-note {
   padding: 12px;
   border-block-start: 1px solid var(--border);
