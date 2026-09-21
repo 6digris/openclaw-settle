@@ -81,7 +81,7 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
         return await getBindings().withSession(
           params.sessionId,
           () => authority.assertCurrent(),
-          (binding, bind) => {
+          (binding, bind, assertLeaseCurrent) => {
             if (closing) {
               throw new Error("Agents API harness is closing");
             }
@@ -89,8 +89,14 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
               params,
               binding,
               bind,
-              () => authority.assertCurrent(),
-              assertCurrent,
+              () => {
+                authority.assertCurrent();
+                assertLeaseCurrent();
+              },
+              () => {
+                assertCurrent();
+                assertLeaseCurrent();
+              },
               target,
             );
           },

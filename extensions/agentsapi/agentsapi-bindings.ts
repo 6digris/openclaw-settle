@@ -59,6 +59,7 @@ export function createAgentsApiBindings(runtime: PluginRuntime) {
       run: (
         binding: AgentsApiBinding | undefined,
         bind: (binding: AgentsApiBinding) => Promise<void>,
+        assertLeaseCurrent: () => void,
       ) => Promise<T>,
     ): Promise<T> {
       return await lifecycle.withMutation(() =>
@@ -66,12 +67,14 @@ export function createAgentsApiBindings(runtime: PluginRuntime) {
           localSessionId,
           async () => {
             assertCurrent();
+            const assertLeaseCurrent = lifecycle.captureLeaseAssertion(localSessionId);
             let active = true;
             const bind = async (binding: AgentsApiBinding) => {
               assertCurrent();
-              if (!active || !lifecycle.hasLease(localSessionId)) {
+              if (!active) {
                 throw new Error("Agents API binding operation is no longer active");
               }
+              assertLeaseCurrent();
               const validated = bindingSchema.parse(binding);
               await lifecycle.transact(
                 localSessionId,
@@ -85,7 +88,11 @@ export function createAgentsApiBindings(runtime: PluginRuntime) {
               assertCurrent();
             };
             try {
-              return await run(nativeBinding(readRecord(state.lookup(localSessionId))), bind);
+              return await run(
+                nativeBinding(readRecord(state.lookup(localSessionId))),
+                bind,
+                assertLeaseCurrent,
+              );
             } finally {
               active = false;
             }
