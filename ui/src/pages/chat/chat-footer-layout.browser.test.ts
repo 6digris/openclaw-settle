@@ -189,6 +189,87 @@ describeBrowserLayout.concurrent("chat footer browser layout", () => {
     });
   });
 
+  it("paints message footer focus outlines past virtual row boundaries", async () => {
+    await withBrowserPage(openBrowserPage(600, 300), async (page) => {
+      await page.setContent(
+        `<!doctype html><html><head><style>${readUiCss()}</style></head><body>
+          <div class="chat-thread" style="width: 500px; --accent: rgb(255, 0, 0);">
+            <div class="chat-thread-inner chat-thread-inner--virtual">
+              <div class="chat-virtual-sizer">
+                <div class="chat-virtual-block">
+                  <div class="chat-virtual-row" data-focused-row>
+                    <div class="chat-group assistant chat-group--with-footer">
+                      <div class="chat-group-messages"><div class="chat-bubble">Message</div></div>
+                      <div class="chat-group-footer">
+                        <div class="chat-group-footer__meta">
+                          <button class="msg-meta__summary" type="button">
+                            <span class="chat-group-timestamp">6m ago</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="chat-virtual-row" style="height: 40px;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </body></html>`,
+      );
+      const summary = page.locator(".msg-meta__summary");
+      await summary.focus();
+      await page
+        .locator(".chat-group-footer")
+        .evaluate((node) => node.getAnimations().forEach((animation) => animation.finish()));
+      const bounds = await page.evaluate(() => {
+        const row = document.querySelector<HTMLElement>("[data-focused-row]")!;
+        const control = document.querySelector<HTMLElement>(".msg-meta__summary")!;
+        const rowRect = row.getBoundingClientRect();
+        const controlRect = control.getBoundingClientRect();
+        return {
+          clip: {
+            x: Math.floor(controlRect.left - 8),
+            y: Math.floor(controlRect.top - 8),
+            width: Math.ceil(controlRect.width + 16),
+            height: Math.ceil(controlRect.height + 16),
+          },
+          rowBottom: rowRect.bottom,
+        };
+      });
+      const png = await page.screenshot({ clip: bounds.clip });
+      const paintedBelowRow = await page.evaluate(
+        async ({ pngBase64, clipTop, rowBottom }) => {
+          const image = new Image();
+          image.src = `data:image/png;base64,${pngBase64}`;
+          await image.decode();
+          const canvas = document.createElement("canvas");
+          canvas.width = image.width;
+          canvas.height = image.height;
+          const context = canvas.getContext("2d")!;
+          context.drawImage(image, 0, 0);
+          const pixels = context.getImageData(0, 0, image.width, image.height).data;
+          const firstRowBelow = Math.ceil(rowBottom - clipTop);
+          for (let y = firstRowBelow; y < image.height; y += 1) {
+            for (let x = 0; x < image.width; x += 1) {
+              const offset = (y * image.width + x) * 4;
+              if (pixels[offset]! > 240 && pixels[offset + 1]! < 20 && pixels[offset + 2]! < 20) {
+                return true;
+              }
+            }
+          }
+          return false;
+        },
+        {
+          pngBase64: png.toString("base64"),
+          clipTop: bounds.clip.y,
+          rowBottom: bounds.rowBottom,
+        },
+      );
+
+      expect(paintedBelowRow).toBe(true);
+    });
+  });
+
   it.each([
     [1200, 800, "desktop"],
     [390, 844, "mobile"],
