@@ -476,6 +476,7 @@ export function createStreamRendering({
     // Source ranges distinguish adjacent identical chunks without treating a
     // replayed terminal snapshot as a new occurrence.
     if (options?.reconciledSourceBreak && options.sourceGeneration !== undefined) {
+      // The preserved boundary is a replay, but later ranges in this generation are new.
       acceptedBlockSourceGenerations.set(assistantMessageIndex, options.sourceGeneration);
     }
     const sameSourceGeneration =
