@@ -238,11 +238,22 @@ vi.mock("../infra/update-repair-agent.js", () => ({
 vi.mock("../infra/update-candidate-canary.js", () => ({
   validateUpdateCandidateCanary: candidateValidation,
 }));
-// Runtime generation and publication have real owner/process coverage; CLI
-// orchestration must not rebuild the checkout behind its simulated updater.
+// Runtime retention and publication have real owner/process coverage; CLI
+// orchestration must not copy or rebuild the checkout behind its simulated updater.
 vi.mock("./update-cli/update-command-runtime.js", () => ({
   completeSourceUpdateRuntime: sourceRuntimeCompletion,
 }));
+vi.mock("../infra/update-retained-runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../infra/update-retained-runtime.js")>();
+  const withRetainedUpdateRuntime: typeof actual.withRetainedUpdateRuntime = (
+    moduleUrl,
+    operation,
+  ) =>
+    actual.withRetainedUpdateRuntime(moduleUrl, () =>
+      operation(async ({ assertCurrent }) => assertCurrent()),
+    );
+  return { withRetainedUpdateRuntime };
+});
 vi.mock("../infra/update-candidate-state.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/update-candidate-state.js")>()),
   readUpdateStateSchemaVersions: stateSchemaVersions,
