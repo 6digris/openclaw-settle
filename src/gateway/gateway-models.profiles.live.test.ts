@@ -4508,6 +4508,24 @@ describe("OpenAI Ultra wire capture", () => {
       expect(
         assertOpenAIUltraWireEffort({ expectedModel: model.id, observations, ultraRuns }),
       ).toBe(5);
+      expect(
+        assertOpenAIUltraWireEffort({
+          expectedModel: model.id,
+          observations: [
+            ...observations,
+            {
+              model: model.id,
+              reasoningEffort: "medium",
+              dispatch: {
+                runId: "unrelated-run",
+                callId: "unrelated-call",
+                sessionKey: "agent:dev:unrelated",
+              },
+            },
+          ],
+          ultraRuns,
+        }),
+      ).toBe(5);
       // A lost explicit override on a medium-default fixture is a failure, as are
       // downgrades on descendants/continuations and a heartbeat elevated to max.
       for (const [index, entry] of observations.entries()) {
@@ -4822,12 +4840,22 @@ function assertOpenAIUltraWireEffort(params: {
   observations: OpenAIUltraWireObservation[];
   ultraRuns: ReadonlyMap<string, string>;
 }): number {
-  const matching = params.observations.filter((entry) => entry.model === params.expectedModel);
+  const ultraSessions = new Set(params.ultraRuns.values());
+  // The shared Gateway runs unrelated same-model work concurrently. Keep admitted
+  // runs, their session continuations, heartbeats, and unattributed requests in scope.
+  const matching = params.observations.filter(
+    (entry) =>
+      entry.model === params.expectedModel &&
+      (params.ultraRuns.size === 0 ||
+        entry.dispatch == null ||
+        params.ultraRuns.has(entry.dispatch.runId) ||
+        ultraSessions.has(entry.dispatch.sessionKey ?? "") ||
+        entry.dispatch.isHeartbeat === true),
+  );
   expect(
     matching.length,
     `expected captured OpenAI requests for ${params.expectedModel}; captured=${params.observations.length}`,
   ).toBeGreaterThan(0);
-  const ultraSessions = new Set(params.ultraRuns.values());
   const expectedEffort = ({ dispatch }: OpenAIUltraWireObservation) =>
     dispatch?.isHeartbeat === true &&
     !params.ultraRuns.has(dispatch.runId) &&
