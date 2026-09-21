@@ -2186,7 +2186,7 @@ describe("Docker scheduler publication settlement", () => {
             cleanup: { joined: true },
             lanes: [expect.objectContaining({ name: "gateway-concurrency", status: 0 })],
           });
-          expect(JSON.parse(index).status).toBe(status);
+          expect(JSON.parse(index)).not.toHaveProperty("status");
           if (phase === "committed") {
             expect(summary).toBe(before);
             expect(index).toBe(indexBefore);
@@ -2322,6 +2322,9 @@ describe("Docker scheduler publication settlement", () => {
               : [expect.objectContaining({ name: "gateway-concurrency", status: 0 })],
           );
           if (mode === "staging close" || mode === "rename") {
+            expect(
+              JSON.parse(readFileSync(path.join(fixture.root, "logs", "failures.json"), "utf8")),
+            ).not.toHaveProperty("status");
             for (const [script, args, expected] of [
               ["docker-e2e.mts", ["summary", summaryPath, "Docker scheduler"], "Status: `failed`"],
               ["docker-e2e-timings.mts", [summaryPath], "Status: failed"],

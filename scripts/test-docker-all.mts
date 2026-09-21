@@ -816,7 +816,6 @@ function failureIndexPayload(summary: RunSummary, env: NodeJS.ProcessEnv) {
     packageArtifactName: env.OPENCLAW_DOCKER_E2E_PACKAGE_ARTIFACT_NAME || undefined,
     ref,
     runUrl: summary.github?.runUrl,
-    status: summary.status,
     version: 1,
     workflow: env.OPENCLAW_DOCKER_E2E_WORKFLOW || DEFAULT_GITHUB_WORKFLOW,
   };
