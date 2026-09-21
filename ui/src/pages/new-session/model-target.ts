@@ -16,6 +16,7 @@ import {
 } from "../../lib/chat/model-ref.ts";
 import {
   chatModelUnavailableMessage,
+  isChatFastModeProviderSupported,
   resolveChatModelUnavailableReason,
 } from "../../lib/chat/model-select-state.ts";
 import {
@@ -307,11 +308,18 @@ export function reconcileDraftModelSelection(params: {
   model: string;
   agentRuntime?: string;
   thinkingLevel: string;
+  fastMode?: FastMode;
   agent?: GatewayAgentRow;
   defaults?: SessionsListResult["defaults"];
   catalog: ModelCatalogEntry[];
   modelSelectionPolicy?: ModelCatalogResult["modelSelectionPolicy"];
-}): { model: string; agentRuntime?: string; thinkingLevel: string; repaired: boolean } {
+}): {
+  model: string;
+  agentRuntime?: string;
+  thinkingLevel: string;
+  fastMode?: FastMode;
+  repaired: boolean;
+} {
   const requestedModel = params.model.trim();
   const selectedTarget = requestedModel
     ? resolveDraftModelTarget(requestedModel, undefined, params.catalog, params.agentRuntime)
@@ -327,11 +335,6 @@ export function reconcileDraftModelSelection(params: {
   const selected = selectedTarget?.entry
     ? buildQualifiedChatModelValue(selectedTarget.entry.id, selectedTarget.entry.provider)
     : "";
-  const runtimeSelection =
-    selected && params.agentRuntime ? { agentRuntime: params.agentRuntime } : {};
-  if (!params.thinkingLevel) {
-    return { model: selected, ...runtimeSelection, thinkingLevel: "", repaired: false };
-  }
   const policy = params.modelSelectionPolicy;
   const agent = policy?.restricted ? undefined : params.agent;
   const defaults = policy?.restricted ? undefined : params.defaults;
@@ -343,7 +346,21 @@ export function reconcileDraftModelSelection(params: {
         agentDefaultModel ? undefined : defaults?.modelProvider,
         params.catalog,
       );
+  const provider = (selectedTarget ?? defaultTarget)?.provider;
   const targetEntry = selectedTarget?.entry ?? defaultTarget?.entry;
+  const fastMode =
+    (targetEntry?.supportsFastMode ?? (!provider || isChatFastModeProviderSupported(provider)))
+      ? params.fastMode
+      : undefined;
+  const selection = {
+    model: selected,
+    ...(selected && params.agentRuntime ? { agentRuntime: params.agentRuntime } : {}),
+    fastMode,
+  };
+  const repaired = fastMode !== params.fastMode;
+  if (!params.thinkingLevel) {
+    return { ...selection, thinkingLevel: "", repaired };
+  }
   const thinkingProfile = resolveThinkingProfileForSession(
     resolveDraftThinkingTarget(selectedTarget ?? defaultTarget, selected ? undefined : agent, {
       agentRuntime: params.agentRuntime,
@@ -357,13 +374,12 @@ export function reconcileDraftModelSelection(params: {
     (level) => normalizeThinkingOptionValue(level.id) === normalizedThinking,
   );
   if (targetEntry?.reasoning === false || (authoritativeLevels !== undefined && !supported)) {
-    return { model: selected, ...runtimeSelection, thinkingLevel: "", repaired: true };
+    return { ...selection, thinkingLevel: "", repaired: true };
   }
   return {
-    model: selected,
-    ...runtimeSelection,
+    ...selection,
     thinkingLevel: params.thinkingLevel,
-    repaired: false,
+    repaired,
   };
 }
 
