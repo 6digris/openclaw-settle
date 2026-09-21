@@ -37,8 +37,13 @@ function setup(
     requestUpdate: vi.fn(),
     updateComplete: Promise.resolve(true),
   } satisfies ReactiveControllerHost;
+  const initial = responses[0];
+  const categories = initial && !(initial instanceof Promise) ? (initial.categories ?? []) : [];
   const client = new GatewayBrowserClient({ url: "ws://fixture.invalid" });
   const request = vi.spyOn(client, "request").mockImplementation(async (method, params) => {
+    if (method === "plugins.catalog.categories") {
+      return { categories };
+    }
     if (responder) {
       return (await responder(method, params)) as never;
     }
@@ -64,7 +69,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("populates the grouped home page from one overview response", async () => {
+it("populates home shelves with one overview alongside the category read", async () => {
   const featured = entry(1);
   featured.catalog.featured = true;
   featured.catalog.featuredRank = 0;
@@ -83,7 +88,7 @@ it("populates the grouped home page from one overview response", async () => {
   expect(controller.categories).toEqual(categories);
   expect(controller.featured.map((item) => item.id)).toEqual([featured.id]);
   expect(controller.trending.map((item) => item.id)).toEqual([trending.id]);
-  expect(request).toHaveBeenCalledOnce();
+  expect(request).toHaveBeenCalledTimes(2);
   expect(request).toHaveBeenCalledWith(
     "plugins.catalog.browse",
     { intent: "all", pageSize: 100 },
@@ -134,7 +139,7 @@ it("preserves home navigation when a category completes during the search deboun
 
   category.resolve({ items: categoryItems });
   await vi.advanceTimersByTimeAsync(0);
-  expect(request).toHaveBeenCalledTimes(2);
+  expect(request).toHaveBeenCalledTimes(3);
   expect(request.mock.lastCall?.[1]).toMatchObject({ category: "channels" });
   expect(controller.result?.items).toEqual(categoryItems);
   expect.soft(controller.categories).toEqual(categories);
@@ -230,7 +235,7 @@ it("loads one bounded page initially and continues only after explicit expansion
 
   await controller.refresh();
   expect(controller.result?.items).toHaveLength(100);
-  expect(request).toHaveBeenCalledTimes(1);
+  expect(request).toHaveBeenCalledTimes(2);
   expect(request).toHaveBeenCalledWith(
     "plugins.catalog.browse",
     { intent: "all", category: "tools", pageSize: 100 },
@@ -241,7 +246,7 @@ it("loads one bounded page initially and continues only after explicit expansion
 
   expect(controller.result?.items).toHaveLength(101);
   expect(controller.result?.items[0]?.id).toBe(promotedMatch.id);
-  expect(request).toHaveBeenCalledTimes(2);
+  expect(request).toHaveBeenCalledTimes(3);
   expect(request).toHaveBeenLastCalledWith(
     "plugins.catalog.browse",
     { intent: "all", category: "tools", cursor: "catalog-page-2", pageSize: 100 },

@@ -68,13 +68,16 @@ describe("PluginsPage", () => {
   );
 
   it.each(["missing", "older generation"])(
-    "waits for the initial installed inventory before browsing discovery (%s)",
+    "loads categories immediately but waits for inventory before browsing cards (%s)",
     async (routeInventory) => {
       const current = { ...createResult(), generation: 7 };
       const inventory = deferred<typeof current>();
       const { client, request } = createClient(async (method) => {
         if (method === "plugins.list") {
           return inventory.promise;
+        }
+        if (method === "plugins.catalog.categories") {
+          return { categories: [] };
         }
         if (method === "plugins.catalog.browse") {
           return { items: [] };
@@ -102,13 +105,17 @@ describe("PluginsPage", () => {
         ),
       );
       try {
-        expect(request.mock.calls.map(([method]) => method)).toEqual(["plugins.list"]);
+        expect(request.mock.calls.map(([method]) => method)).toEqual([
+          "plugins.catalog.categories",
+          "plugins.list",
+        ]);
       } finally {
         inventory.resolve(current);
       }
       await waitForFast(() => expect(page.result).toBe(current));
       await page.updateComplete;
       expect(request.mock.calls.map(([method]) => method)).toEqual([
+        "plugins.catalog.categories",
         "plugins.list",
         "plugins.catalog.browse",
       ]);
@@ -147,7 +154,10 @@ describe("PluginsPage", () => {
       expect(page.querySelector('[role="alert"]')?.textContent).toContain("catalog unavailable"),
     );
     expect(page.textContent?.match(/catalog unavailable/gu)).toHaveLength(1);
-    expect(request.mock.calls[0]?.slice(0, 2)).toEqual(["plugins.list", {}]);
+    expect(request.mock.calls.map((call) => call.slice(0, 2))).toEqual([
+      ["plugins.catalog.categories", {}],
+      ["plugins.list", {}],
+    ]);
   });
 
   it("refreshes the authoritative catalog after a same-client reconnect", async () => {

@@ -68,6 +68,10 @@ export class PluginDiscoveryController {
   error: string | null = null;
   remoteError: string | null = null;
   categories: PluginDiscoveryCategory[] = [];
+  categoriesError: string | null = null;
+  private categoriesLoaded = false;
+  private categoriesClient: GatewayBrowserClient | null = null;
+  private readonly categoriesTask: Task;
   featured: PluginDiscoveryEntry[] = [];
   trending: PluginDiscoveryEntry[] = [];
   loadMoreError: string | null = null;
@@ -84,6 +88,32 @@ export class PluginDiscoveryController {
     private readonly host: ReactiveControllerHost,
     private readonly gateway: PluginDiscoveryGateway,
   ) {
+    this.categoriesTask = new Task(host, {
+      autoRun: false,
+      args: () => [NO_CATALOG_CLIENT] as const,
+      task: ([client], { signal }) =>
+        client
+          ? client.request<{ categories: PluginDiscoveryCategory[] }>(
+              "plugins.catalog.categories",
+              {},
+              { signal },
+            )
+          : initialState,
+      onComplete: (result) => {
+        // The overview may win on a warm registry. Its categories are the same
+        // canonical taxonomy; a slower dedicated read must not replace them.
+        if (!this.categoriesLoaded) {
+          this.categories = result.categories;
+          this.categoriesLoaded = true;
+          this.categoriesError = null;
+        }
+      },
+      onError: (error) => {
+        if (!this.categoriesLoaded) {
+          this.categoriesError = formatUiError(error);
+        }
+      },
+    });
     this.browseTask = new Task(host, {
       autoRun: false,
       args: () =>
@@ -105,7 +135,13 @@ export class PluginDiscoveryController {
         };
         this.remoteError = page.remoteError ?? null;
         if (page.overview) {
-          this.categories = page.categories ?? [];
+          // Older registries can still supply navigation through the overview
+          // if their dedicated categories endpoint is unavailable.
+          if (page.categories) {
+            this.categories = page.categories;
+            this.categoriesLoaded = true;
+            this.categoriesError = null;
+          }
           this.featured = rankedOverviewShelf(page.items, "featured", "featuredRank").slice(
             0,
             CATALOG_SECTION_SIZE,
@@ -154,6 +190,31 @@ export class PluginDiscoveryController {
         this.loadMoreError = formatUiError(error);
       },
     });
+  }
+
+  get categoriesLoading(): boolean {
+    return (
+      this.gateway.isConnected() &&
+      !this.categoriesLoaded &&
+      this.categoriesClient !== null &&
+      this.categoriesTask.status === TaskStatus.PENDING
+    );
+  }
+
+  async loadCategories(retry = false): Promise<void> {
+    const client = this.gateway.getClient();
+    if (
+      !client ||
+      !this.gateway.isConnected() ||
+      this.categoriesLoaded ||
+      (this.categoriesError && !retry) ||
+      (this.categoriesClient === client && this.categoriesTask.status === TaskStatus.PENDING)
+    ) {
+      return;
+    }
+    this.categoriesClient = client;
+    this.categoriesError = null;
+    await this.categoriesTask.run([client]);
   }
 
   get loading(): boolean {
@@ -223,6 +284,9 @@ export class PluginDiscoveryController {
     this.committedQuery = this.query.trim();
     void this.browseTask.run([null, this.intent, this.category, this.committedQuery, false]);
     this.result = null;
+    this.categories = [];
+    this.categoriesLoaded = false;
+    this.categoriesError = null;
     this.error = null;
     this.remoteError = null;
     this.featured = [];
@@ -231,6 +295,8 @@ export class PluginDiscoveryController {
   }
 
   disconnect(): void {
+    this.categoriesClient = null;
+    void this.categoriesTask.run([null]);
     if (this.searchTimer) {
       clearTimeout(this.searchTimer);
       this.searchTimer = null;
@@ -243,6 +309,7 @@ export class PluginDiscoveryController {
     if (!client || !this.gateway.isConnected()) {
       return;
     }
+    void this.loadCategories();
     this.error = null;
     this.remoteError = null;
     this.loadMoreError = null;

@@ -126,6 +126,7 @@ const enPluginManagement = {
     intentOfficial: "Official",
     intentBundled: "Bundled",
     categoriesLabel: "Plugin categories",
+    loadingCategories: "Loading plugin categories…",
     categoriesTitle: "Categories",
     allCategories: "All categories",
     catalogPaginationLabel: "Plugin catalog pages",

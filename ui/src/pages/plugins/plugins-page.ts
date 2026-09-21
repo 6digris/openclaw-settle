@@ -402,6 +402,9 @@ class PluginsPage extends OpenClawLightDomElement {
   }
 
   private ensureInitialData() {
+    if (this.surface === "discovery" && !this.activeRoutePluginId) {
+      void this.discovery.loadCategories();
+    }
     // The route owns initial loading; a warm page module can render before its data arrives.
     if (!this.routeDataConsumed || !this.gateway.connected || !this.gateway.client) {
       return;

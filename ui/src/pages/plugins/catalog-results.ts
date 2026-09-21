@@ -28,6 +28,9 @@ export type PluginCatalogResultsProps = {
   error: string | null;
   remoteError: string | null;
   categories: readonly PluginDiscoveryCategory[];
+  categoriesLoading: boolean;
+  categoriesError: string | null;
+  onRetryCategories: () => void;
   featured: readonly PluginDiscoveryEntry[];
   featuredLoading: boolean;
   trending: readonly PluginDiscoveryEntry[];
@@ -320,43 +323,50 @@ function renderSection(params: {
 function renderCategoryChips(props: PluginCatalogResultsProps): TemplateResult {
   const activeAll = props.intent === "all" && props.category === null;
   return html`<div class="plugin-catalog-chips" aria-label=${t("pluginsPage.categoriesLabel")}>
-    <button
-      type="button"
-      class="plugin-catalog-chip ${activeAll ? "is-active" : ""}"
-      aria-pressed=${activeAll}
-      @click=${() => props.onIntentChange("all")}
-    >
-      <span aria-hidden="true">${icons.layoutGrid}</span>${t("pluginsPage.intentAll")}
-    </button>
-    <button
-      type="button"
-      class="plugin-catalog-chip ${props.intent === "featured" ? "is-active" : ""}"
-      aria-pressed=${props.intent === "featured"}
-      @click=${() => props.onIntentChange("featured")}
-    >
-      <span aria-hidden="true">${icons.star}</span>${t("pluginsPage.featuredTitle")}
-    </button>
-    <button
-      type="button"
-      class="plugin-catalog-chip ${props.intent === "trending" ? "is-active" : ""}"
-      aria-pressed=${props.intent === "trending"}
-      @click=${() => props.onIntentChange("trending")}
-    >
-      <span aria-hidden="true">${icons.barChart}</span>${t("pluginsPage.intentTrending")}
-    </button>
-    ${repeat(
-      props.categories.toSorted((left, right) => left.order - right.order),
-      (item) => item.slug,
-      (item) => html`<button
+      <button
         type="button"
-        class="plugin-catalog-chip ${props.category === item.slug ? "is-active" : ""}"
-        aria-pressed=${props.category === item.slug}
-        @click=${() => props.onCategoryChange(item.slug)}
+        class="plugin-catalog-chip ${activeAll ? "is-active" : ""}"
+        aria-pressed=${activeAll}
+        @click=${() => props.onIntentChange("all")}
       >
-        <span aria-hidden="true">${categoryIcon(item.icon)}</span>${item.label}
-      </button>`,
-    )}
-  </div>`;
+        <span aria-hidden="true">${icons.layoutGrid}</span>${t("pluginsPage.intentAll")}
+      </button>
+      <button
+        type="button"
+        class="plugin-catalog-chip ${props.intent === "featured" ? "is-active" : ""}"
+        aria-pressed=${props.intent === "featured"}
+        @click=${() => props.onIntentChange("featured")}
+      >
+        <span aria-hidden="true">${icons.star}</span>${t("pluginsPage.featuredTitle")}
+      </button>
+      <button
+        type="button"
+        class="plugin-catalog-chip ${props.intent === "trending" ? "is-active" : ""}"
+        aria-pressed=${props.intent === "trending"}
+        @click=${() => props.onIntentChange("trending")}
+      >
+        <span aria-hidden="true">${icons.barChart}</span>${t("pluginsPage.intentTrending")}
+      </button>
+      ${
+        props.categoriesLoading
+          ? html`<span class="sr-only" role="status">${t("pluginsPage.loadingCategories")}</span>
+              ${Array.from({ length: 24 }, () => html`<span class="plugin-catalog-chip-skeleton skeleton" aria-hidden="true"></span>`)}`
+          : nothing
+      }
+      ${repeat(
+        props.categories.toSorted((left, right) => left.order - right.order),
+        (item) => item.slug,
+        (item) => html`<button
+          type="button"
+          class="plugin-catalog-chip ${props.category === item.slug ? "is-active" : ""}"
+          aria-pressed=${props.category === item.slug}
+          @click=${() => props.onCategoryChange(item.slug)}
+        >
+          <span aria-hidden="true">${categoryIcon(item.icon)}</span>${item.label}
+        </button>`,
+      )}
+    </div>
+    ${props.categoriesError ? renderError(props.categoriesError, props.onRetryCategories) : nothing}`;
 }
 
 function renderRawResults(props: PluginCatalogResultsProps): TemplateResult {
