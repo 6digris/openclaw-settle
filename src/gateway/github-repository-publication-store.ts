@@ -182,7 +182,13 @@ export function readRepositoryGitHubPublicationBranch(input: {
 export function readRepositoryGitHubPublication(
   requestId: string,
 ): RepositoryGitHubPublicationRow | undefined {
-  const db = openOpenClawStateDatabase().db;
+  return readRepositoryGitHubPublicationInDatabase(openOpenClawStateDatabase().db, requestId);
+}
+
+export function readRepositoryGitHubPublicationInDatabase(
+  db: Parameters<typeof getNodeSqliteKysely>[0],
+  requestId: string,
+): RepositoryGitHubPublicationRow | undefined {
   if (!tableExists(db, table)) {
     return undefined;
   }
@@ -203,10 +209,21 @@ export function requireRepositoryGitHubPublication(
   return row;
 }
 
-export function readKnownRepositoryGitHubPublicationPullRequestUrls(
-  row: RepositoryGitHubPublicationRow,
+export type RepositoryGitHubPublicationReceiptTarget = Pick<
+  RepositoryGitHubPublicationRow,
+  | "workspace_id"
+  | "push_repository"
+  | "repository"
+  | "branch"
+  | "base_branch"
+  | "identity_account_id"
+  | "pull_request_url"
+>;
+
+export function readKnownRepositoryGitHubPublicationPullRequestUrlsInDatabase(
+  db: Parameters<typeof getNodeSqliteKysely>[0],
+  row: RepositoryGitHubPublicationReceiptTarget,
 ): string[] {
-  const db = openOpenClawStateDatabase().db;
   const known = new Set(row.pull_request_url ? [row.pull_request_url] : []);
   for (const receipt of iterateSqliteQuerySync(
     db,

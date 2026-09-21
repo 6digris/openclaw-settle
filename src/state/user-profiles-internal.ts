@@ -23,6 +23,8 @@ import {
 import type {
   ProfileDisplayRow,
   UserProfileAvatarMime,
+  UserProfileEmailBinding,
+  UserProfileEmailBindingIndex,
   UserProfilesDatabase,
 } from "./user-profiles.types.js";
 
@@ -62,6 +64,37 @@ type UserProfileAvatar = {
 
 export function userProfilesDb(db: DatabaseSync) {
   return getNodeSqliteKysely<UserProfilesDatabase>(db);
+}
+
+/** Keep each exact binding and its profile's email projection in the same committed update. */
+export function applyUserProfileEmailBinding(
+  bindings: UserProfileEmailBindingIndex,
+  email: string,
+  binding: UserProfileEmailBinding | null,
+): string | undefined {
+  const previous = bindings.byEmail.get(email);
+  if (previous) {
+    if (previous.bindingId) {
+      bindings.byId.delete(previous.bindingId);
+    }
+    const emails = bindings.emailsByProfile.get(previous.profileId);
+    emails?.delete(email);
+    if (emails?.size === 0) {
+      bindings.emailsByProfile.delete(previous.profileId);
+    }
+  }
+  if (binding) {
+    bindings.byEmail.set(email, binding);
+    if (binding.bindingId) {
+      bindings.byId.set(binding.bindingId, binding.profileId);
+    }
+    const emails = bindings.emailsByProfile.get(binding.profileId) ?? new Set<string>();
+    emails.add(email);
+    bindings.emailsByProfile.set(binding.profileId, emails);
+  } else {
+    bindings.byEmail.delete(email);
+  }
+  return previous?.profileId;
 }
 
 /** A binding survives same-owner refreshes; an actual transfer starts a new lifetime. */

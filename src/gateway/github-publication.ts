@@ -8,7 +8,7 @@ import {
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
-import { readGitHubPublicationSessionLifecycle } from "../state/github-publication-session-lifecycles.js";
+import { readGitHubPublicationSessionLifecycleInWorker } from "../state/github-publication-session-lifecycles.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -31,7 +31,9 @@ import {
   reconcileGitHubPublication,
 } from "./github-publication-executor.js";
 import { GitHubPublicationRequesterUnavailableError } from "./github-publication-failure.js";
+import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
 import { captureGitHubPublicationWorkspaceSnapshot } from "./github-publication-git-transport.js";
+import { readGitHubPublicationRequestInWorker } from "./github-publication-recovery.js";
 import { restoreGitHubPublicationRequester } from "./github-publication-requester.js";
 import {
   claimGitHubPublicationExecution as claimExecution,
@@ -330,11 +332,28 @@ export function createGitHubPublicationCoordinator(params: {
               initial: claimed,
               validateCustody,
               prepareAuthority: async () => {
+                if (!validateCustody()) {
+                  throw new GitHubPublicationAuthorityLostError(
+                    "GitHub publication execution custody changed before requester preparation.",
+                  );
+                }
+                const lifecycle = await readGitHubPublicationSessionLifecycleInWorker({
+                  publicationKind: "shared",
+                  requestId: claimed.request_id,
+                }).catch((cause: unknown) => {
+                  throw new GitHubPublicationRecoveryPendingError(
+                    "GitHub publication requester metadata is unavailable; retry recovery.",
+                    { cause },
+                  );
+                });
+                if (!validateCustody()) {
+                  throw new GitHubPublicationAuthorityLostError(
+                    "GitHub publication execution custody changed during requester preparation.",
+                  );
+                }
+                assertInvocationCurrent?.();
                 requester = await restoreGitHubPublicationRequester(
-                  readGitHubPublicationSessionLifecycle({
-                    publicationKind: "shared",
-                    requestId: claimed.request_id,
-                  })?.requester_authority_json,
+                  lifecycle?.requester_authority_json,
                   { sessionKey: claimed.session_key, agentId: claimed.agent_id },
                   params.getCommittedRuntimeConfig,
                 );
@@ -375,7 +394,19 @@ export function createGitHubPublicationCoordinator(params: {
             if (!(error instanceof GitHubPublicationRequesterUnavailableError)) {
               throw error;
             }
-            const current = readById(claimed.request_id);
+            if (!validateCustody()) {
+              throw new GitHubPublicationAuthorityLostError(
+                "GitHub publication execution custody changed before reconciliation.",
+              );
+            }
+            const current = await readGitHubPublicationRequestInWorker(claimed.request_id).catch(
+              (cause: unknown) => {
+                throw new GitHubPublicationRecoveryPendingError(
+                  "GitHub publication receipt is unavailable; retry recovery.",
+                  { cause },
+                );
+              },
+            );
             if (!current || !validateCustody()) {
               throw new GitHubPublicationAuthorityLostError(
                 "GitHub publication execution custody changed during reconciliation.",

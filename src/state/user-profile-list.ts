@@ -35,6 +35,7 @@ import {
   readUserProfileVersion,
 } from "./user-profile-events.js";
 import {
+  applyUserProfileEmailBinding,
   selectResolvedUserProfile,
   selectResolvedUserProfileMetadataById,
   projectUserProfileDisplay,
@@ -43,7 +44,12 @@ import {
   userProfilesDb,
 } from "./user-profiles-internal.js";
 import { ensureUserProfilesSchema, UserProfileNotFoundError } from "./user-profiles-schema.js";
-import type { ProfileDisplayRow, UserProfileEmailBinding } from "./user-profiles.types.js";
+import type {
+  PreparedUserProfileIdentity,
+  ProfileDisplayRow,
+  UserProfileEmailBinding,
+  UserProfileEmailBindingIndex,
+} from "./user-profiles.types.js";
 
 /** Disclosure scopes need current aliases, never the resident display catalog. */
 export function readCurrentUserProfileAliases(
@@ -175,31 +181,7 @@ const profilePublications = new Set<ProfilePublication>();
 let stopCatalogEvents: (() => void) | undefined;
 let stopBindingEvents: (() => void) | undefined;
 let profileCatalogHandles = new WeakMap<DatabaseSync, Map<string, ProfileDisplayRow>>();
-type ProfileBindings = {
-  byEmail: Map<string, UserProfileEmailBinding>;
-  byId: Map<string, string>;
-};
-const profileBindings = new WeakMap<Map<string, ProfileDisplayRow>, ProfileBindings>();
-
-function applyEmailBinding(
-  bindings: ProfileBindings,
-  email: string,
-  binding: UserProfileEmailBinding | null,
-): string | undefined {
-  const previous = bindings.byEmail.get(email);
-  if (previous?.bindingId) {
-    bindings.byId.delete(previous.bindingId);
-  }
-  if (binding) {
-    bindings.byEmail.set(email, binding);
-    if (binding.bindingId) {
-      bindings.byId.set(binding.bindingId, binding.profileId);
-    }
-  } else {
-    bindings.byEmail.delete(email);
-  }
-  return previous?.profileId;
-}
+const profileBindings = new WeakMap<Map<string, ProfileDisplayRow>, UserProfileEmailBindingIndex>();
 
 function observeEmailBindings(): void {
   stopBindingEvents ??= onUserProfileEmailBindingChanged(({ db, email, binding }) => {
@@ -215,7 +197,7 @@ function observeEmailBindings(): void {
     if (!rows || !bindings) {
       return;
     }
-    const previous = applyEmailBinding(bindings, email, binding);
+    const previous = applyUserProfileEmailBinding(bindings, email, binding);
     // Both owners' witnesses change even when GitHub enrichment only publishes its target.
     for (const id of new Set([previous, binding?.profileId])) {
       const row = id && rows.get(id);
@@ -342,11 +324,11 @@ export function retainUserProfilePublication(
           ) {
             for (const [email, binding] of bindings.byEmail) {
               if (binding.profileId === profileId) {
-                applyEmailBinding(bindings, email, null);
+                applyUserProfileEmailBinding(bindings, email, null);
               }
             }
             for (const binding of emailBindings) {
-              applyEmailBinding(bindings, binding.email, binding);
+              applyUserProfileEmailBinding(bindings, binding.email, binding);
             }
           }
           if (isDeepStrictEqual(witness.row, observed)) {
@@ -443,11 +425,7 @@ export function retainUserProfileCatalog(options: OpenClawStateDatabaseOptions =
 export async function prepareUserProfileIdentity(
   profileId: string,
   options: OpenClawStateDatabaseOptions = {},
-): Promise<{
-  readonly emailBindingIds: readonly string[];
-  assertCurrent(this: void, requiredEmailBindingIds?: readonly string[]): void;
-  release(this: void): void;
-}> {
+): Promise<PreparedUserProfileIdentity> {
   const context = captureOpenClawStateWorkerContext(options);
   const pathname = context.admission.databasePath;
   let refreshObserver = false;
@@ -512,9 +490,13 @@ export async function prepareUserProfileIdentity(
         retainProfilePublicationCatalog(publication, catalog, true);
       }
     }
-    const bindings: ProfileBindings = { byEmail: new Map(), byId: new Map() };
+    const bindings: UserProfileEmailBindingIndex = {
+      byEmail: new Map(),
+      byId: new Map(),
+      emailsByProfile: new Map(),
+    };
     for (const binding of reply?.emailBindings ?? []) {
-      applyEmailBinding(bindings, binding.email, binding);
+      applyUserProfileEmailBinding(bindings, binding.email, binding);
     }
     profileBindings.set(catalog.rows, bindings);
     // Registration now sees prepared rows and never needs a cold host read.
@@ -560,6 +542,18 @@ export async function prepareUserProfileIdentity(
       return ids;
     },
     assertCurrent,
+    readCurrentProfile(this: void) {
+      assertCurrent();
+      return {
+        profileId,
+        emails: [...(bindings.emailsByProfile.get(profileId) ?? [])].toSorted(),
+        assignedRole: rows.get(profileId)?.role || null,
+      };
+    },
+    readCurrentAliases(this: void) {
+      assertCurrent();
+      return readUserProfileAliases(profileId, { ...options, path: pathname });
+    },
     release(this: void) {
       if (active) {
         active = false;

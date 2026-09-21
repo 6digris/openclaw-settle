@@ -15,6 +15,14 @@ import type {
 } from "../cron/store/run-recovery-read.types.js";
 import type { FleetCellRecord } from "../fleet/registry.types.js";
 import type {
+  GitHubPublicationReceiptTarget,
+  GitHubPublicationRow,
+} from "../gateway/github-publication-store.js";
+import type {
+  RepositoryGitHubPublicationReceiptTarget,
+  RepositoryGitHubPublicationRow,
+} from "../gateway/github-repository-publication-store.js";
+import type {
   ListTerminalOperatorApprovalsInput,
   ListTerminalOperatorApprovalsResult,
 } from "../gateway/operator-approval-store.types.js";
@@ -44,6 +52,7 @@ import type {
 } from "../plugin-state/plugin-blob-worker-contract.js";
 import type { AsyncWorkScope } from "../shared/async-work-scope.js";
 import type { SkillLibraryReadOnlyOperations } from "../skills/library/selection-read.kernel.js";
+import type { readGitHubPublicationSessionLifecycle } from "./github-publication-session-lifecycles.js";
 import type { OnboardingRecommendationsRecord } from "./onboarding-recommendations.contract.js";
 import type { OpenClawAgentDatabaseRegistryReadResult } from "./openclaw-agent-db-contract.js";
 import type { ConfigMachineState } from "./openclaw-state-db.generated.js";
@@ -85,6 +94,18 @@ export type OpenClawStateReadCommand =
   | { type: "userProfiles.reconcile"; profileId: string }
   | { type: "userProfiles.catalog" }
   | { type: "userProfiles.email.resolve"; email: string }
+  | {
+      type: "githubPublication.lifecycle";
+      publicationKind: "shared" | "personal";
+      requestId: string;
+    }
+  | { type: "githubPublication.request"; requestId: string }
+  | { type: "githubRepository.request"; requestId: string }
+  | { type: "githubPublication.knownPullRequestUrls"; input: GitHubPublicationReceiptTarget }
+  | {
+      type: "githubRepository.knownPullRequestUrls";
+      input: RepositoryGitHubPublicationReceiptTarget;
+    }
   | { type: "audit.run.inspect"; input: ExecutionIdentityInspectionQuery }
   | { type: "updateRuns.get"; runId: string }
   | { type: "updateRuns.list"; input: UpdateRunListInput }
@@ -140,6 +161,36 @@ export type OpenClawStateReadReply = (
       type: "userProfiles.email.resolve";
       sourceAdmitted: true;
       profileId: string | undefined;
+    }
+  | {
+      ok: true;
+      type: "githubPublication.lifecycle";
+      sourceAdmitted: true;
+      lifecycle: ReturnType<typeof readGitHubPublicationSessionLifecycle>;
+    }
+  | {
+      ok: true;
+      type: "githubPublication.request";
+      sourceAdmitted: true;
+      row: GitHubPublicationRow | undefined;
+    }
+  | {
+      ok: true;
+      type: "githubRepository.request";
+      sourceAdmitted: true;
+      row: RepositoryGitHubPublicationRow | undefined;
+    }
+  | {
+      ok: true;
+      type: "githubPublication.knownPullRequestUrls";
+      sourceAdmitted: true;
+      urls: string[];
+    }
+  | {
+      ok: true;
+      type: "githubRepository.knownPullRequestUrls";
+      sourceAdmitted: true;
+      urls: string[];
     }
   | {
       ok: true;

@@ -12,6 +12,14 @@ import { ExecutionDecisionCursorError } from "../audit/execution-decision-receip
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { observeCronRunRecoveryInDatabase } from "../cron/store/run-recovery.read.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
+import {
+  readGitHubPublicationRequest,
+  readKnownGitHubPublicationPullRequestUrlsInDatabase,
+} from "../gateway/github-publication-store.js";
+import {
+  readKnownRepositoryGitHubPublicationPullRequestUrlsInDatabase,
+  readRepositoryGitHubPublicationInDatabase,
+} from "../gateway/github-repository-publication-store.js";
 import { listTerminalOperatorApprovalsInDatabase } from "../gateway/operator-approval-store.kernel.js";
 import { readWorkerSessionPlacementProjectionInDatabase } from "../gateway/worker-environments/placement-read-projection.js";
 import { readWorkerPlacementChangeSnapshotInDatabase } from "../gateway/worker-environments/placement-row-codec.js";
@@ -34,6 +42,7 @@ import {
   selectSkillLibraryRevisionManifestsBatch,
 } from "../skills/library/selection-read.kernel.js";
 import { readConfigMachineStateRowInDatabase } from "./config-machine-state.js";
+import { readGitHubPublicationSessionLifecycle } from "./github-publication-session-lifecycles.js";
 import { readOnboardingRecommendationsInDatabase } from "./onboarding-recommendations.kernel.js";
 import { readRegisteredAgentDatabaseRows } from "./openclaw-agent-db-registry.read.js";
 import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
@@ -120,6 +129,16 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
         typeof input.command.profileId === "string") ||
       (input.command.type === "userProfiles.email.resolve" &&
         typeof input.command.email === "string") ||
+      (input.command.type === "githubPublication.lifecycle" &&
+        (input.command.publicationKind === "shared" ||
+          input.command.publicationKind === "personal") &&
+        typeof input.command.requestId === "string") ||
+      ((input.command.type === "githubPublication.request" ||
+        input.command.type === "githubRepository.request") &&
+        typeof input.command.requestId === "string") ||
+      ((input.command.type === "githubPublication.knownPullRequestUrls" ||
+        input.command.type === "githubRepository.knownPullRequestUrls") &&
+        isRecord(input.command.input)) ||
       (input.command.type === "audit.run.inspect" &&
         isRecord(input.command.input) &&
         typeof input.command.input.now === "number" &&
@@ -375,6 +394,49 @@ serveOwnedWorkerTasks(
                     type: command.type,
                     sourceAdmitted,
                     attached: hasWorkerEnvironmentSessionAttachment(db, command.environmentId),
+                  };
+                }
+                if (command.type === "githubPublication.lifecycle") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    lifecycle: readGitHubPublicationSessionLifecycle(command, db),
+                  };
+                }
+                if (command.type === "githubPublication.request") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    row: readGitHubPublicationRequest(db, { requestId: command.requestId }),
+                  };
+                }
+                if (command.type === "githubRepository.request") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    row: readRepositoryGitHubPublicationInDatabase(db, command.requestId),
+                  };
+                }
+                if (command.type === "githubPublication.knownPullRequestUrls") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    urls: readKnownGitHubPublicationPullRequestUrlsInDatabase(db, command.input),
+                  };
+                }
+                if (command.type === "githubRepository.knownPullRequestUrls") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    urls: readKnownRepositoryGitHubPublicationPullRequestUrlsInDatabase(
+                      db,
+                      command.input,
+                    ),
                   };
                 }
                 if (command.type === "userProfiles.reconcile") {

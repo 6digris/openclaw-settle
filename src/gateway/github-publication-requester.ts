@@ -6,6 +6,7 @@ import {
   type GitHubPublicationRequesterSnapshot,
 } from "../state/github-publication-requester.js";
 import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
+import type { UserProfileAccessFacts } from "../state/user-profiles.types.js";
 import { GitHubPublicationRequesterUnavailableError } from "./github-publication-failure.js";
 import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
 import {
@@ -13,16 +14,49 @@ import {
   resumeGatewayOperatorAccessGrant,
 } from "./operator-access-policy.js";
 import {
-  authorizeCurrentOperatorRoleScopes,
   resolveGatewayOperatorRoleActor,
+  resolveOperatorRolePolicyForAssignment,
 } from "./operator-role-policy.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import type { GatewayRequestHandlerOptions } from "./server-methods/types.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
-import { authorizeResolvedSessionMutation } from "./session-sharing-policy.js";
+import {
+  authorizeIncognitoSessionTarget,
+  authorizePreparedSessionMutation,
+} from "./session-sharing-policy.js";
+import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
 
 type PublicationSession = { sessionKey: string; agentId: string };
 type PreparedProfileIdentity = Awaited<ReturnType<typeof prepareUserProfileIdentity>>;
+type PreparedPublicationSession = Awaited<ReturnType<typeof prepareSessionMutationFacts>>;
+
+function assertPublicationIncognitoAccess(
+  profileId: string,
+  scopes: readonly string[],
+  sessionKey: string,
+): void {
+  const client = createSyntheticPluginRuntimeClient({
+    operatorRoleActor: { kind: "operator", profileId },
+    scopes: [...scopes],
+  });
+  if (authorizeIncognitoSessionTarget({ client, sessionKey, target: null })) {
+    throw new GitHubPublicationRequesterUnavailableError();
+  }
+}
+
+async function preparePublicationSession(
+  session: PublicationSession,
+  config: OpenClawConfig,
+): Promise<PreparedPublicationSession> {
+  try {
+    return await prepareSessionMutationFacts({ cfg: config, ...session });
+  } catch (error) {
+    throw new GitHubPublicationRecoveryPendingError(
+      "GitHub publication session authorization is unavailable; retry after session storage is ready.",
+      { cause: error },
+    );
+  }
+}
 
 export type GitHubPublicationRequesterPolicy = Readonly<{
   snapshot: GitHubPublicationRequesterSnapshot;
@@ -40,6 +74,7 @@ function prepareRequesterPolicy(
   session: PublicationSession,
   getCommittedRuntimeConfig: () => OpenClawConfig,
   identity: PreparedProfileIdentity | undefined,
+  sessionFacts: PreparedPublicationSession | undefined,
 ) {
   const client = createSyntheticPluginRuntimeClient({
     operatorRoleActor: snapshot.actor,
@@ -47,42 +82,81 @@ function prepareRequesterPolicy(
   });
   const assertIdentity = () => {
     if (snapshot.actor.kind !== "operator") {
-      return;
+      return undefined;
     }
     try {
       if (!identity) {
         throw new GitHubPublicationRequesterUnavailableError();
       }
       identity.assertCurrent(snapshot.grant?.aliasBindingIds);
+      return { profile: identity.readCurrentProfile(), aliases: identity.readCurrentAliases() };
     } catch {
       throw new GitHubPublicationRequesterUnavailableError();
     }
   };
-  return () => {
-    const config = getCommittedRuntimeConfig();
-    assertIdentity();
+  const assertRole = (profile: UserProfileAccessFacts | undefined, config: OpenClawConfig) => {
+    const role = profile
+      ? resolveOperatorRolePolicyForAssignment(profile.profileId, profile.assignedRole, config)
+      : undefined;
     if (
       !roleScopesAllow({
         role: "operator",
         requestedScopes: ["operator.sessions.write"],
         allowedScopes: snapshot.scopes,
       }) ||
-      authorizeCurrentOperatorRoleScopes(client, config) ||
-      authorizeResolvedSessionMutation({ cfg: config, client, ...session })
+      (role &&
+        (!roleScopesAllow({
+          role: "operator",
+          requestedScopes: snapshot.scopes,
+          allowedScopes: role.scopes,
+        }) ||
+          (role.accessPolicyPlugin && role.accessPolicyPlugin !== snapshot.grant?.pluginId)))
     ) {
       throw new GitHubPublicationRequesterUnavailableError();
     }
-    if (snapshot.actor.kind === "operator") {
+    return role;
+  };
+  const assertPrepared = (config: OpenClawConfig) => {
+    const current = assertIdentity();
+    const role = assertRole(current?.profile, config);
+    if (current) {
+      let facts;
       try {
-        resumeGatewayOperatorAccessGrant(snapshot.actor.profileId, config, snapshot.grant);
+        if (!sessionFacts) {
+          throw new Error("Prepared publication session is missing");
+        }
+        facts = sessionFacts.readCurrent(config);
+      } catch (error) {
+        throw new GitHubPublicationRecoveryPendingError(
+          "GitHub publication session authorization is unavailable; retry after session storage is ready.",
+          { cause: error },
+        );
+      }
+      if (
+        authorizePreparedSessionMutation({ cfg: config, client, ...session }, facts, {
+          policy: role,
+          aliases: current.aliases,
+        })
+      ) {
+        throw new GitHubPublicationRequesterUnavailableError();
+      }
+    }
+    return current?.profile;
+  };
+  return () => {
+    const config = getCommittedRuntimeConfig();
+    const profile = assertPrepared(config);
+    if (profile) {
+      try {
+        resumeGatewayOperatorAccessGrant(profile, config, snapshot.grant);
       } catch (error) {
         if (error instanceof GatewayOperatorAccessDeniedError) {
           throw new GitHubPublicationRequesterUnavailableError();
         }
         throw error;
       }
-      // A policy callback can synchronously change aliases before this guard returns.
-      assertIdentity();
+      // A policy callback can synchronously change identity, role, or committed config.
+      assertPrepared(getCommittedRuntimeConfig());
     }
   };
 }
@@ -97,7 +171,9 @@ export async function captureGitHubPublicationRequester(
   options.sessionMutationAuthorization?.assertCurrent();
   const source = captureGatewayOperatorRunAuthority(options);
   let identity: PreparedProfileIdentity | undefined;
+  let sessionFacts: PreparedPublicationSession | undefined;
   const release = () => {
+    sessionFacts?.release();
     identity?.release();
     source?.release();
   };
@@ -117,7 +193,16 @@ export async function captureGitHubPublicationRequester(
     }
     let grant: GitHubPublicationRequesterSnapshot["grant"] = null;
     if (source) {
+      assertPublicationIncognitoAccess(
+        source.authority.profileId,
+        source.authority.scopes,
+        session.sessionKey,
+      );
       identity = await prepareUserProfileIdentity(source.authority.profileId);
+      sessionFacts = await preparePublicationSession(
+        session,
+        (options.context.getCommittedRuntimeConfig ?? options.context.getRuntimeConfig)(),
+      );
       if (source.authority.gatewayAccessGrant) {
         grant = Object.freeze({
           ...source.authority.gatewayAccessGrant,
@@ -140,6 +225,7 @@ export async function captureGitHubPublicationRequester(
       session,
       options.context.getCommittedRuntimeConfig ?? options.context.getRuntimeConfig,
       identity,
+      sessionFacts,
     );
     const assertInvocationCurrent = () => {
       try {
@@ -159,6 +245,7 @@ export async function captureGitHubPublicationRequester(
       assertCurrent: () => {
         assertInvocationCurrent();
         assertPolicy();
+        assertInvocationCurrent();
       },
     });
     requester.assertCurrent();
@@ -180,21 +267,37 @@ export async function restoreGitHubPublicationRequester(
     throw new GitHubPublicationRequesterUnavailableError();
   }
   let identity: PreparedProfileIdentity | undefined;
+  let sessionFacts: PreparedPublicationSession | undefined;
   if (snapshot.actor.kind === "operator") {
+    assertPublicationIncognitoAccess(snapshot.actor.profileId, snapshot.scopes, session.sessionKey);
     try {
       identity = await prepareUserProfileIdentity(snapshot.actor.profileId);
+      sessionFacts = await preparePublicationSession(session, getCommittedRuntimeConfig());
     } catch (error) {
+      identity?.release();
+      if (error instanceof GitHubPublicationRecoveryPendingError) {
+        throw error;
+      }
       throw new GitHubPublicationRecoveryPendingError(
         "GitHub publication requester identity is unavailable; retry recovery after profile storage is ready.",
         { cause: error },
       );
     }
   }
-  const release = () => identity?.release();
+  const release = () => {
+    sessionFacts?.release();
+    identity?.release();
+  };
   try {
     const requester = Object.freeze({
       snapshot,
-      assertCurrent: prepareRequesterPolicy(snapshot, session, getCommittedRuntimeConfig, identity),
+      assertCurrent: prepareRequesterPolicy(
+        snapshot,
+        session,
+        getCommittedRuntimeConfig,
+        identity,
+        sessionFacts,
+      ),
       release,
     });
     requester.assertCurrent();

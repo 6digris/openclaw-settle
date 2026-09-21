@@ -91,11 +91,22 @@ export function readGitHubPublicationRequest(
   );
 }
 
+export type GitHubPublicationReceiptTarget = Pick<
+  GitHubPublicationExecutionRow,
+  | "worktree_id"
+  | "repository_fingerprint"
+  | "repository"
+  | "branch"
+  | "base_branch"
+  | "identity_account_id"
+  | "pull_request_url"
+>;
+
 /** Retained publisher/target receipts identify reused PRs whose body keeps an older marker. */
-export function readKnownGitHubPublicationPullRequestUrls(
-  row: GitHubPublicationExecutionRow,
+export function readKnownGitHubPublicationPullRequestUrlsInDatabase(
+  db: Parameters<typeof getNodeSqliteKysely>[0],
+  row: GitHubPublicationReceiptTarget,
 ): string[] {
-  const db = openOpenClawStateDatabase().db;
   const known = new Set(row.pull_request_url ? [row.pull_request_url] : []);
   for (const receipt of iterateSqliteQuerySync(
     db,

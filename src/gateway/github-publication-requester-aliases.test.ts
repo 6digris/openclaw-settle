@@ -6,21 +6,28 @@ import {
   installGitHubPublicationTestHarness,
 } from "./github-publication.test-support.js";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { getPluginRegistryState } from "../plugins/runtime-state.js";
 import * as userProfileList from "../state/user-profile-list.js";
+import * as userProfiles from "../state/user-profiles.js";
 import {
   ensureProfileForEmail,
   getUserProfileListItem,
   linkEmail,
   setDisplayName,
+  setUserProfileRole,
 } from "../state/user-profiles.js";
 import { GitHubPublicationRequesterUnavailableError } from "./github-publication-failure.js";
-import { captureGitHubPublicationRequester } from "./github-publication-requester.js";
+import {
+  captureGitHubPublicationRequester,
+  restoreGitHubPublicationRequester,
+} from "./github-publication-requester.js";
 import {
   createRequesterPublicationFixture,
   guestScopes,
   holdWorkerTurn,
   prepareVisitorPublicationFixture,
 } from "./github-publication-requester.test-support.js";
+import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
 
 const mocks = githubPublicationTestMocks();
 const checkpoint = vi.hoisted(() => vi.fn());
@@ -35,6 +42,88 @@ describe("shared GitHub publication requester alias bindings", () => {
     sandbox: "required",
     realWorktree: true,
   });
+
+  it.each(["alias interruption", "role revocation"] as const)(
+    "uses current resumed-grant profile facts without profile SQL and checks callback %s",
+    async (callbackChange) => {
+      const f = await fixture("local");
+      const email = "publication-guest@example.test";
+      const later = "publication-later-alias@example.test";
+      const other = ensureProfileForEmail("publication-alias-recipient@example.test");
+      linkEmail("publication-secondary@example.test", f.guestProfile);
+      const visitors = await prepareVisitorPublicationFixture(f);
+      try {
+        await visitors.start();
+        await visitors.execute("visitor_invite", { email, days: 1 });
+        const original = await createGitHubPublicationRequesterFixture({
+          profileId: f.guestProfile,
+          scopes: guestScopes,
+          ...f.guestSource.session,
+        });
+        const restored = await restoreGitHubPublicationRequester(
+          JSON.stringify(original.requester.snapshot),
+          original.session,
+          original.context.getCommittedRuntimeConfig,
+        );
+        onTestFinished(restored.release);
+        original.release();
+        const policy = getPluginRegistryState()?.activeRegistry?.gatewayAccessPolicies.find(
+          (entry) => entry.pluginId === "visitor-access",
+        )?.policy;
+        if (!policy?.resume) {
+          throw new Error("Visitor policy did not register grant resumption");
+        }
+        const resume = policy.resume;
+        const observed = vi.spyOn(policy, "resume");
+        const protocolProfile = vi.spyOn(userProfiles, "getUserProfileListItem");
+        const native = vi.spyOn(f.database.db, "prepare");
+        const assertWithoutProfileSql = () => {
+          protocolProfile.mockClear();
+          native.mockClear();
+          restored.assertCurrent();
+          expect(protocolProfile).not.toHaveBeenCalled();
+          expect(
+            native.mock.calls.filter(([sql]) =>
+              /user_profiles|user_profile_emails|user_profile_identities/u.test(sql),
+            ),
+          ).toEqual([]);
+        };
+        invalidateOperatorRolePolicy(f.guestProfile);
+        assertWithoutProfileSql();
+        expect(observed.mock.lastCall?.[0].profile).toEqual({
+          profileId: f.guestProfile,
+          emails: [email, "publication-secondary@example.test"].toSorted(),
+          assignedRole: null,
+        });
+        setDisplayName(f.guestProfile, "Current name");
+        linkEmail(later, f.guestProfile);
+        setUserProfileRole(f.guestProfile, "maintainer");
+        invalidateOperatorRolePolicy(f.guestProfile);
+        assertWithoutProfileSql();
+        expect(observed.mock.lastCall?.[0].profile).toEqual({
+          profileId: f.guestProfile,
+          emails: [email, "publication-secondary@example.test", later].toSorted(),
+          assignedRole: "maintainer",
+        });
+        linkEmail(later, other.id);
+        assertWithoutProfileSql();
+        observed.mockImplementationOnce((context) => {
+          const authority = resume(context);
+          if (callbackChange === "alias interruption") {
+            linkEmail(email, other.id);
+            linkEmail(email, f.guestProfile);
+          } else {
+            setUserProfileRole(f.guestProfile, "revoked");
+            invalidateOperatorRolePolicy(f.guestProfile);
+          }
+          return authority;
+        });
+        expect(restored.assertCurrent).toThrow(GitHubPublicationRequesterUnavailableError);
+      } finally {
+        await visitors.close();
+      }
+    },
+  );
 
   it.each(
     (["local", "repository"] as const).flatMap((backend) =>

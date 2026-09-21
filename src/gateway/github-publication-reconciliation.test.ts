@@ -8,6 +8,8 @@ import {
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import * as sqliteQueries from "../infra/kysely-sync.js";
+import * as stateReads from "../state/openclaw-state-db-readonly.js";
 import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
 import { createRequesterPublicationFixture } from "./github-publication-requester.test-support.js";
 import { readGitHubPublicationRequest } from "./github-publication-store.js";
@@ -81,6 +83,8 @@ describe("shared GitHub publication reconciliation", () => {
       let revoked = false;
       let recoveryLookup = false;
       let acceptedWrites: string[] | undefined;
+      const hostScans = vi.spyOn(sqliteQueries, "iterateSqliteQuerySync");
+      let recoveryScanStart = 0;
       mocks.runCommand.mockImplementation(async (argv: string[], options?: { input?: string }) => {
         if (argv.includes("state=all")) {
           recoveryLookup ||= revoked;
@@ -96,12 +100,20 @@ describe("shared GitHub publication reconciliation", () => {
           await observePush();
           f.revoke();
           revoked = true;
+          recoveryScanStart = hostScans.mock.calls.length;
           acceptedWrites = [...f.externalWrites];
         }
         return response;
       });
 
       const result = await f.coordinator.requestForSession(f.request("paged-update", f.guest));
+
+      expect(
+        hostScans.mock.calls
+          .slice(recoveryScanStart)
+          .map(([, query]) => query.compile().sql)
+          .filter((sql) => /from "github_(?:repository_)?publication_requests"/u.test(sql)),
+      ).toEqual([]);
 
       expect(result).toMatchObject({
         status: "published",
@@ -178,6 +190,28 @@ describe("shared GitHub publication reconciliation", () => {
       expect(f.guest.assertCurrent).toThrow();
       readbackAvailable = true;
       const restarted = f.restart();
+      const read = stateReads.executeExistingOpenClawStateRead;
+      const unavailableRead = vi
+        .spyOn(stateReads, "executeExistingOpenClawStateRead")
+        .mockImplementation((options, command, readOptions) =>
+          command.type === "githubPublication.knownPullRequestUrls" ||
+          command.type === "githubRepository.knownPullRequestUrls"
+            ? Promise.reject(new Error("receipt worker unavailable"))
+            : read(options, command, readOptions),
+        );
+      const pendingReceipt = f.readReceipt(requestId)!;
+      try {
+        await expect(restarted.resumeSessionRequests()).rejects.toThrow("unconfirmed");
+        expect(["requested", "publishing"]).toContain(f.readReceipt(requestId)?.status);
+        expect(f.readReceipt(requestId)).toMatchObject({
+          request_digest: pendingReceipt.request_digest,
+          head_commit: pendingReceipt.head_commit,
+          pull_request_url: null,
+        });
+        expect(f.externalWrites).toEqual(acceptedWrites);
+      } finally {
+        unavailableRead.mockRestore();
+      }
       await restarted.resumeSessionRequests();
 
       expect(restarted.read(requestId)).toMatchObject({

@@ -2,6 +2,7 @@ import type { SessionGitHubPublicationResult } from "../../packages/gateway-prot
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { decodeGitHubPublicationRequester } from "../state/github-publication-requester.js";
+import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
 import { OpenClawStateLeaseAcquisitionError } from "../state/openclaw-state-lease-error.js";
 import { exactClaimForPlacement } from "./github-publication-coordinator-methods.js";
 import { createGitHubPublicationExecutionIdentity } from "./github-publication-execution-identity.js";
@@ -15,7 +16,6 @@ import {
   deferRepositoryGitHubPublicationClaims,
   failStaleRepositoryGitHubPublication,
   listRepositoryGitHubPublications,
-  readKnownRepositoryGitHubPublicationPullRequestUrls,
   requireRepositoryGitHubPublication,
   terminalRepositoryGitHubPublication,
   type RepositoryGitHubPublicationExecution,
@@ -38,7 +38,26 @@ export async function settleDeniedRepositoryGitHubPublication(params: {
   error: GitHubPublicationRequesterUnavailableError;
 }): Promise<SessionGitHubPublicationResult> {
   const { execution, assertCustody, error } = params;
-  const row = requireRepositoryGitHubPublication(execution.row.request_id);
+  assertCustody();
+  if (!execution.ownsExecution()) {
+    throw new GitHubPublicationRecoveryPendingError(
+      "GitHub publication execution custody changed during reconciliation.",
+    );
+  }
+  const row = await readRepositoryGitHubPublicationInWorker(execution.row.request_id).catch(
+    (cause: unknown) => {
+      throw new GitHubPublicationRecoveryPendingError(
+        "GitHub publication receipt is unavailable; retry recovery.",
+        { cause },
+      );
+    },
+  );
+  assertCustody();
+  if (!row || !execution.ownsExecution()) {
+    throw new GitHubPublicationRecoveryPendingError(
+      "GitHub publication execution custody changed during reconciliation.",
+    );
+  }
   const requester = decodeGitHubPublicationRequester(row.requester_authority_json);
   // Git objects may exist before last_effect; branch and PR dispatch always record it first.
   if (row.last_effect !== null || (!requester && row.head_commit !== null)) {
@@ -66,6 +85,9 @@ export async function settleDeniedRepositoryGitHubPublication(params: {
     });
     let url: string | undefined;
     try {
+      assertCurrent();
+      const knownPullRequestUrls = await readKnownRepositoryGitHubPublicationPullRequestUrls(row);
+      assertCurrent();
       url = await reconcileGitHubPublicationPullRequest({
         requestId: row.request_id,
         pushRepository: row.push_repository,
@@ -77,7 +99,7 @@ export async function settleDeniedRepositoryGitHubPublication(params: {
         workspaceTree: row.workspace_tree,
         parentCommit: row.previous_head_commit ?? row.source_head_commit,
         marker: `<!-- openclaw-publication:${row.request_id} -->`,
-        knownPullRequestUrls: readKnownRepositoryGitHubPublicationPullRequestUrls(row),
+        knownPullRequestUrls,
         refreshIdentity,
         assertCurrent,
         // Older writers could overwrite a prior PR phase with a ref observation.
@@ -269,4 +291,52 @@ export function createRepositoryGitHubPublicationRecovery(params: {
       );
     },
   };
+}
+
+async function readRepositoryGitHubPublicationInWorker(
+  requestId: string,
+): Promise<RepositoryGitHubPublicationRow | undefined> {
+  const result = await executeExistingOpenClawStateRead(
+    {},
+    { type: "githubRepository.request", requestId },
+    { current: true },
+  );
+  if (!result?.ok || result.type !== "githubRepository.request") {
+    throw new Error("GitHub repository publication receipt is unavailable.");
+  }
+  return result.row;
+}
+
+async function readKnownRepositoryGitHubPublicationPullRequestUrls(
+  row: RepositoryGitHubPublicationRow,
+): Promise<string[]> {
+  const {
+    workspace_id,
+    push_repository,
+    repository,
+    branch,
+    base_branch,
+    identity_account_id,
+    pull_request_url,
+  } = row;
+  const result = await executeExistingOpenClawStateRead(
+    {},
+    {
+      type: "githubRepository.knownPullRequestUrls",
+      input: {
+        workspace_id,
+        push_repository,
+        repository,
+        branch,
+        base_branch,
+        identity_account_id,
+        pull_request_url,
+      },
+    },
+    { current: true },
+  );
+  if (!result?.ok || result.type !== "githubRepository.knownPullRequestUrls") {
+    throw new Error("GitHub repository publication receipt history is unavailable.");
+  }
+  return result.urls;
 }

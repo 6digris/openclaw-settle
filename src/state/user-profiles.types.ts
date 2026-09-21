@@ -11,6 +11,26 @@ export type UserProfileEmailBinding = {
   bindingId: string | null;
 };
 
+export type UserProfileAccessFacts = Readonly<{
+  profileId: string;
+  emails: readonly string[];
+  assignedRole: string | null;
+}>;
+
+export type PreparedUserProfileIdentity = {
+  readonly emailBindingIds: readonly string[];
+  assertCurrent(this: void, requiredEmailBindingIds?: readonly string[]): void;
+  readCurrentProfile(this: void): UserProfileAccessFacts;
+  readCurrentAliases(this: void): ReadonlySet<string>;
+  release(this: void): void;
+};
+
+export type UserProfileEmailBindingIndex = {
+  byEmail: Map<string, UserProfileEmailBinding>;
+  byId: Map<string, string>;
+  emailsByProfile: Map<string, Set<string>>;
+};
+
 export type UserProfilesDatabase = {
   user_profiles: {
     id: string;
