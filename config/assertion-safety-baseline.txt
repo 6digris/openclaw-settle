@@ -403,7 +403,6 @@ extensions/discord/src/voice/realtime-turns.ts	3
 extensions/discord/src/voice/receive-recovery.ts	5
 extensions/discord/src/voice/sdk-runtime.ts	1
 extensions/discord/src/voice/segment.ts	1
-extensions/discord/src/voice/voice-receive.ts	1
 extensions/duckduckgo/src/config.ts	1
 extensions/duckduckgo/src/ddg-search-provider.ts	1
 extensions/elevenlabs/config-compat.ts	2
@@ -1042,7 +1041,6 @@ extensions/signal/src/approval-reactions.ts	1
 extensions/signal/src/channel.ts	2
 extensions/signal/src/client-container.ts	34
 extensions/signal/src/client.ts	4
-extensions/signal/src/install-signal-cli.ts	2
 extensions/signal/src/monitor/event-handler.ts	1
 extensions/signal/src/probe.ts	1
 extensions/signal/src/send.ts	1
@@ -3755,6 +3753,6 @@ ui/src/pages/skill-workshop/view.ts	1
 ui/src/pages/skills/view.ts	2
 ui/src/pages/usage/heatmap.ts	1
 ui/src/pages/usage/view-details.ts	6
-ui/src/pages/usage/view-overview.ts	3
+ui/src/pages/usage/view-overview.ts	2
 ui/src/pages/usage/view.ts	5
 ui/src/pages/worktrees/worktrees-page.ts	3
