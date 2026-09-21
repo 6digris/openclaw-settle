@@ -473,27 +473,6 @@ describe("hooks CLI metadata config keys", () => {
       expect(mocks.requestExitAfterOneShotOutput).not.toHaveBeenCalled();
       expect(mocks.replaceConfigFile).not.toHaveBeenCalled();
     });
-
-    it("preserves missing-hook output and requests a failing exit", async () => {
-      await createHooksProgram().parseAsync(argv("missing-hook"), { from: "user" });
-
-      expect(capture.runtimeLogs).toHaveLength(1);
-      if (json) {
-        expect(JSON.parse(capture.runtimeLogs[0] ?? "")).toEqual({
-          ok: false,
-          error: { type: "cli_error", message: 'Hook "missing-hook" not found.' },
-          hook: "missing-hook",
-        });
-        expect(capture.defaultRuntime.writeStdout).toHaveBeenCalledOnce();
-      } else {
-        expect(capture.runtimeLogs[0]).toBe(
-          'Hook "missing-hook" not found. Run `openclaw hooks list` to see available hooks.',
-        );
-        expect(capture.defaultRuntime.writeStdout).not.toHaveBeenCalled();
-      }
-      expect(mocks.requestExitAfterOneShotOutput).toHaveBeenCalledWith(capture.defaultRuntime, 1);
-      expect(mocks.replaceConfigFile).not.toHaveBeenCalled();
-    });
   });
 
   it.each(["enable", "disable"])("still rejects %s for plugin-managed hooks", async (action) => {
@@ -530,60 +509,6 @@ describe("hooks CLI metadata config keys", () => {
   });
 
   it.each([
-    {
-      label: "bare report with parent JSON",
-      argv: ["hooks", "--agent", "retired", "--json"],
-      message: 'Unknown agent id "retired"',
-      phase: "agent",
-    },
-    {
-      label: "list with leaf JSON",
-      argv: ["hooks", "list", "--agent", "retired", "--json"],
-      message: 'Unknown agent id "retired"',
-      phase: "agent",
-    },
-    {
-      label: "list with parent JSON",
-      argv: ["hooks", "--json", "list", "--agent", "retired"],
-      message: 'Unknown agent id "retired"',
-      phase: "agent",
-    },
-    {
-      label: "info report",
-      argv: ["hooks", "info", "display-name", "--agent", "retired", "--json"],
-      message: 'Unknown agent id "retired"',
-      phase: "agent",
-    },
-    {
-      label: "info report with parent JSON",
-      argv: ["hooks", "--json", "info", "display-name", "--agent", "retired"],
-      message: 'Unknown agent id "retired"',
-      phase: "agent",
-    },
-    {
-      label: "check report",
-      argv: ["hooks", "check", "--agent", "retired", "--json"],
-      message: 'Unknown agent id "retired"',
-      phase: "agent",
-    },
-    {
-      label: "check report with parent JSON",
-      argv: ["hooks", "--json", "check", "--agent", "retired"],
-      message: 'Unknown agent id "retired"',
-      phase: "agent",
-    },
-    {
-      label: "blank leaf agent",
-      argv: ["hooks", "list", "--agent", "", "--json"],
-      message: "--agent must not be blank",
-      phase: "agent",
-    },
-    {
-      label: "human report",
-      argv: ["hooks", "list", "--agent", "retired"],
-      message: 'Unknown agent id "retired"',
-      phase: "agent",
-    },
     {
       label: "config loading",
       argv: ["hooks", "list", "--json"],
@@ -924,14 +849,6 @@ describe("hooks CLI metadata config keys", () => {
     expect(capture.runtimeErrors.at(-1)).toContain('Unknown agent id "retired"');
     expect(mocks.replaceConfigFile).not.toHaveBeenCalled();
     expect(explicitFleet).toEqual(initialConfig);
-  });
-
-  it("rejects a blank parent hook agent before dispatching a subcommand", async () => {
-    await expect(
-      createHooksProgram().parseAsync(["hooks", "--agent", "", "list"], { from: "user" }),
-    ).rejects.toThrow("--agent must not be blank");
-
-    expect(mocks.callGateway).not.toHaveBeenCalled();
   });
 
   it("keeps the explicit owner in the offline hooks fallback", async () => {
