@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { resolveContextTokensForModelFromCache } from "../agents/context-resolution.js";
+import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
 import { VERSION } from "../version.js";
 import { createConfigIO } from "./io.factory.js";
@@ -22,7 +23,14 @@ vi.mock("../plugins/plugin-metadata-snapshot.js", async (importOriginal) => ({
 }));
 
 function withTempHome<T>(run: (home: string) => Promise<T>): Promise<T> {
-  return withTempDir("openclaw-config-compat-", run);
+  return withTempDir("openclaw-config-compat-", async (home) => {
+    try {
+      return await run(home);
+    } finally {
+      // Release SQLite workers and native handles before Windows removes this home.
+      await closeOpenClawStateDatabaseAsync();
+    }
+  });
 }
 
 async function writeConfig(

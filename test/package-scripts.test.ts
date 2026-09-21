@@ -307,6 +307,7 @@ describe("package scripts", () => {
       "src/test-utils/openclaw-test-state.test.ts",
       "src/snapshot/local-repository.windows.test.ts",
       "src/commands/backup-verify.test.ts",
+      "src/config/io.compat.test.ts",
       "src/config/sessions/session-accessor.sqlite-archive.worker.test.ts",
       "test/scripts/openclaw-cross-os-installer.windows.test.ts",
       "test/scripts/run-with-env.test.ts",
