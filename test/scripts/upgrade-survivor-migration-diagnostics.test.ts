@@ -16,6 +16,10 @@ const observer = path.resolve("scripts/e2e/lib/upgrade-survivor/diagnostics.mjs"
 const sibling = path.resolve("scripts/e2e/lib/upgrade-survivor/custom-plugin-siblings.mjs");
 const secret = "sk-survivorMigrationCaptureSecret1234567890";
 const privateBody = "PRIVATE_TRANSCRIPT_CONFIG_AND_UNLISTED_FIELDS";
+const baselineGatewayLogs = [
+  "missing-load-path/baseline-gateway.log",
+  "missing-load-path/baseline-gateway-convergence-refusal.log",
+];
 const hash = (file: string) => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 
 function fixture() {
@@ -61,8 +65,12 @@ function capture(f: ReturnType<typeof fixture>) {
   return JSON.parse(text);
 }
 
-it("publishes redacted baseline and candidate agent-turn failures", () => {
+it("publishes redacted baseline Gateway and agent-turn failures", () => {
   const f = fixture();
+  fs.mkdirSync(path.join(f.artifacts, "missing-load-path"));
+  for (const name of baselineGatewayLogs) {
+    fs.writeFileSync(path.join(f.artifacts, name), `Baseline startup failed: token=${secret}\n`);
+  }
   for (const stage of ["baseline", "candidate"]) {
     fs.writeFileSync(
       path.join(f.artifacts, `legacy-operator-${stage}-turn.err`),
@@ -74,6 +82,9 @@ it("publishes redacted baseline and candidate agent-turn failures", () => {
     );
   }
   const report = capture(f);
+  for (const name of baselineGatewayLogs) {
+    expect(report.logs[name]).toContain("Baseline startup failed");
+  }
   for (const stage of ["baseline", "candidate"]) {
     expect(report.logs[`legacy-operator-${stage}-turn.err`]).toContain(
       `Provider request failed during ${stage}`,
@@ -252,6 +263,8 @@ it("omits unsafe migration files and oversized registration collections without 
   fs.writeFileSync(outside, privateBody);
   fs.symlinkSync(outside, path.join(f.state, "state/openclaw.sqlite"));
   fs.symlinkSync(f.root, path.join(f.state, "session-sqlite-migration-runs"));
+  fs.writeFileSync(path.join(f.root, "baseline-gateway.log"), privateBody);
+  fs.symlinkSync(f.root, path.join(f.artifacts, "missing-load-path"));
   fs.writeFileSync(
     path.join(f.artifacts, "sibling-registrations.jsonl"),
     Array.from({ length: 129 }, () =>
@@ -268,6 +281,10 @@ it("omits unsafe migration files and oversized registration collections without 
   for (const section of ["sessions", "archives", "sibling", "doctor"]) {
     expect(report.migration[section].availability).toBe("unavailable");
   }
+  for (const name of baselineGatewayLogs) {
+    expect(report.logs[name]).toBeNull();
+    expect(report.omissions[name]).toBe("missing or unsafe file");
+  }
   expect(report.limits).toMatchObject({
     inputBytesPerFile: 262144,
     outputBytesPerLog: 16384,
@@ -276,12 +293,14 @@ it("omits unsafe migration files and oversized registration collections without 
   });
 });
 
-it("does not reuse sibling or agent-turn observations when a retry fails before fixture seeding", () => {
+it("does not reuse sibling or startup observations when an attempt fails before fixture seeding", () => {
   const f = fixture();
   const turnLogs = ["baseline", "candidate"].flatMap((stage) =>
     ["out", "err"].map((extension) => `legacy-operator-${stage}-turn.${extension}`),
   );
-  for (const name of turnLogs) {
+  const logs = [...turnLogs, ...baselineGatewayLogs];
+  for (const name of logs) {
+    fs.mkdirSync(path.dirname(path.join(f.artifacts, name)), { recursive: true });
     fs.writeFileSync(path.join(f.artifacts, name), "previous attempt failure");
   }
   fs.writeFileSync(
@@ -312,7 +331,7 @@ it("does not reuse sibling or agent-turn observations when a retry fails before 
   expect(prepared.status, prepared.stderr).toBe(0);
   const report = capture(f);
   expect(report.migration.sibling.availability).toBe("unavailable");
-  for (const name of turnLogs) {
+  for (const name of logs) {
     expect(report.logs[name]).toBeNull();
   }
 });
