@@ -441,6 +441,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     // Snapshot before abort can remove controllers. Agent run IDs are idempotency
     // keys, so preserve their dedupe namespace instead of colliding with chat.send.
     const preAbortRuns = new Map(context.chatAbortControllers);
+    const preAbortDedupe = new Map(context.dedupe);
     const preAbortSessions = new Map(
       [...preAbortRuns].map(([runId, entry]) => [runId, captureAgentJobSession(entry)]),
     );
@@ -627,9 +628,15 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
               const endedAt = Date.now();
               const runKind = preAbortRuns.get(firstAbortedRunId)?.kind;
               const dedupePrefix = runKind === "agent" ? "agent" : "chat";
+              const dedupeKey = `${dedupePrefix}:${firstAbortedRunId}`;
+              // Nested cancellation can yield after the old controller ends. A new
+              // receipt owns its outcome; this supplemental timeout must not replace it.
+              if (context.dedupe.get(dedupeKey) !== preAbortDedupe.get(dedupeKey)) {
+                return;
+              }
               setGatewayDedupeEntry({
                 dedupe: context.dedupe,
-                key: `${dedupePrefix}:${firstAbortedRunId}`,
+                key: dedupeKey,
                 session: preAbortSessions.get(firstAbortedRunId),
                 entry: {
                   ts: endedAt,
