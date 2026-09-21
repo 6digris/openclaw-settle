@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { runCommandWithTimeout } from "../process/exec.js";
+import { selectChannelTag } from "./update-runner-git-target.js";
 import { updateGitCheckout } from "./update-runner-git.js";
 import type { CommandRunner } from "./update-runner-types.js";
 
@@ -14,6 +15,21 @@ const gitEnv = {
   GIT_CONFIG_COUNT: "0",
   LC_ALL: "C",
 };
+
+describe("Git updater release tag selection", () => {
+  it.each(["stable", "beta"] as const)(
+    "does not select an extended-stable-only inventory for %s",
+    (channel) => {
+      expect(selectChannelTag(["v2026.9.33", "v2026.9.34", "v2026.9.34-1"], channel)).toBeNull();
+    },
+  );
+
+  it("keeps a beta candidate when extended-stable sorts newer", () => {
+    expect(selectChannelTag(["v2026.9.34", "v2026.9.33-beta.1", "v2026.9.32"], "beta")).toBe(
+      "v2026.9.33-beta.1",
+    );
+  });
+});
 
 function git(root: string, ...args: string[]) {
   const result = spawnSync("git", ["-C", root, ...args], {
@@ -64,7 +80,7 @@ describe("Git updater release tag refresh", () => {
     return { root, seed, oldTag, release, branch, releaseRemote };
   }
 
-  async function update(setup: ReturnType<typeof fixture>) {
+  async function update(setup: ReturnType<typeof fixture>, channel: "stable" | "beta" = "stable") {
     const fetches: {
       argv: string[];
       code: number | null;
@@ -104,7 +120,7 @@ describe("Git updater release tag refresh", () => {
       timeoutMs: 5000,
       startedAt: Date.now(),
       opts: {
-        channel: "stable",
+        channel,
         inspectGitTarget: async () => {
           throw new Error("A refused fetch or current release must not enter candidate admission");
         },
@@ -132,6 +148,20 @@ describe("Git updater release tag refresh", () => {
     expect(result.stderr).toContain("would clobber existing tag");
     expect(git(setup.root, "rev-parse", "v2026.9.1")).toBe(setup.oldTag);
   });
+
+  it.each(["stable", "beta"] as const)(
+    "keeps %s on regular stable when extended-stable tags sort newer",
+    async (channel) => {
+      const setup = fixture();
+      for (const tag of ["v2026.9.33", "v2026.9.34", "v2026.9.34-1"]) {
+        git(setup.seed, "tag", tag, setup.oldTag);
+      }
+      git(setup.seed, "push", "origin", "--tags");
+      const { result } = await update(setup, channel);
+      expect(result).toMatchObject({ status: "skipped", reason: "already-current" });
+      expect(git(setup.root, "rev-parse", "HEAD")).toBe(setup.release);
+    },
+  );
 
   it.each([
     { releaseRemote: "upstream", forkRemote: "afork", tracked: true },
