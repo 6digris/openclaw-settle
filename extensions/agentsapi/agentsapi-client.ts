@@ -10,6 +10,24 @@ const usageSchema = z.object({
   input_tokens_details: z.object({ cached_tokens: z.number() }).optional(),
 });
 const errorSchema = z.object({ message: z.string() });
+const functionCallSchema = z.object({
+  type: z.literal("function_call"),
+  turn_id: z.string().min(1),
+  call_id: z.string().min(1),
+  name: z.string().min(1),
+  arguments: z.unknown(),
+});
+const sessionSchema = z.object({
+  id: z.string(),
+  status: z.enum(["idle", "in_progress", "requires_action", "failed"]),
+  error: z.string().nullable(),
+  required_actions: z.array(
+    z.union([
+      functionCallSchema,
+      z.object({ type: z.literal("environment_connection"), environment_id: z.string() }),
+    ]),
+  ),
+});
 const turnSchema = z.object({
   id: z.string(),
   session_id: z.string(),
@@ -49,6 +67,17 @@ const eventSchema = z.object({
 export type AgentsApiEvent = z.infer<typeof eventSchema>;
 export type AgentsApiItem = z.infer<typeof itemSchema>;
 export type AgentsApiTurn = z.infer<typeof turnSchema>;
+export type AgentsApiFunctionCall = z.infer<typeof functionCallSchema>;
+export type AgentsApiFunctionDeclaration = {
+  type: "function";
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  defer_loading?: boolean;
+};
+export type AgentsApiFunctionResult =
+  | { success: true; output: string }
+  | { success: false; error: string };
 
 /** The MVP intentionally fixes endpoint, agent settings, and execution placement. */
 export class AgentsApiClient {
@@ -57,13 +86,19 @@ export class AgentsApiClient {
     private readonly assertCurrent: () => void,
   ) {}
 
-  async create(signal: AbortSignal, instructions: string, model: string): Promise<string> {
+  async create(
+    signal: AbortSignal,
+    instructions: string,
+    model: string,
+    extras?: { functions?: AgentsApiFunctionDeclaration[] },
+  ): Promise<string> {
     const response = await this.request("", "POST", signal, {
       agent: {
         model,
         instructions,
         reasoning: { effort: "low" },
         multi_agent: { enabled: false },
+        tools: extras?.functions ?? [],
       },
       environment: { type: "openai_hosted" },
     });
@@ -86,14 +121,63 @@ export class AgentsApiClient {
 
   async session(sessionId: string, signal: AbortSignal) {
     const response = await this.request(`/${encodeURIComponent(sessionId)}`, "GET", signal);
-    const session = z
-      .object({ id: z.string(), status: z.string(), error: z.string().nullable() })
-      .parse(await response.json());
+    const session = sessionSchema.parse(await response.json());
     this.assertCurrent();
     if (session.id !== sessionId) {
       throw new Error("Agents API returned a different session");
     }
     return session;
+  }
+
+  async pendingFunctionCalls(
+    sessionId: string,
+    signal: AbortSignal,
+  ): Promise<AgentsApiFunctionCall[]> {
+    const session = await this.session(sessionId, signal);
+    if (session.status === "failed") {
+      throw new Error(session.error ?? "Agents API session failed");
+    }
+    if (session.status !== "requires_action") {
+      return [];
+    }
+    const calls: AgentsApiFunctionCall[] = [];
+    for (const action of session.required_actions) {
+      if (action.type !== "function_call") {
+        throw new Error("Agents API hosted prototype cannot reconnect an environment_connection");
+      }
+      calls.push(action);
+    }
+    return calls;
+  }
+
+  async toolResult(
+    sessionId: string,
+    call: AgentsApiFunctionCall,
+    result: AgentsApiFunctionResult,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await this.input(sessionId, signal, {
+      type: "agent.session.input.tool_result",
+      turn_id: call.turn_id,
+      call_id: call.call_id,
+      ...(result.success
+        ? { success: true, output: result.output }
+        : { success: false, error: result.error }),
+    });
+  }
+
+  async turn(sessionId: string, turnId: string, signal: AbortSignal): Promise<AgentsApiTurn> {
+    const response = await this.request(
+      `/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}`,
+      "GET",
+      signal,
+    );
+    const turn = turnSchema.parse(await response.json());
+    this.assertCurrent();
+    if (turn.id !== turnId || turn.session_id !== sessionId || turn.subagent_id !== null) {
+      throw new Error("Agents API returned a turn outside the requested root session");
+    }
+    return turn;
   }
 
   async turns(sessionId: string, signal: AbortSignal, after?: string, latestOnly = false) {

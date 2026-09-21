@@ -1,6 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
-import { AgentsApiClient, type AgentsApiEvent } from "./agentsapi-client.js";
+import {
+  AgentsApiClient,
+  type AgentsApiEvent,
+  type AgentsApiFunctionCall,
+  type AgentsApiFunctionResult,
+} from "./agentsapi-client.js";
 
 /** Native input receipts and session idle, together, establish Agents API completion. */
 export function createAgentsApiSession(options: {
@@ -11,6 +16,8 @@ export function createAgentsApiSession(options: {
   assertCurrent: () => void;
   onEvent: (event: AgentsApiEvent) => void;
   onSettled?: () => void;
+  executeFunction?: (call: AgentsApiFunctionCall) => Promise<FunctionExecutionResult>;
+  onFunctionResult?: (call: AgentsApiFunctionCall, result: FunctionExecutionResult) => void;
 }) {
   const { client, cleanupClient, sessionId, signal, assertCurrent } = options;
   let streamController = new AbortController();
@@ -27,6 +34,7 @@ export function createAgentsApiSession(options: {
   const observedInputItems = new Set<string>();
   const coordinatorTurnIds = new Set<string>();
   let latestInputTurnId: string | undefined;
+  let terminatedByTool = false;
 
   const isAvailable = () => submitted && !stopped && !settled && !rootTurn && !signal.aborted;
   const submit = (text: string) => {
@@ -89,9 +97,6 @@ export function createAgentsApiSession(options: {
     if (session.status === "failed") {
       throw new Error(session.error ?? "Agents API session failed");
     }
-    if (session.status === "requires_action") {
-      throw new Error("Agents API MVP cannot continue: agent.session.requires_action");
-    }
   };
 
   return {
@@ -103,6 +108,80 @@ export function createAgentsApiSession(options: {
     async run(prompt: string, persistInput: () => Promise<void>, onSubmitted: () => void) {
       signal.throwIfAborted();
       const baselineTurnId = (await client.turns(sessionId, signal, undefined, true))[0]?.id;
+      const relayedCalls = new Set<string>();
+      const relayFunctions = async () => {
+        assertCurrent();
+        signal.throwIfAborted();
+        if (!options.executeFunction) {
+          throw new Error("Agents API MVP cannot continue: agent.session.requires_action");
+        }
+        const calls = await client.pendingFunctionCalls(sessionId, signal);
+        if (!calls.length) {
+          return;
+        }
+        const turns = await client.turns(sessionId, signal, baselineTurnId);
+        for (const turn of turns) {
+          coordinatorTurnIds.add(turn.id);
+        }
+        const latestTurn = turns.at(-1);
+        if (!latestTurn) {
+          throw new Error("Agents API function request has no current attempt root turn");
+        }
+        latestInputTurnId = latestTurn.id;
+        for (const call of calls) {
+          if (
+            call.turn_id !== latestTurn.id ||
+            !["in_progress", "waiting"].includes(latestTurn.status)
+          ) {
+            throw new Error(
+              "Agents API function request belongs to a different or settled root turn",
+            );
+          }
+          const identity = `${sessionId}:${call.turn_id}:${call.call_id}`;
+          if (relayedCalls.has(identity)) {
+            continue;
+          }
+          // Claim before execution so duplicate events cannot repeat a Gateway side effect.
+          relayedCalls.add(identity);
+          const result = await options.executeFunction(call);
+          assertCurrent();
+          signal.throwIfAborted();
+          submission = submission.then(() => {
+            assertCurrent();
+            signal.throwIfAborted();
+            admittedSubmission = client.toolResult(
+              sessionId,
+              call,
+              result,
+              AbortSignal.timeout(60_000),
+            );
+            return admittedSubmission;
+          });
+          void submission.catch(() => {});
+          await submission;
+          options.onFunctionResult?.(call, result);
+          if (result.terminate || result.sourceReplyDelivered) {
+            // Acknowledge the host's delivered reply before retiring native work.
+            await cleanupClient.cancel(sessionId, AbortSignal.timeout(30_000));
+            const session = await client.session(sessionId, signal);
+            if (session.status !== "idle") {
+              throw new Error(
+                session.error ?? "Agents API tool termination did not establish native idle",
+              );
+            }
+            const nativeRoot = await client.turn(sessionId, call.turn_id, signal);
+            rootTurn = nativeRoot;
+            if (!["completed", "cancelled"].includes(nativeRoot.status)) {
+              throw new Error("Agents API tool termination did not settle its native root turn");
+            }
+            terminatedByTool = true;
+            cancelled = false;
+            settled = true;
+            streamController.abort();
+            return;
+          }
+        }
+      };
       let events = await client.subscribe(
         sessionId,
         AbortSignal.any([signal, streamController.signal]),
@@ -153,6 +232,12 @@ export function createAgentsApiSession(options: {
             const session = await client.session(sessionId, signal);
             assertCurrent();
             assertSessionUsable(session);
+            if (session.status === "requires_action") {
+              await relayFunctions();
+              if (settled) {
+                break;
+              }
+            }
             settled = Boolean(
               rootTurn &&
               session.status === "idle" &&
@@ -219,13 +304,14 @@ export function createAgentsApiSession(options: {
           if (event.type === "error") {
             throw new Error(event.error?.message ?? "Agents API stream error");
           }
-          if (
-            [
-              "agent.session.failed",
-              "agent.session.environment.failed",
-              "agent.session.requires_action",
-            ].includes(event.type)
-          ) {
+          if (event.type === "agent.session.requires_action") {
+            await relayFunctions();
+            if (settled) {
+              break;
+            }
+            continue;
+          }
+          if (["agent.session.failed", "agent.session.environment.failed"].includes(event.type)) {
             throw new Error(`Agents API MVP cannot continue: ${event.type}`);
           }
           if (
@@ -258,7 +344,7 @@ export function createAgentsApiSession(options: {
       if (turnFailure) {
         throw new Error(turnFailure);
       }
-      return { turn: rootTurn, cancelled };
+      return { turn: rootTurn, cancelled, terminatedByTool };
     },
     async close() {
       signal.removeEventListener("abort", onAbort);
@@ -271,3 +357,8 @@ export function createAgentsApiSession(options: {
     },
   };
 }
+
+type FunctionExecutionResult = AgentsApiFunctionResult & {
+  sourceReplyDelivered?: true;
+  terminate?: true;
+};

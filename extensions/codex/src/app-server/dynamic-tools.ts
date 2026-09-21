@@ -9,6 +9,7 @@ import {
   createCodexAppServerToolResultExtensionRunner,
   extractMessagingToolSend,
   extractMessagingToolSendResult,
+  extractMessagingToolSourceReplyPayload,
   finalizeToolTerminalPresentation,
   formatToolExecutionErrorMessage,
   getBeforeToolCallFailureDisposition,
@@ -28,7 +29,6 @@ import {
   setBeforeToolCallDiagnosticsEnabled,
   type AnyAgentTool,
   type MessagingToolSend,
-  type MessagingToolSourceReplyPayload,
   wrapToolWithBeforeToolCallHook,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
@@ -41,7 +41,6 @@ import {
   type AgentHarnessToolExecutionSnapshot,
   runAgentHarnessToolInvocation,
   recordAgentHarnessToolResultTelemetry,
-  collectAgentHarnessMessagingMediaUrls,
   type AgentHarnessToolResultTelemetry,
 } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
 import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
@@ -819,8 +818,7 @@ export function createCodexDynamicToolBridge(params: {
           const sourceReplyFinal = confirmedSourceReply ? executedArgs.final !== false : undefined;
           const autoDeliveryTtsMediaUrls = getCoreTtsToolResultMediaUrls(rawResult);
           recordAgentHarnessToolResultTelemetry({
-            extractSourceReplyPayload: (toolResult) =>
-              extractInternalSourceReplyPayload(toolResult?.details),
+            extractSourceReplyPayload: extractMessagingToolSourceReplyPayload,
             toolName,
             args: executedArgs,
             result,
@@ -1079,40 +1077,6 @@ function composeAbortSignals(...signals: Array<AbortSignal | undefined>): AbortS
   }
   return AbortSignal.any(activeSignals);
 }
-function extractInternalSourceReplyPayload(
-  details: unknown,
-): MessagingToolSourceReplyPayload | undefined {
-  if (!isRecord(details) || details.sourceReplySink !== "internal-ui") {
-    return undefined;
-  }
-  const rawPayload = details.sourceReply;
-  if (!isRecord(rawPayload)) {
-    return undefined;
-  }
-  const text = readFirstString(rawPayload, ["text", "message"]);
-  const mediaUrls = collectAgentHarnessMessagingMediaUrls(rawPayload);
-  const mediaUrl =
-    typeof rawPayload.mediaUrl === "string" && rawPayload.mediaUrl.trim()
-      ? rawPayload.mediaUrl.trim()
-      : mediaUrls[0];
-  const payload: MessagingToolSourceReplyPayload = {
-    ...(text ? { text } : {}),
-    ...(mediaUrl ? { mediaUrl } : {}),
-    ...(mediaUrls.length > 0 ? { mediaUrls } : {}),
-    ...(rawPayload.audioAsVoice === true ? { audioAsVoice: true } : {}),
-    ...(isRecord(rawPayload.presentation)
-      ? { presentation: rawPayload.presentation as never }
-      : {}),
-    ...(isRecord(rawPayload.interactive) ? { interactive: rawPayload.interactive as never } : {}),
-    ...(isRecord(rawPayload.channelData) ? { channelData: rawPayload.channelData } : {}),
-    ...(typeof details.idempotencyKey === "string" && details.idempotencyKey.trim()
-      ? { idempotencyKey: details.idempotencyKey.trim() }
-      : {}),
-  };
-  return text || mediaUrls.length > 0 || payload.presentation || payload.interactive
-    ? payload
-    : undefined;
-}
 function isToolResultYield(result: AgentToolResult<unknown>): boolean {
   const details = result.details;
   if (!isRecord(details) || typeof details.status !== "string") {
@@ -1237,17 +1201,5 @@ function convertToolContent(
       imageUrl,
     },
   ];
-}
-function readFirstString(record: Record<string, unknown>, keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return String(value);
-    }
-  }
-  return undefined;
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
