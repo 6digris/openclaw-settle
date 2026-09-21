@@ -97,6 +97,7 @@ For LiteLLM, the small source stroke widths are unified at 1.35 source units bef
 | `mattermost`             | [`simple-icons@16.31.0`](https://www.npmjs.com/package/simple-icons/v/16.31.0) | `mattermost.svg`     |
 | `msteams`                | [`simple-icons@11.15.0`](https://www.npmjs.com/package/simple-icons/v/11.15.0) | `microsoftteams.svg` |
 | `nextcloud-talk`         | [`simple-icons@16.31.0`](https://www.npmjs.com/package/simple-icons/v/16.31.0) | `nextcloud.svg`      |
+| `onnx`                   | [`simple-icons@16.31.0`](https://www.npmjs.com/package/simple-icons/v/16.31.0) | `onnx.svg`           |
 | `onepassword`            | [`simple-icons@16.31.0`](https://www.npmjs.com/package/simple-icons/v/16.31.0) | `1password.svg`      |
 | `searxng`                | [`simple-icons@16.31.0`](https://www.npmjs.com/package/simple-icons/v/16.31.0) | `searxng.svg`        |
 | `signal`                 | [`simple-icons@16.31.0`](https://www.npmjs.com/package/simple-icons/v/16.31.0) | `signal.svg`         |
@@ -111,7 +112,11 @@ For LiteLLM, the small source stroke widths are unified at 1.35 source units bef
 
 Exa, Firecrawl, Tavily, and Voyage use the corresponding monochrome `exa.svg`, `firecrawl.svg`, `tavily.svg`, and `voyage.svg` files from [`@lobehub/icons-static-svg@1.95.0`](https://www.npmjs.com/package/@lobehub/icons-static-svg/v/1.95.0). Their geometry is unchanged. Source: [Lobe Icons](https://github.com/lobehub/lobe-icons), MIT license.
 
+TypeSafe AI reuses the single-path brand mark and its `0 0 16.487 24` view box from the inline `svg-684955628_986` artwork on [typesafe.ai](https://typesafe.ai). Its presentation attributes are normalized to `currentColor`; geometry is unchanged.
+
 ## OpenClaw action glyphs
+
+GitHub reuses the filled brand mark from [`github-mark.ts`](../ui/src/components/github-mark.ts). FaceTime reuses the phone glyph from [`voice-call/assets/activity.svg`](voice-call/assets/activity.svg).
 
 Browser, Canvas, Diffs, and the memory family preserve the approved shapes from [`icons-tools.ts`](../ui/src/components/icons-tools.ts). The optional overrides preserve Intent, memory store/forget, file fetch/write, and directory list/fetch geometry. Lobster preserves both progress-claw paths, with a solid fill and the jaw’s resting `rotate(-10 8.6 11)` transform from [`working-indicator.css`](../ui/src/styles/chat/working-indicator.css). Linux Node reuses the existing platform silhouette from [`brand-icons.ts`](../ui/src/pages/apps/brand-icons.ts).
 
@@ -125,7 +130,7 @@ Other defaults are OpenClaw functional glyphs drawn for the 24-unit activity gri
 | Files and knowledge     | `document-extract`, `file-transfer`, `imap`, `logbook`, `memory-wiki`, `oc-path`, `web-readability`, `workboard` |
 | Compute and location    | `crabbox`, `cua-computer`, `geolocation`, `gmi`, `radius`, `sglang`                                              |
 | Security and migration  | `migrate-claude`, `migrate-hermes`, `mxc`, `openshell`, `policy`, `visitor-access`                               |
-| Audio and media         | `gradium`, `inworld`, `senseaudio`, `talk-voice`, `tts-local-cli`, `voice-call`, `vydra`                         |
+| Audio and media         | `facetime`, `gradium`, `inworld`, `senseaudio`, `talk-voice`, `tts-local-cli`, `voice-call`, `vydra`             |
 | Utilities and reports   | `parallel`, `qa-channel`, `qa-lab`, `team-reports`, `tokenjuice`                                                 |
 
 ## License notices
