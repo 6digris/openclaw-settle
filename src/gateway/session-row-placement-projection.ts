@@ -17,7 +17,17 @@ export function createSessionRowPlacementProjection(
   const registered = new Set<string>();
   const dirty = new Set<string>();
   let exact: ReadonlyMap<string, SessionRowPlacementFacts> | undefined;
-  let revision = 0;
+  // Only facts requested by a pending read can invalidate that read's result.
+  const pendingReads = new Set<Set<string>>();
+  const invalidateReads = (id?: string) => {
+    for (const current of pendingReads) {
+      if (id) {
+        current.delete(id);
+      } else {
+        current.clear();
+      }
+    }
+  };
   let disposed = false;
   const select = (
     snapshot: WorkerSessionPlacementProjection,
@@ -54,13 +64,13 @@ export function createSessionRowPlacementProjection(
       }
     },
     forget(id: string) {
-      revision++;
+      invalidateReads(id);
       registered.delete(id);
       dirty.delete(id);
       resident.delete(id);
     },
     invalidate(id?: string) {
-      revision++;
+      invalidateReads(id);
       if (id) {
         resident.delete(id);
         if (registered.has(id)) {
@@ -132,14 +142,21 @@ export function createSessionRowPlacementProjection(
       if (disposed || !reader || requested.length === 0) {
         return;
       }
-      const captured = revision;
-      const snapshot = await inOwnerContext(() => reader.readProjection(requested));
-      if (disposed || revision !== captured) {
-        return;
-      }
-      for (const id of requested) {
-        resident.set(id, select(snapshot, id));
-        dirty.delete(id);
+      const current = new Set(requested);
+      pendingReads.add(current);
+      try {
+        const snapshot = await inOwnerContext(() => reader.readProjection(requested));
+        if (disposed) {
+          return;
+        }
+        for (const id of current) {
+          if (registered.has(id)) {
+            resident.set(id, select(snapshot, id));
+            dirty.delete(id);
+          }
+        }
+      } finally {
+        pendingReads.delete(current);
       }
     },
     async withPrepared<T>(
@@ -155,30 +172,38 @@ export function createSessionRowPlacementProjection(
         if (!reader || requested.length === 0) {
           return await consume();
         }
-        const captured = revision;
-        const snapshot = await inOwnerContext(() => reader.readProjection(requested));
-        if (disposed) {
-          break;
-        }
-        if (revision !== captured) {
-          continue;
-        }
-        const prepared = new Map(requested.map((id) => [id, select(snapshot, id)]));
-        // Resolve the exact identity again after waiting; never use a replaced session's facts.
-        if (selectIds().some((id) => !resident.has(id) && !prepared.has(id))) {
-          continue;
-        }
-        const previous = exact;
-        let result: T;
-        // Owner context restoration must retain this synchronous frame, never its async descendants.
-        exact = prepared;
+        const current = new Set(requested);
+        pendingReads.add(current);
         try {
-          result = consume();
+          const snapshot = await inOwnerContext(() => reader.readProjection(requested));
+          if (disposed) {
+            break;
+          }
+          if (requested.some((id) => !current.has(id))) {
+            continue;
+          }
+          const prepared = new Map(requested.map((id) => [id, select(snapshot, id)]));
+          // Resolve the exact identity again after waiting; never use a replaced session's facts.
+          if (
+            selectIds().some((id) => !resident.has(id) && !prepared.has(id)) ||
+            requested.some((id) => !current.has(id))
+          ) {
+            continue;
+          }
+          const previous = exact;
+          let result: T;
+          // Owner context restoration must retain this synchronous frame, never its async descendants.
+          exact = prepared;
+          try {
+            result = consume();
+          } finally {
+            exact = previous;
+            prepared.clear();
+          }
+          return await result;
         } finally {
-          exact = previous;
-          prepared.clear();
+          pendingReads.delete(current);
         }
-        return await result;
       }
       throw new Error("Session row projection is no longer active");
     },

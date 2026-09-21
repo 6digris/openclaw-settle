@@ -4,10 +4,12 @@ import {
   loadSessionEntryReadOnly,
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { sessionByKeyReadHandlers } from "./server-methods/sessions-read-by-key.js";
 import { requestContext } from "./server-methods/sessions-read-cache.test-support.js";
+import { createSessionRowPlacementProjection } from "./session-row-placement-projection.js";
 import type { SessionRowReadView } from "./session-row-prepared-read.js";
 import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
@@ -228,6 +230,113 @@ it("prepares only the private response's child selections before consumption", a
       );
       expect(projection.capture(query)?.entry?.sessionId).toBe("private-parent");
     } finally {
+      projection.dispose();
+    }
+  });
+});
+
+it("keeps an exact placement read when another session publishes activity", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const target = { agentId: "main", sessionKey: query.key, sessionId: "private-in-flight" };
+    const other = { agentId: "main", sessionKey: "agent:main:other-activity" };
+    replaceSessionEntrySync(target, { sessionId: target.sessionId, updatedAt: 1, incognito: true });
+    replaceSessionEntrySync(other, { sessionId: "other-activity", updatedAt: 1 });
+    const placements = createWorkerSessionPlacementStore();
+    placements.startDispatch(target);
+    const projection = await createSessionRowProjection({
+      cfg,
+      modelCatalog: [],
+      placementFactsReader: placements,
+    });
+    const captured = createDeferredCore();
+    const release = createDeferredCore();
+    const respond = vi.fn();
+    let pending: Promise<void> | void;
+    try {
+      await projection.ensureMaterialized();
+      const readProjection = placements.readProjection.bind(placements);
+      const reads = vi.spyOn(placements, "readProjection").mockImplementation(async (ids) => {
+        const snapshot = await readProjection(ids);
+        if (ids.includes(target.sessionId)) {
+          captured.resolve();
+          await release.promise;
+        }
+        return snapshot;
+      });
+      pending = sessionByKeyReadHandlers["sessions.describe"]!({
+        req: { type: "req", id: "private-in-flight", method: "sessions.describe" },
+        params: { key: target.sessionKey },
+        client: null,
+        context: bindSessionRowProjection(requestContext(cfg), () => projection),
+        isWebchatConnect: () => false,
+        respond,
+      });
+      await captured.promise;
+      replaceSessionEntrySync(other, { sessionId: "other-activity", updatedAt: 2 });
+      sessionChanges.emit(other);
+      await projection.ensureMaterialized();
+      release.resolve();
+      await pending;
+      expect(respond).toHaveBeenCalledExactlyOnceWith(true, {
+        session: expect.objectContaining({
+          sessionId: target.sessionId,
+          placement: expect.objectContaining({ state: "requested" }),
+        }),
+      });
+      expect(reads.mock.calls.filter(([ids]) => ids.includes(target.sessionId))).toHaveLength(1);
+      expect(projection.selectEntries({ key: target.sessionKey })).toEqual([]);
+      expect(projection.snapshot(query).row?.placement).toBeUndefined();
+    } finally {
+      release.resolve();
+      await pending;
+      projection.dispose();
+    }
+  });
+});
+
+it("retains unchanged batch facts while a forgotten session is registered again", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const placements = createWorkerSessionPlacementStore();
+    for (const sessionId of ["changed", "unchanged"]) {
+      placements.startDispatch({
+        agentId: "main",
+        sessionKey: `agent:main:${sessionId}`,
+        sessionId,
+      });
+    }
+    const projection = createSessionRowPlacementProjection(placements);
+    projection.register("changed");
+    projection.register("unchanged");
+    const captured = createDeferredCore();
+    const release = createDeferredCore();
+    const readProjection = placements.readProjection.bind(placements);
+    const reads = vi.spyOn(placements, "readProjection").mockImplementationOnce(async (ids) => {
+      const snapshot = await readProjection(ids);
+      captured.resolve();
+      await release.promise;
+      return snapshot;
+    });
+    const pending = projection.prepare();
+    try {
+      await captured.promise;
+      projection.forget("changed");
+      projection.register("changed");
+      placements.fail({ sessionId: "changed", recoveryError: "Replaced while reading" });
+      release.resolve();
+      await pending;
+      expect(projection.getProjectionFacts("changed")).toBeUndefined();
+      expect(projection.getProjectionFacts("unchanged")?.placement?.state).toBe("requested");
+      expect(projection.needsPreparation).toBe(true);
+      await projection.prepare();
+      expect(reads.mock.calls).toEqual([[["changed", "unchanged"]], [["changed"]]]);
+      expect(projection.getProjectionFacts("changed")?.placement).toMatchObject({
+        state: "failed",
+        recoveryError: "Replaced while reading",
+      });
+      expect(projection.needsPreparation).toBe(false);
+    } finally {
+      release.resolve();
+      await pending;
       projection.dispose();
     }
   });
