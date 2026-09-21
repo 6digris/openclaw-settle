@@ -101,7 +101,12 @@ describe("doctor invalid config process exit", () => {
         name: `doctor-fts-${version}`,
         cwd: runtimeRoot,
         entrypoint: [path.join(runtimeRoot, "dist", "entry.js")],
-        env: { OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1", OPENCLAW_SERVICE_REPAIR_POLICY: "external" },
+        env: {
+          OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+          OPENCLAW_SERVICE_REPAIR_POLICY: "external",
+          // The helper's minimal Gateway deliberately skips startup transcript reconciliation.
+          OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
+        },
         config: { gateway: { mode: "local" }, agents: { entries: { main: {} } } },
       });
       try {
@@ -142,7 +147,7 @@ describe("doctor invalid config process exit", () => {
           prepared.close();
         }
         await instance.startGateway();
-        const response = await fetch(`${instance.url}/readyz`);
+        const response = await fetch(`http://127.0.0.1:${instance.port}/readyz`);
         expect(response.status).toBe(200);
         await expect(response.json()).resolves.toMatchObject({ ready: true });
         const reconciled = new DatabaseSync(pathname, { readOnly: true });
