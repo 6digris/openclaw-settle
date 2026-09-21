@@ -15,14 +15,16 @@ import { defaultRuntime } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import type { UpdateCommandOptions } from "./shared.js";
+import { createUpdateCommandExecutionGuards } from "./update-command-execution-guards.js";
 import {
+  failUpdateCommandRun,
   markControlPlaneUpdateRestartSentinelFailureBestEffort,
   writeControlPlaneUpdateRestartSentinelBestEffort,
 } from "./update-command-result.js";
 import {
   completeUpdateCommandRun,
   createUpdateRunProgress,
-  failUpdateCommandRun,
+  recordUpdateCommandTarget,
 } from "./update-command-run.js";
 
 afterEach(() => {
@@ -143,6 +145,9 @@ describe.skipIf(!nativeFreeBsdRoot)("native FreeBSD update admission and history
           freebsdRootAdmission: admission!,
         };
         const original = getUpdateRun(run.runId, { env });
+        const guards = createUpdateCommandExecutionGuards({ run }, root);
+        expect(guards.assertCurrent).not.toThrow();
+        expect(guards.assertBoundChildCurrent).not.toThrow();
         const displayed = { onStepStart: vi.fn(), onStepComplete: vi.fn() };
         const progress = createUpdateRunProgress(run, displayed);
         const errors = vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
@@ -153,6 +158,12 @@ describe.skipIf(!nativeFreeBsdRoot)("native FreeBSD update admission and history
           );
         const report = () => {
           progress.onHeartbeat?.();
+          progress.onRollbackOutcome?.({ status: "failed", reason: "late fixture rollback" });
+          expect(guards.assertCurrent).toThrow();
+          expect(guards.assertBoundChildCurrent).toThrow();
+          expect(() =>
+            recordUpdateCommandTarget(run, { target: { tag: "late-fixture" } }),
+          ).toThrow();
           progress.onStepStart?.({
             name: "candidate validation",
             command: "fixture validation",
@@ -220,6 +231,8 @@ describe.skipIf(!nativeFreeBsdRoot)("native FreeBSD update admission and history
           expect(failure).toBeUndefined();
           expect(admission!.failure).toBeUndefined();
           expect(() => admission!.assertCurrent()).not.toThrow();
+          expect(guards.assertCurrent).not.toThrow();
+          expect(guards.assertBoundChildCurrent).not.toThrow();
           progress.flushLedgerWrites();
           expect(getUpdateRun(run.runId, { env })?.steps).toEqual(
             expect.arrayContaining([

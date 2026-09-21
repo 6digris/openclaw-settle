@@ -9,6 +9,8 @@ export const TRIAGE_EXTERNAL_AGENTS = [
   "muse",
   "grok",
   "cursor",
+  "kimi",
+  "qwen",
 ] as const;
 export type TriageExternalAgent = (typeof TRIAGE_EXTERNAL_AGENTS)[number];
 
@@ -44,6 +46,17 @@ export function formatTriageHandoffCommands(params: {
       target,
       { env },
     ),
+    kimi: formatInstallationTargetCommand(
+      [
+        "kimi",
+        "--prompt",
+        promptPath
+          ? `Read the debugging prompt at ${promptPath} and follow its repair and verification instructions.`
+          : prompt,
+      ],
+      target,
+      { env },
+    ),
     muse: formatInstallationTargetCommand(
       ["muse", "exec", ...(promptPath ? ["--prompt-file", promptPath] : [prompt])],
       target,
@@ -59,6 +72,7 @@ export function formatTriageHandoffCommands(params: {
       target,
       stdin,
     ),
+    qwen: formatInstallationTargetCommand(["qwen", ...(promptPath ? [] : [prompt])], target, stdin),
   };
   const failureArgs = updateResultPath ? ["--update-result", updateResultPath] : [];
   return {

@@ -25,6 +25,15 @@ actor GatewayConnection: Observable {
             currentEndpointRevision: { GatewayEndpointStore.shared.routeRevision })
     }()
 
+    @MainActor private weak var approvalQueueStore: ExecApprovalQueueStore?
+
+    @MainActor var approvalQueue: ExecApprovalQueueStore {
+        if let store = self.approvalQueueStore { return store }
+        let store = ExecApprovalQueueStore(gateway: self)
+        self.approvalQueueStore = store
+        return store
+    }
+
     nonisolated static let operatorClientCaps = [
         OpenClawGatewayClientCapability.agentKind,
         OpenClawGatewayClientCapability.inlineWidgets,

@@ -37,6 +37,17 @@ export type ManagedWorktreeRecord = {
   runEndCleanup?: ManagedWorktreeRunEndCleanup;
 };
 
+type WorktreeSourceCurrent = {
+  assertCurrent: () => void;
+  /** Checkout custody for rollback within this callback, independent of caller/source freshness. */
+  assertCheckoutCurrent?: () => void;
+  signal?: AbortSignal;
+};
+
+export type WorktreeSourceStage = <T>(
+  run: (current: WorktreeSourceCurrent) => T | Promise<T>,
+) => Promise<T>;
+
 export type CreateManagedWorktreeParams = {
   repoRoot: string;
   name?: string;
@@ -51,10 +62,30 @@ export type CreateManagedWorktreeParams = {
   ownerId?: string;
   // Repository Git hooks are always disabled; only the setup script runs repo-local code.
   runSetupScript?: boolean;
+  /** Guest projections receive committed source, never host ignored-file provisioning. */
+  provisionIgnoredFiles?: boolean;
   signal?: AbortSignal;
   onProgress?: (phase: "checkout" | "setup") => void;
   /** Synchronous caller-authority guard checked at allocation commit boundaries. */
   commitGuard?: () => void;
+  /** Revalidate the selected source for one operation without retaining its guard afterward. */
+  withSource?: WorktreeSourceStage;
+  /** Cleanup retains checkout custody without requiring a retired source selection. */
+  withRollback?: <T>(run: (assertCurrent: () => void) => Promise<T>) => Promise<T>;
+};
+
+export type CreateEmptyManagedWorktreeParams = Omit<
+  CreateManagedWorktreeParams,
+  "repoRoot" | "baseRef" | "checkoutCommit" | "profiles"
+> & {
+  ownerKind: "session";
+  ownerId: string;
+};
+
+export type ManagedWorktreeCreationOutcome = {
+  record: ManagedWorktreeRecord;
+  /** This allocation created or restored the checkout instead of reusing a live one. */
+  materialized: boolean;
 };
 
 export type RemoveManagedWorktreeResult = {

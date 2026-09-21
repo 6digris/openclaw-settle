@@ -18,11 +18,11 @@ import { withEnvAsync } from "../../test-utils/env.js";
 import * as shared from "./shared.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import * as packageUpdate from "./update-command-package.js";
+import { failUpdateCommandRun } from "./update-command-result.js";
 import {
   admitUpdateCommandRun,
   completeUpdateCommandRun,
   createUpdateRunProgress,
-  failUpdateCommandRun,
 } from "./update-command-run.js";
 import * as servicePlan from "./update-command-service-plan.js";
 import * as target from "./update-command-target.js";

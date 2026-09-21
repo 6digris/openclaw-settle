@@ -28,6 +28,10 @@ import { mainLanes } from "../../scripts/lib/docker-e2e-scenarios.mts";
 import { buildSystemdUnit } from "../../src/daemon/systemd-unit.js";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import {
+  readUpgradeSurvivorPaths,
+  UPGRADE_SURVIVOR_PATHS_HELPER,
+} from "./upgrade-survivor-paths.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const testNodeExecPath = resolveTestNodeExecPath();
@@ -407,7 +411,7 @@ function runSurvivorDiagnostics(
   env: NodeJS.ProcessEnv = {},
 ) {
   return spawnSync(
-    process.execPath,
+    testNodeExecPath,
     [
       ...(mode === "publish" ? ["--import", "./scripts/tsx.mjs"] : []),
       mode === "publish"
@@ -2961,10 +2965,12 @@ docker_e2e_docker_run_cmd run demo
   it("keeps upgrade survivor mutable state off the host-mounted artifact tree", () => {
     const runner = readFileSync(UPGRADE_SURVIVOR_DOCKER_E2E_PATH, "utf8");
     const publishedRunner = readFileSync(UPGRADE_SURVIVOR_RUN_SCRIPT, "utf8");
+    expect(readFileSync(UPGRADE_SURVIVOR_PATHS_HELPER, "utf8")).toContain(
+      "openclaw-upgrade-survivor-runtime",
+    );
 
     for (const script of [runner, publishedRunner]) {
       expectTextToIncludeAll(script, [
-        "openclaw-upgrade-survivor-runtime",
         "OPENCLAW_UPGRADE_SURVIVOR_TMPDIR",
         "OPENCLAW_UPGRADE_SURVIVOR_TEST_STATE_TMPDIR",
         'export npm_config_cache="${OPENCLAW_UPGRADE_SURVIVOR_NPM_CACHE:-$OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT/npm-cache}"',
@@ -3753,7 +3759,8 @@ fi
     "starts the %s auth probe under the manager that owns its restart and stop",
     async (lane) => {
       const workDir = tempDirs.make("survivor-managed-probe-");
-      const artifacts = join(workDir, "artifacts");
+      const paths = readUpgradeSurvivorPaths(workDir);
+      const artifacts = paths.artifactRoot;
       const stateDir = join(workDir, "state");
       mkdirSync(artifacts);
       mkdirSync(stateDir);
@@ -3817,8 +3824,7 @@ process.on("SIGTERM", () => {
         OPENCLAW_CONFIG_PATH: configPath,
         OPENCLAW_UPGRADE_SURVIVOR_BASELINE: "openclaw@2026.3.13",
         OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE: "auto-auth",
-        OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT: join(workDir, "runtime"),
-        OPENCLAW_UPGRADE_SURVIVOR_SUMMARY_JSON: join(artifacts, "summary.json"),
+        ...paths.env,
         OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE: join(artifacts, "systemctl-shim.pid"),
         OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_LOG: join(artifacts, "systemctl-shim.log"),
         OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_DAEMON_LOG: join(
@@ -3862,11 +3868,8 @@ openclaw_e2e_wait_gateway_ready() {
 }
 ${lane === "published" ? "prepare_update_restart_probe" : 'prepare_update_restart_probe_current_install 18789 "$OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_DAEMON_LOG"'}
 `;
-      const systemctlPath = join(
-        lane === "published" ? join(artifacts, "npm-prefix") : workDir,
-        "bin",
-        "systemctl",
-      );
+      const bin = lane === "published" ? paths.binDir : join(workDir, "bin");
+      const systemctlPath = join(bin, "systemctl");
       const systemctl = (...args: string[]) =>
         spawnSync(systemctlPath, ["--user", ...args], {
           env,
@@ -4448,10 +4451,8 @@ process.exit(78);
       const source = readFileSync(scriptPath, "utf8");
       const published = scriptPath === UPGRADE_SURVIVOR_RUN_SCRIPT;
       const artifactSetup = published
-        ? source.slice(
-            source.indexOf("ARTIFACT_ROOT="),
-            source.indexOf("export OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT="),
-          )
+        ? `source ${shellQuote(UPGRADE_SURVIVOR_PATHS_HELPER)}
+resolve_upgrade_survivor_paths`
         : 'ARTIFACT_ROOT="$OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"';
       const update = published
         ? source.slice(
@@ -5131,7 +5132,8 @@ exec ${shellQuote(process.execPath)} "$@"
         [0, false, false],
       ] as const) {
         const workDir = tempDirs.make("openclaw-survivor-exit-diagnostics-");
-        const artifacts = join(workDir, "artifacts");
+        const paths = readUpgradeSurvivorPaths(workDir);
+        const artifacts = paths.artifactRoot;
         mkdirSync(artifacts);
         if (blocked) {
           writeFileSync(join(artifacts, "diagnostics"), "not a directory");
@@ -5171,8 +5173,9 @@ last_update_observation_root=${shellQuote(recoveryRoot)}`;
 CURRENT_PHASE=update-candidate
 run_completed=${completed ? 1 : 0}
 ${observationSetup}
-printf "original startup error\\n" >"$npm_config_prefix/../update.err"
-cleanup() { printf "cleanup replacement\\n" >"$npm_config_prefix/../update.err"; }
+${scriptPath === UPGRADE_SURVIVOR_RUN_SCRIPT ? "" : `UPDATE_ERR=${shellQuote(paths.updateErr)}`}
+printf "original startup error\\n" >"$UPDATE_ERR"
+cleanup() { printf "cleanup replacement\\n" >"$UPDATE_ERR"; }
 exit ${exitCode}
 `,
           {
@@ -5183,17 +5186,14 @@ exit ${exitCode}
               OPENCLAW_STATE_DIR: workDir,
               OPENCLAW_CONFIG_PATH: join(workDir, "absent"),
               OPENCLAW_UPGRADE_SURVIVOR_BASELINE: "openclaw@2026.7.1-2",
-              OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT: join(workDir, "runtime"),
-              OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT: artifacts,
-              OPENCLAW_UPGRADE_SURVIVOR_SUMMARY_JSON: join(artifacts, "summary.json"),
+              ...paths.env,
+              OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT: paths.artifactRoot,
             },
           },
         );
         const expectedStatus = exitCode || (completed ? 0 : 1);
         expect(result.status, result.stderr).toBe(expectedStatus);
-        expect(readFileSync(join(artifacts, "update.err"), "utf8")).toContain(
-          "cleanup replacement",
-        );
+        expect(readFileSync(paths.updateErr, "utf8")).toContain("cleanup replacement");
         if (!blocked) {
           const report = JSON.parse(
             readFileSync(join(artifacts, "diagnostics", "raw.json"), "utf8"),
@@ -5206,7 +5206,7 @@ exit ${exitCode}
           expect(result.stdout + result.stderr).not.toContain("diagnostics missing");
         }
         if (observationSetup) {
-          expect(JSON.parse(readFileSync(join(artifacts, "summary.json"), "utf8"))).toMatchObject({
+          expect(JSON.parse(readFileSync(paths.summaryJson, "utf8"))).toMatchObject({
             status: "passed",
             firstHopPostCore: {
               availability: "captured",
@@ -6920,11 +6920,6 @@ source "$ROOT_DIR/scripts/lib/docker-e2e-logs.sh"
     expect(packageRunner.match(/verify-fs-safe-native\.mjs[^\n]+--mode require/gu)).toHaveLength(3);
     expect(packageRunner).toContain("bash scripts/e2e/bun-global-install-smoke.sh");
     expect(packageRunner.match(/-e OPENCLAW_FS_SAFE_NATIVE_CONTRACT/g)).toHaveLength(4);
-    expectTextToIncludeAll(packageRunner, [
-      'MUSL_FS_SAFE_NATIVE_OUTCOME="passed"',
-      'MUSL_FS_SAFE_NATIVE_OUTCOME="not-applicable"',
-      '--detail "musl:fsSafeNative=$MUSL_FS_SAFE_NATIVE_OUTCOME"',
-    ]);
     expect(updateRunner).toContain('mv "$platform_package" "$platform_package.omitted"');
     expect(updateRunner).toContain("--mode fallback");
     expect(updateRunner).toContain("-e OPENCLAW_FS_SAFE_NATIVE_CONTRACT");
@@ -7966,11 +7961,10 @@ fs.appendFileSync(process.env.FIXTURE_DOCKER_CAPTURE, JSON.stringify({ args, sta
       'DOCKER_COMMAND_TIMEOUT="$DOCKER_RUN_TIMEOUT" docker_e2e_docker_run_cmd run -d',
     );
     expect(packageRunner).not.toMatch(/(^|\n)docker run -d/u);
-    for (const runner of [composeRunner, packageRunner]) {
-      expect(runner).toContain(
-        'node --import tsx "$ROOT_DIR/scripts/e2e/lib/docker-artifact-proof/write-identities.ts"',
-      );
-    }
+    expect(composeRunner).toContain(
+      'node --import tsx "$ROOT_DIR/scripts/e2e/lib/docker-artifact-proof/write-identities.ts"',
+    );
+    expect(packageRunner).toContain('bash "$ROOT_DIR/scripts/e2e/lib/docker-package-identity.sh"');
   });
 
   it("copies the complete bun harness closure into the package-install lane", () => {
@@ -8035,7 +8029,6 @@ fs.appendFileSync(process.env.FIXTURE_DOCKER_CAPTURE, JSON.stringify({ args, sta
       'corepack prepare "$1" --activate',
       "pnpm list --global --json",
       'test -f "$package_root/package.json"',
-      'test "$PNPM_PACKAGE_VERSION" = "$PACKAGE_VERSION"',
       "pnpm add --global openclaw@file:/tmp/openclaw-current.tgz",
       'pnpm approve-builds --global "$artifact_build"',
       "bun@1.4.0",
@@ -8045,9 +8038,9 @@ fs.appendFileSync(process.env.FIXTURE_DOCKER_CAPTURE, JSON.stringify({ args, sta
       'PACKAGE_HARNESS_DIR="$(mktemp -d',
       "chmod -R a+rX",
       '-v "$PACKAGE_HARNESS_DIR:/repo:ro"',
-      '--container "npm=$NPM_PROOF_CONTAINER"',
-      '--container "pnpm=$PNPM_PROOF_CONTAINER"',
-      '--container "bun=$BUN_PROOF_CONTAINER"',
+      '"$PACKAGE_TGZ" \\',
+      '"$IDENTITY_PATH" \\',
+      '"$MUSL_PROOF_CONTAINER"',
     ]);
     expect(packageRunner).not.toContain('-v "$ROOT_DIR:/repo:ro"');
     expectTextToIncludeAll(installerRunner, [

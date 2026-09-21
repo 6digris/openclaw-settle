@@ -1,9 +1,17 @@
 import { expect, it } from "vitest";
+import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
+import { resolveTestNodeExecPath } from "../../test-utils/node-process.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { formatCliProcessFailure, runCliProcessChild } from "../cli-process-child.test-helpers.js";
+import { updateServiceRuntimeEntrypoints } from "./update-command-legacy-finalize-entrypoint.test-support.js";
+
+const serviceCommand = resolveRuntimeWorkerUrl(updateServiceRuntimeEntrypoints.command);
+const serviceLoad = resolveRuntimeWorkerUrl(updateServiceRuntimeEntrypoints.load);
+const sourceArgs = serviceCommand.pathname.endsWith(".ts") ? ["--import", "./scripts/tsx.mjs"] : [];
 
 it.each([
   "sealed",
+  "load-failed",
   "refused",
   "revoked",
   "owner-revoked",
@@ -22,7 +30,7 @@ it.each([
           import path from "node:path";
           import { mock } from "node:test";
           import { pathToFileURL } from "node:url";
-          import { runUpdatedInstallGatewayCommand } from ${JSON.stringify(new URL("./update-command-service-command.ts", import.meta.url).href)};
+          import { runUpdatedInstallGatewayCommand } from ${JSON.stringify(serviceCommand.href)};
           const scenario = ${JSON.stringify(scenario)};
           const timedSeal = scenario === "slow-seal" || scenario === "short-budget";
           const originalTimeout = AbortSignal.timeout;
@@ -38,11 +46,14 @@ it.each([
           const staged = path.join(root, "staged");
           const loaded = path.join(root, "loaded");
           const sealed = path.join(root, "sealed");
-          const waitModule = ${JSON.stringify(new URL("../daemon-cli/install-load.ts", import.meta.url).href)};
+          const waitModule = ${JSON.stringify(serviceLoad.href)};
           await fs.mkdir(path.join(root, "dist"), { recursive: true });
           const files = { files: [{ sourcePath: staged, before: null, after: {
             sha256: "a".repeat(64), mode: 384, dev: 1, ino: 2, size: 1, mtimeMs: 1, ctimeMs: 1,
           }}] };
+          const backup = { id: "00000000-0000-4000-8000-000000000001",
+            files: [{ sourcePath: staged, before: null, after: null }], guards: [] };
+          const warning = "Reconciled Gateway service definition: Service.KillMode";
           await fs.writeFile(path.join(root, "dist", "index.mjs"), [
             'import fs from "node:fs/promises";',
             'import { mock } from "node:test";',
@@ -55,11 +66,16 @@ it.each([
             'await loading;',
             'await fs.access(' + JSON.stringify(sealed) + ');',
             'await fs.writeFile(' + JSON.stringify(loaded) + ', process.env.OPENCLAW_CONFIG_PATH);',
+            'process.stdout.write(' + JSON.stringify(JSON.stringify({ action: "install", ok: scenario !== "load-failed", definitionBackup: backup, warnings: [warning] })) + ');',
+            scenario === "load-failed" ? 'process.exitCode = 1;' : '',
             'process.disconnect();',
           ].join("\n"));
           let calls = 0;
+          const definitionRecovery = {};
+          const warnings = [];
           const result = runUpdatedInstallGatewayCommand({
             result: { root, mode: "npm" }, opts: { json: true },
+            definitionRecovery, onWarnings: messages => warnings.push(...messages),
             invocationEnv: { ...process.env, OPENCLAW_CONFIG_PATH: "caller-profile" },
             serviceInstallEnv: { ...process.env, OPENCLAW_CONFIG_PATH: "owned-profile" },
             timeoutMs: scenario === "short-budget" ? 10_000 : 120_000,
@@ -94,13 +110,18 @@ it.each([
             assert.equal(await fs.readFile(loaded, "utf8"), "owned-profile");
           } else {
             await assert.rejects(result, { name: "UpdateServiceLoadBoundaryError" });
-            assert.equal(existsSync(loaded), false);
+            assert.equal(existsSync(loaded), scenario === "load-failed");
+          }
+          if (["sealed", "slow-seal", "slow-child", "load-failed"].includes(scenario)) {
+            assert.deepEqual(definitionRecovery, { backup, unverified: false });
+            assert.deepEqual(warnings, [warning]);
           }
           assert.equal(calls, scenario === "no-handoff" ? 0 : 1);
           console.log("STAGED_LOAD_OK");
         `;
       const result = await runCliProcessChild({
-        nodeArgs: ["--import", "./scripts/tsx.mjs", "--input-type=module", "--eval", script],
+        nodeExecutable: resolveTestNodeExecPath(),
+        nodeArgs: [...sourceArgs, "--input-type=module", "--eval", script],
         env: { PATH: process.env.PATH, ...state.envVars },
       });
       const failure = formatCliProcessFailure({ reason: "Staged-load child failed", ...result });

@@ -15,8 +15,12 @@ export class UpdateCommandRecoveryPendingError extends Error {
 
 /** Refuse retained recovery before any package-only effects or diagnostic writes. */
 export function assertUpdateCommandRecovery(opts: UpdateCommandOptions): void {
-  opts.run?.freebsdRootAdmission?.assertCurrent();
   opts.run?.executorFence?.assertCurrent();
+  assertUpdateCommandRecoveryState(opts);
+}
+
+export function assertUpdateCommandRecoveryState(opts: UpdateCommandOptions): void {
+  opts.run?.freebsdRootAdmission?.assertCurrent();
   if (opts.recovery) {
     throw new UpdateCommandRecoveryPendingError(
       "Full-state checkpoint recovery is deferred; retained state was left unchanged.",

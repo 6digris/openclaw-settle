@@ -527,8 +527,6 @@ const CodeModeSchema = z
         runtime: z.literal("quickjs-wasi").optional(),
         /** Model-facing mode. Only "only" is supported: expose exec/wait and hide normal tools. */
         mode: z.literal("only").optional(),
-        /** Accepted source languages. */
-        languages: z.array(z.enum(["javascript", "typescript"])).optional(),
         /** Wall-clock limit in milliseconds for one exec or wait call. */
         timeoutMs: z.number().int().positive().optional(),
         /** QuickJS heap limit in bytes. */
@@ -639,7 +637,7 @@ const MessageToolConfigSchema = z
       .object({
         /** Allow sends to other channels within the same provider (default: true). */
         allowWithinProvider: z.boolean().optional(),
-        /** Allow sends across different providers (default: false). */
+        /** Allow sends across different providers (default: true). */
         allowAcrossProviders: z.boolean().optional(),
         /** Cross-context marker configuration. */
         marker: z

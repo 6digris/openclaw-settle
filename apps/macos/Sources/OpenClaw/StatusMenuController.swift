@@ -47,7 +47,7 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         self.menu.delegate = self
         StatusMenuAppearance.pin(self.menu)
 
-        let renderer = StatusMenuRenderer(menu: self.menu, state: self.state)
+        let renderer = StatusMenuRenderer(menu: self.menu, state: self.state, approvalQueue: self.approvals)
         renderer.onInstallUpdate = { [weak self] in
             self?.updater.checkForUpdates(nil)
         }
@@ -72,7 +72,6 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         self.refreshTask = nil
         self.sessions.cancelPreviewTasks()
         self.summaries.menuDidClose()
-        self.approvals.stop()
         if let clickMonitor = self.clickMonitor {
             NSEvent.removeMonitor(clickMonitor)
             self.clickMonitor = nil

@@ -229,7 +229,7 @@ describe("desktop proof identity and public evidence", () => {
     await result;
   });
 
-  it("bounds RFB events without suppressing callback exceptions or inferring a completed handshake", () => {
+  it("bounds RFB events without suppressing callback exceptions or inferring a completed handshake", async () => {
     vi.stubGlobal("window", {
       desktopProofSockets: [],
       location: { href: "https://fixture.invalid" },
@@ -249,7 +249,7 @@ describe("desktop proof identity and public evidence", () => {
     const callback = vi.fn(() => {
       throw failure;
     });
-    panel.desktopClientFactory().connect({
+    await panel.desktopClientFactory().connect({
       target: {} as HTMLElement,
       viewOnly: true,
       isCurrent: () => true,
@@ -301,9 +301,9 @@ describe("desktop proof identity and public evidence", () => {
         client.destroy();
         upstream.destroy();
         await tap.close();
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
-        );
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
       }
     },
   );
@@ -360,12 +360,14 @@ describe("desktop proof identity and public evidence", () => {
     if (!address || typeof address === "string") {
       throw new Error("missing fixture address");
     }
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
+    // Reserve the upstream port until the tap binds so it cannot connect back to itself.
     const tap = await observeDesktopEndpointPackets(address.port, new AbortController().signal);
     const clients: net.Socket[] = [];
     try {
+      expect(tap.port).not.toBe(address.port);
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
       for (let index = 0; index < 10; index++) {
         const client = net.connect({ host: "127.0.0.1", port: tap.port });
         client.on("error", () => {});
@@ -956,7 +958,7 @@ describe("desktop proof identity and public evidence", () => {
     await expect(readDesktopProofTestReport(link)).rejects.toThrow("regular file");
     await writeFile(file, "{");
     await expect(readDesktopProofTestReport(file)).rejects.toThrow();
-    await writeFile(file, Buffer.alloc(1024 * 1024 + 1));
+    await writeFile(file, Buffer.alloc(8 * 1024 * 1024 + 1));
     await expect(readDesktopProofTestReport(file)).rejects.toThrow("bounded");
   });
 

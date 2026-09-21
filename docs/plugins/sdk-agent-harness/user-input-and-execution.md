@@ -173,6 +173,18 @@ runtime-compatible schema filtering, hidden catalog execution, directory
 hydration, and catalog cleanup. Harnesses still own their SDK-specific tool
 conversion and native execution callback.
 
+Native tool adapters may use `runWithAsyncWorkResources(...)` from the same
+subpath to retain operation cleanup through host-owned admitted work without
+withholding the tool result. Register cleanup with its `onAcquired` callback;
+keep real cancellation active until cleanup releases it. Set
+`releaseBeforeResultWhenIdle: true` on the acquired resources when ordinary
+operation cleanup must complete before returning a result; accepted tracked
+work still returns its logical result without waiting for admission. This retains resources,
+not permission: queued work must still revalidate its original run, caller,
+expiry, and commit guards. Timeout, abort, and failed outcomes must close their
+operation immediately. Manual automation admission uses the existing per-call
+mutation receipt to join only activation, not the scheduled payload's lifetime.
+
 After the last policy filter, schema quarantine, and native registration
 intersection, call `finalizeAgentToolAvailability(tools, options?)` from
 `openclaw/plugin-sdk/agent-harness-runtime` before snapshotting tool definitions.
@@ -219,6 +231,24 @@ provider failures or timeouts, for invalid responses, or for an `allow` response
 whose risk is not low or medium. Detected reviewer-directed prompt injection
 returns `deny` with high risk. Facade loading or reviewer construction errors
 may still reject the promise; an error is never permission to execute.
+
+## Sandbox subprocess cleanup
+
+Use `prepareSandboxProcessCleanup(backend, env)` from
+`openclaw/plugin-sdk/sandbox` before building a subprocess exec spec. Pass its
+returned environment to `buildExecSpec`, and retain its `terminate` callback with
+the child owner. Call the exec spec’s `assertCurrent` immediately before spawning,
+and finalize the backend token on every exit or launch failure.
+
+Docker and Podman provide `prepareProcessCleanup`: a live owner mints a random
+process marker and a termination-only callback pinned to that runtime. Revoking
+execution blocks new preparation, commands, and file writes, but the previously
+minted callback can still stop its marked process tree. It cannot execute an
+arbitrary script or select a different runtime. The returned `interrupt` callback
+keeps ordinary live execution checks because a signal handler can run guest code.
+Backends without this optional
+capability retain the existing shell-command cleanup path; they must preserve
+cleanup authority according to their own lifecycle contract.
 
 ## Paired-device execution
 

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../../infra/agent-events.js";
 import { createLazyImportLoader } from "../../../shared/lazy-promise.js";
@@ -15,7 +16,6 @@ import {
   SUBAGENT_ENDED_REASON_KILLED,
   type SubagentLifecycleEndedReason,
 } from "./subagent-lifecycle-events.js";
-import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
 import { resolveKilledSubagentTaskEndedAt } from "./subagent-registry-completion.js";
 import { updateSubagentArchiveAtMs } from "./subagent-registry-helpers.js";
 import { completeTerminalEffects } from "./subagent-registry-lifecycle-cleanup.js";
@@ -123,10 +123,14 @@ export async function completeSubagentRunAttempt(
     if (!entry) {
       return;
     }
-    if (completeParams.expectedEntry && entry !== completeParams.expectedEntry) {
+    if (
+      (completeParams.expectedEntry && entry !== completeParams.expectedEntry) ||
+      completeParams.isRecoveryCurrent?.() === false
+    ) {
       return;
     }
-    suppressSessionEffects ||= shouldSuppressSubagentRecoverySessionEffects(entry);
+    context.bindTerminalSessionEffects(entry, completeParams.isChildSessionEffectsCurrent);
+    suppressSessionEffects ||= context.shouldSuppressSessionEffects(entry);
     params.clearPendingLifecycleError(completeParams.runId);
     const currentEntry = entry;
     entrySnapshot = structuredClone(entry);
@@ -442,7 +446,13 @@ export async function completeSubagentRunAttempt(
             startedAt: entry.execution.startedAt,
             endedAt,
           });
-    const executionOutcome = recoveryRequested ? (entry.execution.outcome ?? outcome) : outcome;
+    // Lifecycle events and agent.wait may report the same terminal facts. Keep
+    // their authority stable while a prepared announcement waits for admission.
+    const executionOutcome =
+      (recoveryRequested || isDeepStrictEqual(entry.execution.outcome, outcome)) &&
+      entry.execution.outcome
+        ? entry.execution.outcome
+        : outcome;
     const retainedRestartRecovery = suppressSessionEffects
       ? entry.execution.restartRecovery
       : undefined;

@@ -245,7 +245,7 @@ export async function compactEmbeddedRunForRecovery(
                     }
                   : undefined,
                 recordUsage: (usage) => mergeUsageIntoAccumulator(input.usageAccumulator, usage),
-                recordCompaction: (tokensAfter) => {
+                recordCompaction: ({ tokensAfter }) => {
                   observedCompactions += 1;
                   input.state.observeContextAccounting({ kind: "compaction", tokensAfter });
                 },

@@ -104,13 +104,6 @@ describe("recoverEmbeddedRunOverflow transcript ownership", () => {
             promptErrorSource: "precheck",
             replayMetadata: { replaySafe: false, hadPotentialSideEffects: true },
           }),
-          toolResultPromptProjectionState: {
-            replacements: new Map(),
-            frozen: new Set(),
-            ambiguousBaseKeys: new Set(),
-            restoredCacheTtl: new Map(),
-            sourceHashByKey: new Map(),
-          },
           attemptCompactionCount: 0,
           runtimeAuthPlan: undefined,
           resolvedSessionKey: target.sessionKey,

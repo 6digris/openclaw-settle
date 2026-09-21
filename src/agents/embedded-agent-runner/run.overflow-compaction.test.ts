@@ -379,7 +379,11 @@ describe("compactEmbeddedRunForRecovery", () => {
         expect(recorder?.requestBudget).toBe(requestBudget);
         expect(runtimeContext).not.toHaveProperty("requestBudget");
         recorder?.recordUsage?.({ input: 100, output: 50, total: 150 });
-        recorder?.recordCompaction?.(40);
+        recorder?.recordCompaction?.({
+          tokensBefore: 120,
+          tokensAfter: 40,
+          compactionKind: "context-engine",
+        });
         state.observeContextAccounting({ kind: "model", contextTokens: 20 });
         if (outcome === "failed") {
           throw error;
@@ -582,7 +586,7 @@ describe("createEmbeddedRunCompactionRuntime", () => {
 
   it("retires MCP predecessors when an in-memory compaction rotates identity", async () => {
     const fixture = await createRuntime();
-    const { getOrCreateSessionMcpRuntime } =
+    const { getOrCreateSessionMcpRuntime, unopenedMcpConfig } =
       await import("../agent-bundle-mcp-manager.test-support.js");
     const { getSessionMcpRuntimeManagerForTesting } =
       await import("../agent-bundle-mcp-manager-api.js");
@@ -592,7 +596,7 @@ describe("createEmbeddedRunCompactionRuntime", () => {
         sessionId,
         sessionKey: fixture.currentTarget.sessionKey,
         workspaceDir: path.dirname(fixture.currentTarget.storePath),
-        cfg: { mcp: { servers: {} } },
+        cfg: unopenedMcpConfig,
         manifestRegistry: { plugins: [] },
       });
     try {

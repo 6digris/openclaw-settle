@@ -38,6 +38,8 @@ export type ManagedServiceManagerBoundaryOptions = {
   systemdHandoffFailure?: boolean;
   systemdPostExitStates?: ManagedSystemdPostExitState[];
   systemdStopDelayMs?: number;
+  expireParentWhileStopPending?: boolean;
+  originalRecovery?: UpdateRunResult["recovery"];
   revokeOwner?: boolean;
   requester?: { channel?: string; accountId?: string; senderId?: string };
   updaterExitCode?: number;
@@ -86,6 +88,14 @@ export type ManagedServiceManagerBoundaryResult = {
   triageDeadline?: { requestedMs: number; descendantPid: number };
   savedFailure: { path: string; mode: number; contents: TriageUpdateFailure } | null;
   sensitiveFilesRemoved: boolean;
+  stopSettlement?: {
+    pid: number;
+    closed: boolean;
+    code: number | null;
+    signal: string | null;
+    parentKilledWhileStopPending: boolean;
+    failedWhileStopPending: boolean;
+  };
 };
 
 type ManagedSystemdFailureCase = readonly [string, ManagedSystemdPostExitState];
@@ -258,7 +268,7 @@ export function registerManagedSystemdHandoffConvergenceTests(
     expect(
       commands.filter((command) => command.includes("start openclaw-gateway.service")),
     ).toHaveLength(0);
-    expect(state).toEqual({ nativeRelease: {} });
+    expect(state).toEqual({});
     expect(sentinel).toMatchObject({
       payload: {
         status: "skipped",
@@ -303,7 +313,9 @@ const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 fs.appendFileSync(${JSON.stringify(commandsPath)}, args.join(" ") + "\\n");
 const action = args.find((arg) => ["show", "stop", "reset-failed", "start", "print", "disable", "bootout", "enable", "bootstrap", "kickstart"].includes(arg));
 void (async () => {
-  const { isPidDefinitelyDead } = await import(${JSON.stringify(new URL("../shared/pid-alive.ts", import.meta.url).href)});
+  const { isPidDefinitelyDead } = action === ${JSON.stringify(kind === "systemd" ? "stop" : "print")}
+    ? await import(${JSON.stringify(new URL("../shared/pid-alive.ts", import.meta.url).href)})
+    : {};
   if (${JSON.stringify(kind)} === "systemd" && action === "stop") {
     ${managedServiceStateUpdateScript(statePath, "state.parked = true")};
     while (!isPidDefinitelyDead(${parentPid})) sleep(10);

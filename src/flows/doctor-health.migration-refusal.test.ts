@@ -24,11 +24,13 @@ const snapshotProcesses = vi.hoisted(() => ({
   execFile: vi.fn<typeof import("node:child_process").execFile>(),
 }));
 vi.mock("node:child_process", async (importOriginal) => {
+  const { promisify } = await import("node:util");
   const actual = await importOriginal<typeof import("node:child_process")>();
   snapshotProcesses.execFile.mockImplementation(actual.execFile);
-  Object.defineProperties(
+  Object.defineProperty(
     snapshotProcesses.execFile,
-    Object.getOwnPropertyDescriptors(actual.execFile),
+    promisify.custom,
+    Object.getOwnPropertyDescriptor(actual.execFile, promisify.custom)!,
   );
   return { ...actual, execFile: snapshotProcesses.execFile };
 });
@@ -36,6 +38,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 const maintenance = vi.hoisted(() => ({
   run: <T>(operation: () => T): T => operation(),
   finish: vi.fn(),
+  releaseState: vi.fn(),
   release: vi.fn(),
 }));
 afterEach(() => vi.restoreAllMocks());
@@ -47,6 +50,53 @@ describe("Doctor refused-migration maintenance outcome", () => {
     mocks.config.mockReturnValue({});
     mocks.packageRoot.mockReturnValue(undefined);
   });
+
+  it.each([false, true])(
+    "uses the canonical writer for maintenance-time token recovery (refused=%s)",
+    async (refused) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const cfg = { gateway: { mode: "local" as const }, plugins: { enabled: false } };
+        await state.writeConfig(cfg);
+        mocks.config.mockReturnValue(cfg);
+        const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+        mocks.runContributions.mockImplementationOnce(async (ctx) => {
+          maintenance.finish.mockImplementationOnce(async (_cfg, writeConfig) => {
+            expect(writeConfig).toBeTypeOf("function");
+            const candidate = {
+              ...ctx.cfg,
+              gateway: {
+                ...ctx.cfg.gateway,
+                auth: { mode: "token" as const, token: "maintenance-recovered-token" },
+                ...(refused ? { port: 0 } : {}),
+              },
+            };
+            if (refused) {
+              await expect(writeConfig(candidate)).rejects.toThrow("did not persist");
+              expect(ctx.configWriteRefusal).toBe("validation");
+              expect(ctx.cfg.gateway?.auth?.token).toBeUndefined();
+            } else {
+              const committed = await writeConfig(candidate);
+              expect(committed).toEqual(ctx.cfg);
+              expect(ctx.cfgForPersistence.gateway?.auth?.token).toBe(
+                "maintenance-recovered-token",
+              );
+            }
+          });
+        });
+        await runDoctorHealthFlow(runtime, { repair: true, nonInteractive: true });
+        expect(maintenance.finish).toHaveBeenCalledOnce();
+        const persisted = JSON.parse(fs.readFileSync(state.configPath, "utf8"));
+        expect(persisted.gateway.auth?.token).toBe(
+          refused ? undefined : "maintenance-recovered-token",
+        );
+        if (refused) {
+          expect(runtime.exit).toHaveBeenCalledWith(1);
+        } else {
+          expect(runtime.exit).not.toHaveBeenCalled();
+        }
+      });
+    },
+  );
 
   it("retains migration recovery and explains why source rollback cannot undo repaired state", async () => {
     await withOpenClawTestState(

@@ -24,6 +24,7 @@ const {
   textToSpeechStreamMock,
   textToSpeechMock,
   logVerboseMock,
+  loggerInfoMock,
   loggerWarnMock,
   loggerErrorMock,
   resolveConfiguredRealtimeVoiceProviderMock,
@@ -192,6 +193,7 @@ const {
     })),
     textToSpeechMock: vi.fn(async () => ({ success: true, audioPath: "/tmp/voice.mp3" })),
     logVerboseMock: vi.fn() as Mock,
+    loggerInfoMock: vi.fn() as Mock,
     loggerWarnMock: vi.fn() as Mock,
     loggerErrorMock: vi.fn() as Mock,
     resolveConfiguredRealtimeVoiceProviderMock: vi.fn<
@@ -263,6 +265,7 @@ export const voiceTestMocks = {
   textToSpeechStreamMock,
   textToSpeechMock,
   logVerboseMock,
+  loggerInfoMock,
   loggerWarnMock,
   loggerErrorMock,
   resolveConfiguredRealtimeVoiceProviderMock,
@@ -321,16 +324,9 @@ vi.mock("openclaw/plugin-sdk/routing", async () => {
   };
 });
 
-vi.mock("openclaw/plugin-sdk/agent-runtime", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/agent-runtime")>(
-    "openclaw/plugin-sdk/agent-runtime",
-  );
-  return {
-    ...actual,
-    agentCommandFromIngress: agentCommandMock,
-    resolveAgentDir: vi.fn(() => "/tmp/openclaw-agent"),
-  };
-});
+vi.mock("openclaw/plugin-sdk/agent-runtime", () => ({
+  resolveAgentDir: vi.fn(() => "/tmp/openclaw-agent"),
+}));
 
 vi.mock("openclaw/plugin-sdk/realtime-bootstrap-context", async () => {
   const actual = await vi.importActual<
@@ -350,6 +346,7 @@ vi.mock("openclaw/plugin-sdk/runtime-env", async () => {
     ...actual,
     createSubsystemLogger: (subsystem: string) => ({
       ...actual.createSubsystemLogger(subsystem),
+      info: loggerInfoMock,
       warn: loggerWarnMock,
       error: loggerErrorMock,
     }),

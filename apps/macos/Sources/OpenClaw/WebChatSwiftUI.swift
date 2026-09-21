@@ -42,7 +42,7 @@ enum WebChatTracePreferences {
 
 /// SwiftUI's native toolbar bridge may restore visible title chrome while it
 /// installs toolbar items. Keep the full-window chat's titlebar merged.
-private final class WebChatWindow: NSWindow {
+private final class WebChatWindow: ExperienceWindow {
     var pinnedTitle: String?
 
     override var title: String {
@@ -862,6 +862,7 @@ private struct MacChatSurface: View {
     @AppStorage(OpenClawChatWindowShell.assistantToolActivityDefaultsKey, store: AppDefaults.standard)
     private var showsToolActivity = WebChatTracePreferences.displayOptions().contains(.toolActivity)
 
+    private let approvalQueue: ExecApprovalQueueStore?
     private let usesPrimaryAppRuntime: Bool
     private let speech: OpenClawChatSpeechController
     private let voiceNoteRecorder: OpenClawVoiceNoteRecorder
@@ -869,11 +870,13 @@ private struct MacChatSurface: View {
     init(
         viewModel: OpenClawChatViewModel,
         usesPrimaryAppRuntime: Bool,
+        approvalQueue: ExecApprovalQueueStore?,
         speech: OpenClawChatSpeechController,
         voiceNoteRecorder: OpenClawVoiceNoteRecorder)
     {
         _viewModel = State(initialValue: viewModel)
         self.usesPrimaryAppRuntime = usesPrimaryAppRuntime
+        self.approvalQueue = approvalQueue
         self.speech = speech
         self.voiceNoteRecorder = voiceNoteRecorder
     }
@@ -882,6 +885,7 @@ private struct MacChatSurface: View {
         OpenClawChatWindowShell(
             viewModel: self.viewModel,
             userAccent: ColorHexSupport.color(fromHex: self.appState.effectiveAccentHex),
+            attentionRequests: self.approvalQueue?.attentionRequests ?? [],
             displayOptions: self.displayOptions,
             emptyAssistantIntro: Self.emptyAssistantIntro,
             emptyAssistantPrompts: Self.emptyAssistantPrompts,
@@ -894,6 +898,10 @@ private struct MacChatSurface: View {
             })
             .defaultAppStorage(AppDefaults.standard)
             .onAppear { self.audioInputCatalog.start() }
+            .task {
+                self.approvalQueue?.start()
+                await self.approvalQueue?.refresh()
+            }
             .onDisappear { self.audioInputCatalog.stop() }
     }
 
@@ -996,12 +1004,12 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
     private let speech: OpenClawChatSpeechController
     private let voiceNoteRecorder: OpenClawVoiceNoteRecorder
     private var routingIdentityTask: Task<Void, Never>?
-    private var window: NSWindow?
-    private var isHiddenForExperience = false
+    private var window: ExperienceWindow?
     var onBecameKey: (() -> Void)?
 
     var isWindowOpen: Bool {
-        !self.isHiddenForExperience && (self.window?.isVisible == true || self.window?.isMiniaturized == true)
+        guard let window, !window.isHiddenForExperience else { return false }
+        return window.isVisible || window.isMiniaturized
     }
 
     var onClosed: (() -> Void)?
@@ -1170,6 +1178,7 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
         let hosting = NSHostingController(rootView: MacChatSurface(
             viewModel: vm,
             usesPrimaryAppRuntime: usesPrimaryAppRuntime,
+            approvalQueue: gatewayTransport?.connection.approvalQueue,
             speech: speech,
             voiceNoteRecorder: voiceNoteRecorder))
         self.contentController = hosting
@@ -1196,7 +1205,7 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
     func show() {
         guard let window else { return }
         self.ensureWindowSize()
-        self.isHiddenForExperience = false
+        window.isHiddenForExperience = false
         window.isExcludedFromWindowsMenu = false
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
@@ -1207,9 +1216,7 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
 
     func hide() {
         guard let window else { return }
-        // Deminiaturization can send focus notifications; fence those before
-        // removing the retained window from both the Dock and Window menu.
-        self.isHiddenForExperience = true
+        window.isHiddenForExperience = true
         window.isExcludedFromWindowsMenu = true
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.orderOut(nil)
@@ -1217,7 +1224,7 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
-        guard notification.object as? NSWindow === self.window, !self.isHiddenForExperience else { return }
+        guard let window, notification.object as? NSWindow === window, !window.isHiddenForExperience else { return }
         self.onBecameKey?()
     }
 
@@ -1286,7 +1293,7 @@ final class WebChatSwiftUIWindowController: NSObject, NSWindowDelegate {
     private static func makeWindow(
         contentViewController: NSViewController,
         title: String,
-        autosaveName: String) -> NSWindow
+        autosaveName: String) -> ExperienceWindow
     {
         let window = WebChatWindow(
             contentRect: NSRect(origin: .zero, size: WebChatSwiftUILayout.windowSize),

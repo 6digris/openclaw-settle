@@ -34,6 +34,8 @@ function createRepositoryFixture(
   );
   const context = {
     gateway: {
+      connection: { gatewayUrl: "ws://gateway.example" },
+      subscribe: () => () => undefined,
       subscribeEvents: () => () => undefined,
       snapshot: {
         phase: "connected",
@@ -95,6 +97,56 @@ function createRepositoryFixture(
 }
 
 describe("DraftPlaceState repository selection", () => {
+  it("leaves the worktree base to the Gateway unless a branch was selected", async () => {
+    const { state, request, requestUpdate } = createRepositoryFixture({ workspaceGit: true });
+    const discovered = createDeferred();
+    request.mockResolvedValue({
+      repositoryStatus: "git",
+      branches: [{ name: "main", kind: "local" }],
+      defaultBranch: "main",
+      headBranch: "old-feature",
+    });
+    requestUpdate.mockImplementation(() => {
+      if (state.repository.kind === "git") {
+        discovered.resolve();
+      }
+    });
+    state.adoptAgentDefaults();
+    await discovered.promise;
+    const create = () =>
+      buildSelectedSessionCreateParams(state, { message: "new task", visibility: "normal" });
+
+    expect(create()).toMatchObject({ worktree: true });
+    expect(create()).not.toHaveProperty("worktreeBaseRef");
+    expect(state.preferenceSelection().baseRef).toBe("");
+    state.setBaseRef("main");
+    expect(create()).toHaveProperty("worktreeBaseRef", "main");
+    state.setBaseRef("");
+    expect(create()).not.toHaveProperty("worktreeBaseRef");
+  });
+
+  it("captures pending placement preferences instead of transient discovery defaults", () => {
+    const { state, request, readPreference } = createRepositoryFixture({ workspaceGit: true });
+    const discovery = createDeferred<WorktreesBranchesResult>();
+    request.mockReturnValue(discovery.promise);
+    readPreference.mockReturnValue({
+      worktree: true,
+      where: { kind: "device", id: "desktop" },
+      projectId: "pending-project",
+      baseRef: "release/next",
+    });
+    state.adoptAgentDefaults();
+    expect(state.placementPreferenceReady).toBe(false);
+    expect(state.worktree).toBe(false);
+    expect(state.preferenceSelection()).toMatchObject({
+      worktree: true,
+      where: { kind: "device", id: "desktop" },
+      projectId: "pending-project",
+      baseRef: "release/next",
+    });
+    discovery.resolve({ repositoryStatus: "git", branches: [] });
+  });
+
   it.each(["device", "cloud"] as const)(
     "starts a new workspace on %s while the default workspace Git probe is pending",
     async (destination) => {
@@ -298,7 +350,7 @@ describe("DraftPlaceState repository selection", () => {
       expect(state.baseRef).toBe("my-branch");
       state.applyFolder("/another-repo");
       await vi.waitFor(() => expect(state.repository.kind).toBe("git"));
-      expect(state.baseRef).toBe("main");
+      expect(state.baseRef).toBe("");
       expect(state.worktreeName).toBe("");
       expect(persistPreference).toHaveBeenCalledWith("main", "/workspace", {
         baseRef: "",
@@ -547,21 +599,21 @@ describe("DraftPlaceState cloud machine selection", () => {
     ]);
     state.select("aws", "large", profiles);
     state.select("aws", "tiny", profiles);
-    expect(state.resolve("aws")).toBe("");
+    expect(state.resolve("aws")).toBe("tiny");
     expect(state.resolveOs("aws")).toBe("windows/wsl2");
     state.select("aws", "custom", profiles);
     state.selectOs("aws", "linux", profiles);
     expect(state.resolve("aws")).toBe("custom");
-    expect(state.resolveOs("aws")).toBe("");
+    expect(state.resolveOs("aws")).toBe("linux");
     state.applyPending("other", "large", "other-os");
     expect(state.resolve("aws")).toBe("custom");
     expect(state.resolveOs("other")).toBe("other-os");
     expect(state.selectOs("aws", "windows/wsl2", profiles, true)).toBe(false);
     expect(state.selectOs("aws", "macos", profiles)).toBe(false);
-    expect(state.resolveOs("aws")).toBe("");
+    expect(state.resolveOs("aws")).toBe("linux");
   });
 
-  it("uses each profile default and retains only non-default overrides per destination", () => {
+  it("submits each profile's displayed machine and retains selections per destination", () => {
     const requestUpdate = vi.fn();
     const gateway = {
       cloudProfiles: [
@@ -603,21 +655,21 @@ describe("DraftPlaceState cloud machine selection", () => {
     );
 
     state.applyPendingPlacement({ agentId: "main", profileId: "aws" });
-    expect(state.cloudSelection.machineClass).toBe("");
+    expect(state.cloudSelection.machineClass).toBe("standard");
 
     state.cloudMachines.select("aws", "fast", gateway.cloudProfiles);
     expect(state.cloudSelection.machineClass).toBe("fast");
 
     vi.spyOn(state, "worktreeAvailable").mockReturnValue(true);
     state.selectCloudProfile("hetzner");
-    expect(state.cloudSelection.machineClass).toBe("");
+    expect(state.cloudSelection.machineClass).toBe("large");
     state.cloudMachines.select("hetzner", "beast", gateway.cloudProfiles);
     expect(state.cloudSelection.machineClass).toBe("beast");
 
     state.selectCloudProfile("aws");
     expect(state.cloudSelection.machineClass).toBe("fast");
     state.cloudMachines.select("aws", "standard", gateway.cloudProfiles);
-    expect(state.cloudSelection.machineClass).toBe("");
+    expect(state.cloudSelection.machineClass).toBe("standard");
     expect(requestUpdate).toHaveBeenCalled();
   });
 

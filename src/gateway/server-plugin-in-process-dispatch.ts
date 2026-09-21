@@ -8,6 +8,8 @@ import {
 } from "../plugins/runtime/gateway-request-scope.js";
 import type { PluginSubagentRequesterContext } from "../plugins/runtime/subagent-requester-context.js";
 import type { RuntimePluginToolGrant } from "../plugins/runtime/tool-grant.js";
+import { roleScopesAllow } from "../shared/operator-scope-compat.js";
+import type { RequesterSettleWakeReplay } from "./agent-turn/internal-facade.types.js";
 import { readInProcessAgentRuntimeIdentity } from "./in-process-agent-runtime-identity.js";
 import {
   bindInProcessSubagentResume,
@@ -18,6 +20,7 @@ import { ADMIN_SCOPE, WRITE_SCOPE } from "./operator-scopes.js";
 import {
   dispatchGatewayRequestInProcessRaw,
   type GatewayMethodDispatchResponse,
+  throwIfGatewayDispatchAborted,
   unwrapGatewayMethodDispatchResponse,
 } from "./server-in-process-dispatch.js";
 import type { AgentRunRequest } from "./server-methods/agent-request-types.js";
@@ -93,6 +96,7 @@ export function runWithOperatorToolGatewayCleanupContext<T>(run: () => T): T {
 
 type DispatchGatewayMethodInProcessOptions = {
   privateCompletion?: true;
+  settleWakeReplay?: RequesterSettleWakeReplay;
   allowSyntheticModelOverride?: boolean;
   allowSyntheticCronRunContinuation?: boolean;
   agentToolCaller?: TrustedAgentToolCaller;
@@ -106,6 +110,7 @@ type DispatchGatewayMethodInProcessOptions = {
   nodeInvokeStream?: GatewayNodeInvokeStream;
   nodeInvokeApprovalSessionKey?: string;
   onAccepted?: (payload: unknown) => void;
+  onExecution?: (execution: Promise<void>) => void;
   onExecutionStarted?: () => void;
   onSignalAbort?: () => Promise<void> | void;
   operatorRoleActor?: GatewayOperatorRoleActor;
@@ -119,6 +124,7 @@ type DispatchGatewayMethodInProcessOptions = {
   syntheticScopes?: string[];
   timeoutMs?: number;
   signal?: AbortSignal;
+  hasCurrentClientAuthority?: GatewayRequestOptions["hasCurrentClientAuthority"];
   resolveGatewayContext?: GatewayContextResolver;
   sessionMutationCommitGuard?: () => void;
 };
@@ -215,8 +221,16 @@ function resolveInProcessGatewayDispatch(
     (operatorRoleActor?.kind === "operator"
       ? (verifiedOperatorAuthority?.scopes ?? scope?.client?.connect.scopes ?? [])
       : undefined);
+  // Narrow by authority, not literal membership: write also authorizes reads
+  // and Talk, including tools called by a synthetic continuation.
   const syntheticScopes = operatorScopes
-    ? requestedSyntheticScopes.filter((requestedScope) => operatorScopes.includes(requestedScope))
+    ? requestedSyntheticScopes.filter((requestedScope) =>
+        roleScopesAllow({
+          role: "operator",
+          requestedScopes: [requestedScope],
+          allowedScopes: operatorScopes,
+        }),
+      )
     : options?.syntheticScopes;
   if (operatorScopes?.includes(ADMIN_SCOPE) && !syntheticScopes?.includes(ADMIN_SCOPE)) {
     syntheticScopes?.push(ADMIN_SCOPE);
@@ -413,12 +427,19 @@ export async function dispatchGatewayMethodInProcessRaw(
       context: resolved.context,
       expectFinal: options?.expectFinal,
       isWebchatConnect: resolved.isWebchatConnect,
+      hasCurrentClientAuthority: options?.hasCurrentClientAuthority,
       methodRegistry: resolved.context.getGatewayMethodRegistry?.(),
       onAccepted: options?.onAccepted,
+      onExecution: options?.onExecution,
       onSignalAbort: options?.onSignalAbort,
       requestIdPrefix: "plugin-subagent",
       sessionMutationCommitGuard: () => {
         resolved.assertContextCurrent();
+        // Nested RPCs keep the original request owner through preparation and final I/O.
+        throwIfGatewayDispatchAborted(method, options?.signal);
+        if (options?.hasCurrentClientAuthority?.() === false) {
+          throw new Error(`Gateway client authority closed before dispatching ${method}.`);
+        }
         options?.sessionMutationCommitGuard?.();
       },
       timeoutMs: options?.timeoutMs,
@@ -460,6 +481,7 @@ export async function dispatchGatewayMethodInProcess<T>(
         ? await facade.dispatch<T>(params as AgentRunRequest, {
             assertAdmissionCurrent: options?.sessionMutationCommitGuard,
             privateCompletion: options?.privateCompletion,
+            settleWakeReplay: options?.settleWakeReplay,
             cancelOnDeadline: options?.cancelOnDeadline,
             expectFinal: options?.expectFinal,
             onAccepted: options?.onAccepted,

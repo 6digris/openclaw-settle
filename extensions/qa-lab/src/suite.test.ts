@@ -49,6 +49,19 @@ function makeQaSuiteTestLabHandle(): QaLabServerHandle {
 }
 
 describe("qa suite", () => {
+  it("rejects the removed channel-driver selection input", async () => {
+    await expect(
+      runQaFlowSuite(
+        Object.assign(
+          { repoRoot: "." },
+          {
+            channelDriverSelection: { channel: "discord", driver: "crabline" },
+          },
+        ),
+      ),
+    ).rejects.toThrow("channelDriverSelection was removed");
+  });
+
   it("runs the production cleanup plan in dependency order after a failure", async () => {
     const calls: string[] = [];
     const transportFailure = new Error("transport close failed");
@@ -536,16 +549,16 @@ describe("qa suite", () => {
         NODE_OPTIONS: "--max-old-space-size=4096",
       }),
     ).toEqual({
-      NODE_OPTIONS: "--max-old-space-size=4096 --heapsnapshot-signal=SIGUSR2",
+      NODE_OPTIONS: "--max-old-space-size=4096 --heapsnapshot-signal=SIGQUIT",
     });
     expect(
       mergeQaRuntimeEnvPatches(
         { OPENAI_API_KEY: "mock" },
-        { NODE_OPTIONS: "--heapsnapshot-signal=SIGUSR2" },
+        { NODE_OPTIONS: "--heapsnapshot-signal=SIGQUIT" },
       ),
     ).toEqual({
       OPENAI_API_KEY: "mock",
-      NODE_OPTIONS: "--heapsnapshot-signal=SIGUSR2",
+      NODE_OPTIONS: "--heapsnapshot-signal=SIGQUIT",
     });
   });
 

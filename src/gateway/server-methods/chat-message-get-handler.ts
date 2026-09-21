@@ -20,8 +20,10 @@ import { readChatHistoryMessageId } from "../session-history-tail.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { hiddenSessionNotFound } from "../session-sharing-policy.js";
 import { createSessionListEntryFilter } from "../session-sharing.js";
-import { readSessionMessagesAroundIdWithStatsAsync } from "../session-transcript-anchor-reader.js";
-import { readSessionMessageByIdAsync } from "../session-transcript-readers.js";
+import {
+  readSessionMessagesAroundIdWithStatsAsync,
+  readSessionMessageByIdAsync,
+} from "../session-transcript-readers.js";
 import { loadGatewaySessionEntryReadOnly } from "../session-utils.js";
 import { readChatHistoryPage } from "./chat-history-pages.js";
 import { validateChatSelectedAgent } from "./chat-origin-routing.js";
@@ -247,9 +249,13 @@ export const chatMessageGetHandlers: GatewayRequestHandlers = {
       return;
     }
 
-    respond(true, {
-      ok: true,
-      message: projected,
-    });
+    // maxChars bounds individual text fields, not the serialized message: many
+    // blocks or structured output must not bypass the WebSocket payload limit.
+    respond(
+      true,
+      jsonUtf8Bytes(projected) > MAX_PAYLOAD_BYTES - 1024
+        ? { ok: false, unavailableReason: "oversized" }
+        : { ok: true, message: projected },
+    );
   },
 };
