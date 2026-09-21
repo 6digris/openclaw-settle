@@ -39,6 +39,7 @@ import {
   replaceSessionEntrySync,
 } from "./session-accessor.sqlite-entry.js";
 import { ensureSessionEntrySync } from "./session-accessor.sqlite-initial-entry.js";
+import { withSqliteSessionPageReclamation } from "./session-accessor.sqlite-page-reclamation.js";
 import {
   createHistoryEvictionReclamationPlan,
   createLifecycleArtifactReclamationPlan,
@@ -582,7 +583,7 @@ test.runIf(process.platform !== "win32")(
 );
 
 test("one reclamation pass leaves a large freelist for bounded later maintenance", async () => {
-  const { database, plan, scopes } = createFixture();
+  const { database, databaseOptions, scopes } = createFixture();
   // sqlite-allow-raw -- synthetic disposable pages exercise the real vacuum boundary.
   database.db.exec(`CREATE TABLE reclamation_fixture (payload BLOB);
     INSERT INTO reclamation_fixture VALUES (zeroblob(8388608));
@@ -592,9 +593,9 @@ test("one reclamation pass leaves a large freelist for bounded later maintenance
   const before = freePages();
   expect(before).toBeGreaterThan(512);
 
-  await expect(runSqliteSessionReclamation({ forceInProcess: false, plan })).resolves.toMatchObject(
-    { value: { deleted: true } },
-  );
+  // Post-delete vacuum may defer to the settlement writer; request the page unit explicitly.
+  const pageUnit = await withSqliteSessionPageReclamation(databaseOptions, (reclaim) => reclaim());
+  expect(pageUnit).toMatchObject({ vacuumPasses: 1, vacuumPagesRequested: 512 });
 
   const after = freePages();
   expect(before - after).toBeGreaterThan(0);
@@ -607,7 +608,6 @@ test("one reclamation pass leaves a large freelist for bounded later maintenance
     });
   }
   const budgetBefore = freePages();
-  const databaseOptions = plan.databaseOptions;
   const duringDrain = yieldToEventLoop().then(() => {
     expect(budgetBefore - freePages()).toBeGreaterThan(0);
     expect(budgetBefore - freePages()).toBeLessThanOrEqual(512);
