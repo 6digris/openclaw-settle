@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { RealtimeVoiceAudioSink } from "openclaw/plugin-sdk/realtime-voice";
 import { defineDiscordVoiceTests } from "./voice-test-harness.test-support.js";
 
 defineDiscordVoiceTests(
@@ -42,6 +43,7 @@ defineDiscordVoiceTests(
     beginSpeakerTurn,
     lastAgentCommandArgs,
     lastAgentCommandToolNames,
+    lastRealtimeBridgeParams,
     createJoinedAgentProxyFixture,
     lastTtsArgs,
     expectUserMessageNotIncludes,
@@ -842,13 +844,16 @@ defineDiscordVoiceTests(
 
       const connect = session.connect();
       await vi.waitFor(() => expect(realtimeSessionMock.connect).toHaveBeenCalledOnce());
+      const provider = lastRealtimeBridgeParams();
+      const audioSink: RealtimeVoiceAudioSink = provider.audioSink;
       session.close();
+      expect(audioSink.isOpen?.()).toBe(false);
       resolveConnect();
       await connect;
 
-      expect((session as unknown as { lifecycle: { status: string } }).lifecycle.status).toBe(
-        "stopped",
-      );
+      provider.onReady?.();
+      expect(audioSink.isOpen?.()).toBe(false);
+      expect(realtimeSessionMock.close).toHaveBeenCalledOnce();
     });
 
     it("provider reset fences transcript, tool, playback, and consult completions", async () => {
