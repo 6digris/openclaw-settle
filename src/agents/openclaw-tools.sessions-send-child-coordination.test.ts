@@ -9,6 +9,10 @@ import {
   loadSessionEntryReadOnly,
   replaceSessionEntry,
 } from "../config/sessions/session-accessor.js";
+import {
+  resolveSqliteScope,
+  toDatabaseOptions,
+} from "../config/sessions/session-accessor.sqlite-scope.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { resolveGatewaySessionStoreTargetWithStore } from "../gateway/session-utils-store-lookup.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
@@ -52,6 +56,7 @@ import {
   resetGatewayWorkAdmission,
 } from "../process/gateway-work-admission.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import { runOpenClawAgentWriteAdmission } from "../state/openclaw-agent-write-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import {
   createOpenClawTestState,
@@ -199,6 +204,10 @@ describe("sessions_send child coordination", () => {
         .toBe(direction === "requester" && child ? "subagent" : undefined);
       expect.soft(agentCalls).toHaveLength(child ? 1 : 6);
       if (direction === "target") {
+        await runOpenClawAgentWriteAdmission(
+          toDatabaseOptions(resolveSqliteScope(alternateScope)),
+          () => undefined,
+        );
         expect
           .soft(listSessionParticipantsReadOnly(alternateScope).get(alternateKey) ?? [])
           .toEqual([
