@@ -78,7 +78,7 @@ export type TaskRegistryStore = TaskExecutionRestoreStore & {
   close?: () => void;
 };
 
-type TaskRegistryObservers = {
+export type TaskRegistryObservers = {
   // Observers are incremental/best-effort only. Persistence belongs to TaskRegistryStore.
   onEvent?: (event: TaskRegistryObserverEvent) => void;
 };
@@ -141,15 +141,14 @@ const defaultTaskRegistryStore: TaskRegistryStore = {
   close: closeTaskRegistryDatabase,
 };
 
-let configuredTaskRegistryStore: TaskRegistryStore = defaultTaskRegistryStore;
-let configuredTaskRegistryObservers: TaskRegistryObservers | null = null;
+const runtime = getTaskRegistryProcessState().runtime;
 
 export function getTaskRegistryStore(): TaskRegistryStore {
-  return configuredTaskRegistryStore;
+  return (runtime.store ??= defaultTaskRegistryStore);
 }
 
 export function getTaskRegistryObservers(): TaskRegistryObservers | null {
-  return configuredTaskRegistryObservers;
+  return runtime.observers;
 }
 
 /** Subscribe at the publication owner; readers recheck current task authority. */
@@ -166,17 +165,17 @@ export function configureTaskRegistryRuntime(params: {
   observers?: TaskRegistryObservers | null;
 }) {
   if (params.store) {
-    configuredTaskRegistryStore = params.store;
+    runtime.store = params.store;
   }
   if ("observers" in params) {
-    configuredTaskRegistryObservers = params.observers ?? null;
+    runtime.observers = params.observers ?? null;
   }
 }
 
 export function resetTaskRegistryRuntimeForTests() {
-  configuredTaskRegistryStore.close?.();
-  configuredTaskRegistryStore = defaultTaskRegistryStore;
-  configuredTaskRegistryObservers = null;
+  getTaskRegistryStore().close?.();
+  runtime.store = defaultTaskRegistryStore;
+  runtime.observers = null;
 }
 
 const storeLog = createSubsystemLogger("tasks/registry");

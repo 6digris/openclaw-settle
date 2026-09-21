@@ -101,11 +101,6 @@ export const taskIdsByRelatedSessionKey = taskRegistryProcessState.taskIdsByRela
 export const tasksWithPendingDelivery = taskRegistryProcessState.tasksWithPendingDelivery;
 export const taskActivityByTaskId = taskRegistryProcessState.taskActivityByTaskId;
 export const taskProgressBatches = taskRegistryProcessState.taskProgressBatches;
-type TaskRegistryRestoreState =
-  | { status: "uninitialized"; admission?: OpenClawStateDatabaseReadAdmission }
-  | { status: "restoring" | "ready"; admission: OpenClawStateDatabaseReadAdmission }
-  | { status: "failed"; error: Error; admission: OpenClawStateDatabaseReadAdmission };
-let taskRegistryRestoreState: TaskRegistryRestoreState = { status: "uninitialized" };
 export function emitTaskRegistryObserverEvent(createEvent: () => TaskRegistryObserverEvent): void {
   deliverTaskRegistryObserverEvent(createEvent, recordTaskRegistryPublication);
 }
@@ -169,11 +164,11 @@ function isCurrentTaskRegistryDatabase(admission: OpenClawStateDatabaseReadAdmis
 
 function getTaskRegistryRestoreState(admission: OpenClawStateDatabaseReadAdmission) {
   let requiresRestore =
-    taskRegistryRestoreState.admission !== undefined &&
-    taskRegistryRestoreState.admission.identity.key !== admission.identity.key;
-  if (taskRegistryRestoreState.status === "ready") {
+    taskRegistryProcessState.restore.admission !== undefined &&
+    taskRegistryProcessState.restore.admission.identity.key !== admission.identity.key;
+  if (taskRegistryProcessState.restore.status === "ready") {
     try {
-      taskRegistryRestoreState.admission.assertCurrent();
+      taskRegistryProcessState.restore.admission.assertCurrent();
     } catch {
       // Worker-only close can retire admission without a native projection-dirty event.
       requiresRestore = true;
@@ -181,10 +176,10 @@ function getTaskRegistryRestoreState(admission: OpenClawStateDatabaseReadAdmissi
   }
   if (requiresRestore) {
     // Retain the selected identity through async preparation and synchronous reentry.
-    taskRegistryRestoreState = { status: "uninitialized", admission };
+    taskRegistryProcessState.restore = { status: "uninitialized", admission };
     bumpTaskRegistryRevision();
   }
-  return taskRegistryRestoreState;
+  return taskRegistryProcessState.restore;
 }
 
 export function taskFlowSyncOwner(
@@ -238,11 +233,11 @@ function restoreTaskRegistryOnce() {
   }
   const store = getTaskRegistryStore();
   const workerContext = captureOpenClawStateWorkerContext({ path: databasePath });
-  const restoring = (taskRegistryRestoreState = { status: "restoring", admission });
+  const restoring = (taskRegistryProcessState.restore = { status: "restoring", admission });
   const revision = readTaskRegistryRevision();
   const epoch = taskRegistryProcessState.projection.epoch;
   const ownsRestore = () =>
-    taskRegistryRestoreState === restoring &&
+    taskRegistryProcessState.restore === restoring &&
     getTaskRegistryStore() === store &&
     resolveOpenClawStateSqlitePath() === databasePath;
   const reader = createSyncRegistryReader({
@@ -269,17 +264,20 @@ function restoreTaskRegistryOnce() {
       clearTaskRegistryMemory();
     }
     installRestoredTaskRegistrySnapshot(restored);
-    taskRegistryRestoreState = { status: "ready", admission: reader.admission };
-    const installed = taskRegistryRestoreState;
+    taskRegistryProcessState.restore = { status: "ready", admission: reader.admission };
+    const installed = taskRegistryProcessState.restore;
     const database = openClawStateDatabaseCache.getOpenClawStateDatabaseIfOpenAtPath(databasePath);
     if (database?.db.isTransaction) {
       stageSqliteTransactionState(database.db, {
         stage() {},
         commit() {},
         rollback() {
-          if (taskRegistryRestoreState === installed) {
+          if (taskRegistryProcessState.restore === installed) {
             // An enclosing rollback can undo orphan settlement and snapshot inputs.
-            taskRegistryRestoreState = { status: "uninitialized", admission: reader.admission };
+            taskRegistryProcessState.restore = {
+              status: "uninitialized",
+              admission: reader.admission,
+            };
             projection.dirty = true;
             bumpTaskRegistryRevision();
           }
@@ -302,8 +300,8 @@ function restoreTaskRegistryOnce() {
   } catch (error) {
     try {
       if (!installing && (reader.invalidated || !ownsRestore())) {
-        if (taskRegistryRestoreState === restoring) {
-          taskRegistryRestoreState = state;
+        if (taskRegistryProcessState.restore === restoring) {
+          taskRegistryProcessState.restore = state;
         }
         throw error;
       }
@@ -348,7 +346,7 @@ export const ensureTaskRegistryReadyAsync = createAsyncRegistryRestore<
         result.flowSyncs.flatMap((outcome) => (outcome.flowId ? [outcome.flowId] : [])),
       );
     } catch (error) {
-      if (taskRegistryRestoreState.status !== "failed") {
+      if (taskRegistryProcessState.restore.status !== "failed") {
         throw error;
       }
       taskRegistryLog.warn("Failed to reconcile parent flows after task restore failure", {
@@ -361,14 +359,14 @@ export const ensureTaskRegistryReadyAsync = createAsyncRegistryRestore<
     const restored = result.snapshot;
     installRestoredTaskRegistrySnapshot(restored);
     bumpTaskRegistryRevision();
-    taskRegistryRestoreState = { status: "ready", admission };
+    taskRegistryProcessState.restore = { status: "ready", admission };
     markTaskRegistryProjectionRestored();
-    const installed = taskRegistryRestoreState;
+    const installed = taskRegistryProcessState.restore;
     const revision = readTaskRegistryRevision();
     const store = getTaskRegistryStore();
     const isCurrent = () =>
       isCurrentTaskRegistryDatabase(admission) &&
-      taskRegistryRestoreState === installed &&
+      taskRegistryProcessState.restore === installed &&
       readTaskRegistryRevision() === revision &&
       getTaskRegistryStore() === store;
     return async (reconcile) => {
@@ -425,7 +423,7 @@ function failTaskRegistryRestore(
   }
   const message = formatErrorMessage(error);
   const restoreError = new Error(`Task registry restore failed: ${message}`, { cause: error });
-  taskRegistryRestoreState = { status: "failed", error: restoreError, admission };
+  taskRegistryProcessState.restore = { status: "failed", error: restoreError, admission };
   // Compact console logs omit structured metadata, so keep the rejected value visible there too.
   taskRegistryLog.warn("Failed to restore task registry", {
     error: message,
@@ -444,12 +442,12 @@ export async function reloadTaskRegistryFromStoreAsync(
   // Keep the published rows current until the replacement snapshot is installed.
   clearTaskRegistryEphemeralState();
   bumpTaskRegistryRevision();
-  taskRegistryRestoreState = { status: "uninitialized", admission: context.admission };
+  taskRegistryProcessState.restore = { status: "uninitialized", admission: context.admission };
   await ensureTaskRegistryReadyAsync(context);
 }
 
 export function resetTaskRegistryRestoreState(): void {
-  taskRegistryRestoreState = { status: "uninitialized" };
+  taskRegistryProcessState.restore = { status: "uninitialized" };
 }
 
 const projection = taskRegistryProcessState.projection;

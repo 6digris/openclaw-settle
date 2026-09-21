@@ -41,6 +41,72 @@ describe("task registry process state", () => {
     firstState.tasks.clear();
   });
 
+  it.each(["sync", "async"])(
+    "retained readers preserve the selected %s runtime",
+    async (restore) => {
+      const firstRegistry = await import("./task-registry-query.js");
+      const firstCreate = await import("./task-registry-create.native.js");
+      firstRegistry.resetTaskRegistryForTests();
+
+      vi.resetModules();
+
+      const secondStore = await import("./task-registry.store.js");
+      const secondRegistry = await import("./task-registry-query.js");
+      const { createTaskRecord } = await import("./task-registry-create.native.js");
+      const store = createInMemoryTaskRegistryStore();
+      const loadSnapshot = vi.spyOn(store, "loadSnapshot");
+      const onEvent = vi.fn();
+      secondStore.configureTaskRegistryRuntime({ store, observers: { onEvent } });
+
+      try {
+        if (restore === "async") {
+          const { ensureTaskRegistryReadyAsync } = await import("./task-registry-state.js");
+          const { captureOpenClawStateWorkerContext } =
+            await import("../state/openclaw-state-worker-context.js");
+          await ensureTaskRegistryReadyAsync(captureOpenClawStateWorkerContext());
+        }
+        const task = createTaskRecord({
+          runtime: "subagent",
+          requesterSessionKey: "agent:main:main",
+          ownerKey: "agent:main:main",
+          scopeKind: "session",
+          runId: "run-retained-registry-reader",
+          task: "Keep the selected runtime across module reloads",
+          status: "succeeded",
+          deliveryStatus: "not_applicable",
+        });
+        expect(task).not.toBeNull();
+        const loadsBeforeRetainedRead = loadSnapshot.mock.calls.length;
+        expect(firstRegistry.findTaskByRunId("run-retained-registry-reader")?.taskId).toBe(
+          task!.taskId,
+        );
+        expect(secondRegistry.getTaskById(task!.taskId)?.taskId).toBe(task!.taskId);
+        expect(loadSnapshot).toHaveBeenCalledTimes(loadsBeforeRetainedRead);
+        onEvent.mockClear();
+        const retainedTask = firstCreate.createTaskRecord({
+          runtime: "subagent",
+          requesterSessionKey: "agent:main:main",
+          ownerKey: "agent:main:main",
+          scopeKind: "session",
+          task: "Publish through the currently selected store and observer",
+          status: "succeeded",
+          deliveryStatus: "not_applicable",
+        });
+        expect(retainedTask).not.toBeNull();
+        expect(store.loadSnapshot().tasks.has(retainedTask!.taskId)).toBe(true);
+        expect(onEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: "upserted",
+            task: expect.objectContaining({ taskId: retainedTask!.taskId }),
+          }),
+        );
+      } finally {
+        firstRegistry.resetTaskRegistryForTests();
+        secondRegistry.resetTaskRegistryForTests();
+      }
+    },
+  );
+
   it("does not duplicate task event listeners when modules are reset", async () => {
     const events = await import("../infra/agent-events.js");
     const firstStore = await import("./task-registry.store.js");
