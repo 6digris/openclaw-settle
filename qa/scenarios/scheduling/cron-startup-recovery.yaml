@@ -25,7 +25,7 @@ scenario:
   codeRefs:
     - src/cron/service/task-runs.ts
     - src/cron/store.ts
-    - src/gateway/server-startup.ts
+    - src/gateway/server-runtime-services.ts
     - test/e2e/qa-lab/runtime/gateway-cron-startup-recovery.e2e.test.ts
   execution:
     kind: vitest
