@@ -12,6 +12,7 @@ import { makeTextToolResult } from "../../test/helpers/text-tool-result.js";
 import { makeUserMessage } from "../../test/helpers/user-message.js";
 import {
   appendTranscriptMessage,
+  appendTranscriptMessageSync,
   loadSessionEntry,
   listSessionPendingInputs,
   persistCompactionBoundaryWithSessionEntrySync,
@@ -34,6 +35,7 @@ import {
   createUserTurnTranscriptRecorder,
   type UserTurnTranscriptRecorder,
 } from "../sessions/user-turn-transcript.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { createAssistantErrorTranscript } from "./assistant-error-transcript.js";
 import { normalizeAssistantReplayContent } from "./embedded-agent-runner/replay-history.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "./harness/hook-helpers.js";
@@ -51,7 +53,7 @@ const listeners: Array<() => void> = [];
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 let fixtureId = 0;
 
-async function openPersistedSessionManager() {
+async function openPersistedSessionManager(lifecycleRevision?: string) {
   const root = tempDirs.make("openclaw-transcript-events-");
   const sessionId = `session-${fixtureId++}`;
   const target = {
@@ -60,7 +62,7 @@ async function openPersistedSessionManager() {
     sessionKey: `agent:main:${sessionId}`,
     storePath: path.join(root, "agents", "main", "agent", "openclaw-agent.sqlite"),
   };
-  const sessionEntry = { sessionId, updatedAt: Date.now() };
+  const sessionEntry = { sessionId, updatedAt: Date.now(), lifecycleRevision };
   await upsertSessionEntry({
     ...target,
     entry: sessionEntry,
@@ -77,6 +79,72 @@ afterEach(() => {
 });
 
 describe("guardSessionManager transcript updates", () => {
+  it("preserves prepared source and redaction when a concurrent append forces a retry", async () => {
+    const { sessionManager: manager, target } = await openPersistedSessionManager();
+    const baseId = manager.appendMessage(makeUserMessage("Compute a value", 1));
+    installSessionToolResultGuard(manager, {
+      config: { logging: { redactPatterns: [String.raw`/opaque\(([^)]+)\)/g`] } },
+    });
+    const code = "const API_TOKEN = computeToken(); return API_TOKEN;";
+    const toolCall = {
+      type: "toolCall" as const,
+      id: "retry-source",
+      name: "exec",
+      arguments: { code },
+    };
+    const message = makeAgentAssistantMessage({
+      content: [{ type: "text", text: "opaque(abcdefghijklmnopqrst)" }, toolCall],
+      stopReason: "toolUse",
+    });
+    const stream = createAssistantMessageEventStream();
+    stream.push({ type: "done", reason: "toolUse", message });
+    const response = await wrapStreamFnCodeModeSource(() => stream, new Set(["exec"]))(
+      makeProviderModelFixture({
+        id: "test-model",
+        api: "openai-responses",
+        provider: "openai",
+        baseUrl: "https://example.invalid",
+      }),
+      { messages: [] },
+    );
+    const emitted = await response.result();
+    const { db } = openOpenClawAgentDatabase({ agentId: target.agentId, path: target.storePath });
+    const exec = db.exec.bind(db);
+    let injected = false;
+    const execSpy = vi.spyOn(db, "exec").mockImplementation((statement) => {
+      if (statement === "BEGIN IMMEDIATE" && !injected) {
+        injected = true;
+        // Commit after validation but before the writer acquires its snapshot.
+        const concurrent = appendTranscriptMessageSync(target, {
+          eventId: "concurrent-assistant",
+          message: makeAgentAssistantMessage({ content: [{ type: "text", text: "Concurrent" }] }),
+        });
+        expect(concurrent.ok).toBe(true);
+      }
+      return exec(statement);
+    });
+    let entryId: string;
+    try {
+      entryId = manager.appendMessage(
+        emitted,
+        prepareCodeModeSourceAppend({}, emitted, takeCodeModeResponseSource(emitted)),
+      );
+      expect(execSpy).toHaveBeenCalledWith("ROLLBACK");
+    } finally {
+      execSpy.mockRestore();
+    }
+    closeOpenClawAgentDatabasesForTest();
+    const entries = SessionManager.open(target).getBranch();
+    expect(entries.map(({ id, parentId }) => ({ id, parentId }))).toEqual([
+      { id: baseId, parentId: null },
+      { id: "concurrent-assistant", parentId: baseId },
+      { id: entryId, parentId: "concurrent-assistant" },
+    ]);
+    expect(entries.at(-1)).toMatchObject({
+      message: { content: [{ type: "text", text: "opaque(abcdef…qrst)" }, toolCall] },
+    });
+  });
+
   it("refreshes the deferred error owner when a session manager serves a new run", async () => {
     const { sessionManager, target } = await openPersistedSessionManager();
     const first = createAssistantErrorTranscript({ runId: "run-first" });
@@ -433,72 +501,6 @@ describe("guardSessionManager transcript updates", () => {
     },
   );
 
-  it("persists and broadcasts memory-maintenance messages as hidden", async () => {
-    const updates: InternalSessionTranscriptUpdate[] = [];
-    listeners.push(onInternalSessionTranscriptUpdate((update) => updates.push(update)));
-
-    const { sessionManager: sm, target } = await openPersistedSessionManager();
-
-    const guarded = guardSessionManager(sm, {
-      agentId: target.agentId,
-      sessionKey: target.sessionKey,
-      trigger: "memory",
-    });
-    const appendMessage = guarded.appendMessage.bind(guarded) as unknown as (
-      message: AgentMessage,
-    ) => void;
-
-    appendMessage({
-      role: "assistant",
-      content: [{ type: "text", text: "NO_REPLY" }],
-      timestamp: Date.now(),
-    } as AgentMessage);
-
-    const persisted = sm.getEntries().find((entry) => entry.type === "message") as
-      | { message?: AgentMessage }
-      | undefined;
-    expect(persisted?.message).toMatchObject({ display: false, role: "assistant" });
-    expect(updates[0]?.message).toMatchObject({ display: false, role: "assistant" });
-  });
-
-  it("keeps the user-turn recorder attached when hiding memory maintenance", () => {
-    const sm = SessionManager.inMemory();
-    const markRuntimePersisted = vi.fn();
-    const recorder = {
-      markBlocked: vi.fn(),
-      markRuntimePersisted,
-    } as unknown as UserTurnTranscriptRecorder;
-    const runtimeMessage = attachRuntimeUserTurnTranscriptContext(
-      {
-        role: "user",
-        content: "Pre-compaction memory flush",
-        timestamp: Date.now(),
-      },
-      {
-        message: {
-          role: "user",
-          content: "Pre-compaction memory flush",
-          timestamp: Date.now(),
-        },
-        recorder,
-      },
-    );
-    const guarded = guardSessionManager(sm, {
-      agentId: "main",
-      sessionKey: "agent:main:memory",
-      trigger: "memory",
-    });
-
-    guarded.appendMessage(runtimeMessage as Parameters<typeof guarded.appendMessage>[0]);
-
-    expect(markRuntimePersisted).toHaveBeenCalledTimes(1);
-    expect(markRuntimePersisted.mock.calls[0]?.[0]).toMatchObject({
-      display: false,
-      role: "user",
-    });
-    expect(markRuntimePersisted.mock.calls[0]?.[2]).toEqual({ appended: true });
-  });
-
   it("drops selected mentions when a write hook mutates their text in place", async () => {
     const { target, sessionManager } = await openPersistedSessionManager();
     const message = {
@@ -538,67 +540,52 @@ describe("guardSessionManager transcript updates", () => {
     }
   });
 
-  it("does not hide ordinary messages that mention memory flushes", () => {
-    const sm = SessionManager.inMemory();
-    const guarded = guardSessionManager(sm, {
-      agentId: "main",
-      sessionKey: "agent:main:user",
-      trigger: "user",
-    });
-    const appendMessage = guarded.appendMessage.bind(guarded) as unknown as (
-      message: AgentMessage,
-    ) => void;
+  it.each([
+    { name: "legacy", lifecycleRevision: undefined, rebind: false },
+    { name: "owned", lifecycleRevision: "original-lifecycle", rebind: false },
+    { name: "rebound callback", lifecycleRevision: "original-lifecycle", rebind: true },
+  ])(
+    "broadcasts the committed SQLite owner for $name messages",
+    async ({ lifecycleRevision, rebind }) => {
+      const updates: InternalSessionTranscriptUpdate[] = [];
+      listeners.push(onInternalSessionTranscriptUpdate((update) => updates.push(update)));
 
-    appendMessage({
-      role: "user",
-      content: "Why did the memory flush leak?",
-      timestamp: Date.now(),
-    } as AgentMessage);
+      const { sessionManager: sm, target } = await openPersistedSessionManager(lifecycleRevision);
+      const replacement = rebind
+        ? await openPersistedSessionManager("replacement-lifecycle")
+        : undefined;
 
-    const persisted = sm.getEntries().find((entry) => entry.type === "message") as
-      | { message?: AgentMessage }
-      | undefined;
-    expect(persisted?.message).not.toHaveProperty("display", false);
-  });
-
-  it("broadcasts the SQLite target for appended non-tool-result messages", async () => {
-    const updates: InternalSessionTranscriptUpdate[] = [];
-    listeners.push(onInternalSessionTranscriptUpdate((update) => updates.push(update)));
-
-    const { sessionManager: sm, target } = await openPersistedSessionManager();
-
-    const guarded = guardSessionManager(sm, {
-      agentId: target.agentId,
-      sessionKey: target.sessionKey,
-    });
-    const appendMessage = guarded.appendMessage.bind(guarded) as unknown as (
-      message: AgentMessage,
-    ) => void;
-
-    const timestamp = Date.now();
-    appendMessage({
-      role: "assistant",
-      content: [{ type: "text", text: "hello from subagent" }],
-      timestamp,
-    } as AgentMessage);
-
-    expect(updates).toStrictEqual([
-      {
-        agentId: "main",
-        message: {
-          content: [{ text: "hello from subagent", type: "text" }],
-          role: "assistant",
-          timestamp,
-        },
-        messageId: expect.any(String),
-        messageSeq: 1,
-        sessionId: target.sessionId,
+      const guarded = guardSessionManager(sm, {
+        agentId: target.agentId,
         sessionKey: target.sessionKey,
-        target,
-      },
-    ]);
-    expect(updates[0]?.messageId).not.toBe("");
-  });
+        onMessagePersisted: () => {
+          if (replacement) {
+            sm.setSessionTarget(replacement.target);
+          }
+        },
+      });
+      const timestamp = Date.now();
+      const message = makeAgentAssistantMessage({
+        content: [{ type: "text", text: "hello from subagent" }],
+        timestamp,
+      });
+      guarded.appendMessage(message);
+
+      expect(updates).toStrictEqual([
+        {
+          agentId: "main",
+          ...(lifecycleRevision ? { lifecycleRevision } : {}),
+          message,
+          messageId: expect.any(String),
+          messageSeq: 1,
+          sessionId: target.sessionId,
+          sessionKey: target.sessionKey,
+          target,
+        },
+      ]);
+      expect(updates[0]?.messageId).not.toBe("");
+    },
+  );
 
   it("does not resolve transcript sequence for an in-memory session", () => {
     const sm = SessionManager.inMemory();

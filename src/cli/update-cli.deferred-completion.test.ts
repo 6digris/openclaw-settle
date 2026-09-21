@@ -101,6 +101,43 @@ describe("update-cli child-owned deferred completion", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
+  it("refuses a post-core run missing from history before Doctor or plugin effects", async () => {
+    const { getUpdateRun, listUpdateRuns } = await import("../infra/update-run-ledger.js");
+    const sourceRuntime = await import("./update-cli/update-command-runtime.js");
+    const preparation = vi
+      .spyOn(sourceRuntime, "completeSourceUpdateRuntime")
+      .mockRejectedValue(new Error("Missing-run regression reached runtime preparation."));
+    const runId = "53e56de0-a951-4b3d-af1a-9e4f1ac5a069";
+    expect(getUpdateRun(runId)).toBeUndefined();
+    const history = listUpdateRuns({ limit: 100 });
+    readPackageVersion.mockResolvedValue("2026.9.4");
+
+    const failure = await runPostCoreCommand(
+      { restart: false, json: true },
+      {
+        OPENCLAW_UPDATE_RUN_ID: runId,
+        OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1",
+        OPENCLAW_UPDATE_POST_CORE_REQUESTED_CHANNEL: "beta",
+      },
+    ).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(preparation).not.toHaveBeenCalled();
+    expect(failure).toMatchObject({
+      name: "UpdateCommandRecoveryPendingError",
+      message: "Post-core update run is unavailable; resume cannot verify its owner.",
+    });
+
+    expect(vi.mocked(runExec).mock.calls.some(([, args]) => args.includes("doctor"))).toBe(false);
+    expect(syncPluginsForUpdateChannel).not.toHaveBeenCalled();
+    expect(updateNpmInstalledPlugins).not.toHaveBeenCalled();
+    expect(mutateConfigFileWithRetry).not.toHaveBeenCalled();
+    expect(replaceConfigFile).not.toHaveBeenCalled();
+    expect(defaultRuntime.exit).not.toHaveBeenCalledWith(0);
+    expect(listUpdateRuns({ limit: 100 })).toEqual(history);
+  });
+
   it("completes convergence-only post-core changes for a legacy parent", async () => {
     runPostCorePluginConvergenceSpy.mockResolvedValueOnce(
       postCoreConvergenceResult({
@@ -217,7 +254,22 @@ describe("update-cli child-owned deferred completion", () => {
 
       if (writes) {
         expect(replaceConfigFile).toHaveBeenCalledExactlyOnceWith({ nextConfig: config });
-        expect(mutateConfigFileWithRetry).toHaveBeenCalledWith({ mutate: expect.any(Function) });
+        expect(mutateConfigFileWithRetry).toHaveBeenCalledExactlyOnceWith({
+          mutate: expect.any(Function),
+          writeOptions: {
+            assertCurrent: expect.any(Function),
+            beforeCommit: expect.any(Function),
+            observe: false,
+          },
+        });
+        if (mode === "finalize") {
+          expect(
+            vi.mocked(mutateConfigFileWithRetry).mock.calls[0]?.[0].writeOptions?.assertCurrent,
+          ).toThrow("Update operation ownership has closed.");
+          expect(
+            vi.mocked(mutateConfigFileWithRetry).mock.calls[0]?.[0].writeOptions?.beforeCommit,
+          ).toThrow("Update operation ownership has closed.");
+        }
       } else {
         expect(replaceConfigFile).not.toHaveBeenCalled();
       }
@@ -365,6 +417,7 @@ describe("update-cli child-owned deferred completion", () => {
   });
 
   it("uses the Windows parent process start time for old post-core parents", async () => {
+    const parentStartedAtMs = Date.now() - 1_000;
     const preUpdateConfig = stableWhatsAppConfig();
     const postDoctorConfig = stableConfig();
     await setupPostCoreConfigFixture({ preUpdateConfig, postDoctorConfig });
@@ -373,7 +426,7 @@ describe("update-cli child-owned deferred completion", () => {
       expect(file).toBe("powershell.exe");
       expect(commandArgs).toContain("-NonInteractive");
       return {
-        stdout: new Date(Date.now() - 1_000).toISOString(),
+        stdout: new Date(parentStartedAtMs).toISOString(),
         stderr: "",
       };
     });

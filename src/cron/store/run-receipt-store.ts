@@ -2,10 +2,9 @@ import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { toUSVString } from "node:util";
 import type { Selectable } from "kysely";
-import type { AdmittedRunContext } from "../../agents/admitted-run-context.js";
-import {
-  executionOwnerBindingFromAdmission,
-  type ExecutionOwnerBindingResult,
+import type {
+  ExecutionOwnerBinding,
+  ExecutionOwnerBindingResult,
 } from "../../audit/execution-owner-binding.js";
 import {
   bindExecutionOwnerLifecycleMetadata,
@@ -47,6 +46,8 @@ import { loadedCronStoreFromRows, loadCronRows } from "./row-codec.js";
 
 type CronRunReceiptDatabase = Pick<OpenClawStateDatabase, "cron_run_receipts">;
 type CronRunReceiptRow = Selectable<CronRunReceiptDatabase["cron_run_receipts"]>;
+
+export type CronRunReceiptSettlementDisposition = "owner-unavailable";
 
 export type CronRunReceiptStatus =
   | "running"
@@ -215,35 +216,26 @@ function withReceiptWrite<T>(
 }
 
 /** Binds the exact admitted execution to its authoritative receipt without changing lifecycle. */
-export function bindCronRunReceiptExecution(params: {
-  admitted: AdmittedRunContext;
-  handle: CronRunReceiptHandle;
-  options?: OpenClawStateDatabaseOptions;
-}): ExecutionOwnerBindingResult {
-  const binding = executionOwnerBindingFromAdmission(params.admitted);
-  if (!binding) {
-    return "disabled";
+export function bindCronRunReceiptExecutionInDatabase(
+  database: DatabaseSync,
+  handle: CronRunReceiptHandle,
+  binding: ExecutionOwnerBinding,
+): ExecutionOwnerBindingResult {
+  ensureCronRunReceiptSchema(database);
+  try {
+    assertCronRunReceiptOwnedInDatabase({ database, handle });
+  } catch (error) {
+    if (!(error instanceof CronRunReceiptRevisionError)) {
+      throw error;
+    }
+    return "missing";
   }
-  return withReceiptWrite(
-    "cron.run-receipt.execution-binding",
-    params.options ?? {},
-    (database) => {
-      try {
-        assertCronRunReceiptOwnedInDatabase({ database, handle: params.handle });
-      } catch (error) {
-        if (!(error instanceof CronRunReceiptRevisionError)) {
-          throw error;
-        }
-        return "missing";
-      }
-      return bindExecutionOwnerLifecycleMetadata({
-        db: database,
-        ownerKind: "cron",
-        ownerId: params.handle.receiptId,
-        binding,
-      });
-    },
-  );
+  return bindExecutionOwnerLifecycleMetadata({
+    db: database,
+    ownerKind: "cron",
+    ownerId: handle.receiptId,
+    binding,
+  });
 }
 
 function isReceiptStatus(value: string): value is CronRunReceiptStatus {
@@ -609,13 +601,14 @@ export function activateCronRunReceiptInDatabase(params: {
   return { ...params.handle, startedAtMs: params.startedAtMs };
 }
 
-export function assertCronRunReceiptCurrent(params: {
+/** Reads the canonical definition under the same exact receipt check used by execution. */
+export function readCronRunReceiptCurrentJob(params: {
   handle: CronRunReceiptHandle;
   resolveAgentId: ResolveReceiptAgentId;
   isAgentAvailable?: (agentId: string) => boolean;
   allowMissingJob?: boolean;
   env?: NodeJS.ProcessEnv;
-}): void {
+}): CronJob | undefined {
   if (params.isAgentAvailable && !params.isAgentAvailable(params.handle.agentId)) {
     throw new CronRunReceiptRevisionError(
       params.handle.receiptId,
@@ -623,14 +616,20 @@ export function assertCronRunReceiptCurrent(params: {
       "owner-unavailable",
     );
   }
-  withReceiptWrite(
+  return withReceiptWrite(
     "cron.run-receipt.assert-current",
     params.env ? { env: params.env } : {},
-    (database) =>
-      params.allowMissingJob
-        ? assertCronRunReceiptOwnedInDatabase({ database, handle: params.handle })
-        : assertCronRunReceiptCurrentInDatabase({ database, ...params }),
+    (database) => {
+      assertCronRunReceiptOwnedInDatabase({ database, handle: params.handle });
+      return params.allowMissingJob ? undefined : validateCurrentJob({ database, ...params });
+    },
   );
+}
+
+export function assertCronRunReceiptCurrent(
+  params: Parameters<typeof readCronRunReceiptCurrentJob>[0],
+): void {
+  readCronRunReceiptCurrentJob(params);
 }
 
 /** Keeps the durable lease live when timeout/cancel returns before the runner. */

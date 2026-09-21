@@ -1,5 +1,5 @@
-import { markCronJobActive } from "../active-jobs.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
+import { withCronMutationCommitHook } from "../mutation-completion.js";
 import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
 import {
   adjudicateActiveCronRunReceiptInDatabase,
@@ -16,6 +16,7 @@ import { normalizeCronRunErrorText } from "./execution-errors.js";
 import { enrollForeignReceipt } from "./foreign-receipt-monitor.js";
 import { recomputeJobNextRunAtMs } from "./jobs-scheduling.js";
 import { locked } from "./locked.js";
+import { retainManualOneShotOccurrence } from "./one-shot-schedule.js";
 import { runWithCronAdmission } from "./run-admission-capacity.js";
 import { skipCronJobsWithoutOwners } from "./run-owner.js";
 import {
@@ -23,6 +24,7 @@ import {
   claimServiceCronRunReceiptInDatabase,
   cronRunReceiptPersistHooks,
   cronRunReceiptSupersedeHooks,
+  markServiceCronJobActive,
   prepareServiceCronRunReceiptClaim,
 } from "./run-receipts.js";
 import { applyCronRuntimeRowsToState, commitCronRuntimeRows } from "./runtime-store.js";
@@ -32,10 +34,7 @@ import {
   createCronOwnerExecutionIdentityAdmission,
   tryCreateCronTaskRunHandle,
 } from "./task-runs.js";
-import {
-  runsDetachedFromMainSession,
-  type TimedCronRunOutcome,
-} from "./timer-execution-timeout.js";
+import type { TimedCronRunOutcome } from "./timer-execution-timeout.js";
 import { authorCronRunCompletion, executeJobCoreWithTimeout } from "./timer-job-runner.js";
 import { isRunnableJob } from "./timer-runnable.js";
 
@@ -245,6 +244,7 @@ export async function persistQueuedCronRunReservations(params: {
   scheduleMode?: "advance" | "preserve";
   manualRun?: {
     runId?: string;
+    commitGuard?: () => void;
     terminalTracker?: { emitted: boolean };
     scheduleOwnershipAtMs?: number;
     onExit?: {
@@ -271,6 +271,7 @@ export async function persistQueuedCronRunReservations(params: {
         state: params.state,
         job: params.manualRun?.onExit ? { ...job, enabled: false } : job,
         startedAtMs: params.reservedAtMs,
+        requestRunId: params.manualRun?.runId,
       }),
     ]),
   );
@@ -282,8 +283,9 @@ export async function persistQueuedCronRunReservations(params: {
         state: params.state,
         jobIds: pendingJobs.keys(),
         operationLabel: "cron.run-reservation",
+        transactionHooks: params.manualRun ? withCronMutationCommitHook("cron.run") : undefined,
         mutate: ({ database, jobs }) => {
-          params.manualRun?.onExit?.commitGuard();
+          (params.manualRun?.commitGuard ?? params.manualRun?.onExit?.commitGuard)?.();
           const jobIds = [...pendingJobs.keys()].toSorted();
           for (const jobId of jobIds) {
             if (!params.state.queuedRunReservationsByJobId.has(jobId)) {
@@ -336,6 +338,7 @@ export async function persistQueuedCronRunReservations(params: {
               ),
             };
           });
+          const ownershipAtMs = params.manualRun?.scheduleOwnershipAtMs ?? params.reservedAtMs;
           for (const { job } of reservations) {
             if (params.manualRun?.onExit) {
               job.enabled = false;
@@ -345,11 +348,14 @@ export async function persistQueuedCronRunReservations(params: {
               delete job.state.startupCatchupAtMs;
               delete job.state.pacedNextRunAtMs;
               delete job.state.forcePreservedNextRunAtMs;
+            } else if (params.scheduleMode === "preserve") {
+              retainManualOneShotOccurrence(job, ownershipAtMs);
             }
             job.state.queuedAtMs = params.reservedAtMs;
           }
           return {
             upsertJobIds: committed.map((job) => job.id),
+            runHooks: reservations.length > 0,
             value: reservations,
           };
         },
@@ -630,30 +636,29 @@ export async function executeQueuedCronRun(params: {
         return undefined;
       }
       params.onActivated?.();
-      return {
-        job: activation.job,
+      const executionJob = structuredClone(activation.job);
+      executionJob.state.runningAtMs = activation.startedAt;
+      executionJob.state.lastError = undefined;
+      const taskRun = tryCreateCronTaskRunHandle({
+        state,
+        job: executionJob,
         startedAt: activation.startedAt,
         runReceipt: activation.runReceipt,
+      });
+      return {
+        executionJob,
+        taskRun,
+        startedAt: activation.startedAt,
+        runReceipt: activation.runReceipt,
+        // Publish the occurrence before releasing the mutation lock, including during setup.
+        activeJobMarker: markServiceCronJobActive(state, activation.job, activation.runReceipt),
       };
     });
     if (!started) {
       return undefined;
     }
-    const executionJob = structuredClone(started.job);
-    executionJob.state.runningAtMs = started.startedAt;
-    executionJob.state.lastError = undefined;
-    const taskRun = tryCreateCronTaskRunHandle({
-      state,
-      job: executionJob,
-      startedAt: started.startedAt,
-      runReceipt: started.runReceipt,
-    });
+    const { executionJob, taskRun, activeJobMarker } = started;
     const taskRunId = taskRun?.runId;
-    const activeJobMarker = markCronJobActive(executionJob.id, {
-      agentId: started.runReceipt.agentId,
-      declarationKey: executionJob.declarationKey,
-      preserveAcrossGenerationAdvance: !runsDetachedFromMainSession(executionJob),
-    });
     emit(state, {
       jobId: executionJob.id,
       action: "started",
@@ -671,21 +676,17 @@ export async function executeQueuedCronRun(params: {
     };
     let outcome: TimedCronRunOutcome;
     try {
-      const execute = async () =>
-        await executeJobCoreWithTimeout(state, executionJob, {
-          runId: taskRunId,
-          activeJobMarker,
+      const result = await executeJobCoreWithTimeout(state, executionJob, {
+        runId: taskRunId,
+        activeJobMarker,
+        runReceipt: started.runReceipt,
+        executionIdentity: createCronOwnerExecutionIdentityAdmission({
+          state,
           runReceipt: started.runReceipt,
-          executionIdentity: createCronOwnerExecutionIdentityAdmission({
-            state,
-            runReceipt: started.runReceipt,
-            taskId: taskRun?.taskId,
-            flowId: taskRun?.flowId,
-          }),
-        });
-      const result = state.deps.runSchedulerOwned
-        ? await state.deps.runSchedulerOwned(execute)
-        : await execute();
+          taskId: taskRun?.taskId,
+          flowId: taskRun?.flowId,
+        }),
+      });
       outcome = { ...base, ...result, endedAt: state.deps.nowMs() };
     } catch (error) {
       const receiptSettlementDisposition =

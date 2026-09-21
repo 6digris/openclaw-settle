@@ -3,6 +3,14 @@ import { en } from "./en.ts";
 
 // Plugin management and its lazy sibling surfaces register this shared copy on use.
 const enPluginManagement = {
+  custodian: {
+    viewingPlugin: "Viewing {plugin}",
+    pluginHelpQuestion: "Help me understand {setting} for {plugin}.",
+    pluginHelpFailed: "Could not prepare the setting question. Try Ask OpenClaw again.",
+    pluginHelpUnset: "Not set",
+    pluginHelpValue: "Current value: {value}",
+    pluginHelpPending: "Your plugin question is saved as a draft and will appear after this step.",
+  },
   pluginsPage: {
     editor: {
       title: "{name} settings",
@@ -292,6 +300,7 @@ const enPluginManagement = {
 
 export const registerPluginManagementEnglish = Object.assign(
   () => {
+    Object.assign(en.custodian, enPluginManagement.custodian);
     en.pluginsPage = enPluginManagement.pluginsPage;
   },
   { catalog: enPluginManagement },
