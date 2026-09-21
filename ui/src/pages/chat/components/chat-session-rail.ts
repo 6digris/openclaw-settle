@@ -701,8 +701,8 @@ export class ChatSessionRailElement extends OpenClawLightDomElement {
                   this.sendShortcut === "enter" ? "Enter" : "Control+Enter Meta+Enter"
                 }
                 .value=${this.companion.draft}
-                placeholder=${pending ? t("chat.rail.askPending") : t("chat.rail.askPlaceholder")}
-                ?disabled=${!this.connected || pending}
+                placeholder=${t("chat.rail.askPlaceholder")}
+                ?disabled=${!this.connected}
                 @keydown=${this.composer.handleKeydown}
                 @input=${this.composer.handleInput}
                 ${ref(this.composer.ref)}
