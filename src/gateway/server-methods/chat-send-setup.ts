@@ -1,5 +1,6 @@
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionGoalOperation } from "../../config/sessions/goals-operations.js";
+import { readSessionSubmittedInput } from "../../config/sessions/session-accessor.js";
 import { admitChatSend } from "./chat-send-admission.js";
 import { runChatSendPreAdmission } from "./chat-send-pre-admission.js";
 import { normalizeChatSendRequest } from "./chat-send-request.js";
@@ -75,10 +76,31 @@ export async function prepareAndAdmitChatSend(
     );
     return undefined;
   }
+  const shouldAdmit = await runChatSendPreAdmission({
+    request: normalizedRequest.value,
+    session: preparedSession.value,
+    respond,
+    context,
+    client,
+    assertCurrent,
+  });
+  if (!shouldAdmit) {
+    return undefined;
+  }
   if (normalizedRequest.value.mentions) {
     const inbox = context.mentionInbox;
     const everyone = normalizedRequest.value.mentions.some((mention) => "kind" in mention);
-    if (everyone && inbox) {
+    const { entry, agentId, sessionKey, storePath, clientRunId } = preparedSession.value;
+    // This exact-source read only avoids fresh roster selection. Pending-input admission
+    // still verifies the request, sender and private audience before reclaiming custody.
+    const submitted =
+      everyone && entry?.sessionId
+        ? readSessionSubmittedInput(
+            { agentId, sessionKey, sessionId: entry.sessionId, storePath },
+            `${clientRunId}:user`,
+          )
+        : undefined;
+    if (everyone && inbox && !submitted) {
       const prepared = await inbox.prepareEveryoneRecipients();
       assertCurrent?.();
       if (!prepared.ok) {
@@ -108,7 +130,7 @@ export async function prepareAndAdmitChatSend(
       );
       return undefined;
     }
-    if (everyone && inbox) {
+    if (everyone && inbox && !submitted) {
       const recipients = inbox.resolveEveryoneRecipients(client, target);
       if (!recipients.ok) {
         respond(false, undefined, recipients.error);
@@ -116,17 +138,6 @@ export async function prepareAndAdmitChatSend(
       }
       normalizedRequest.value.everyoneRecipients = recipients.value;
     }
-  }
-  const shouldAdmit = await runChatSendPreAdmission({
-    request: normalizedRequest.value,
-    session: preparedSession.value,
-    respond,
-    context,
-    client,
-    assertCurrent,
-  });
-  if (!shouldAdmit) {
-    return undefined;
   }
   const nativeRestriction = await prepareChatSendNativeRuntimeRestriction({
     request: normalizedRequest.value,

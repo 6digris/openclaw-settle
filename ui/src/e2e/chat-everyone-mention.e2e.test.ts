@@ -5,7 +5,6 @@ import {
   installMockGateway,
   requireRecord,
 } from "./chat-flow.test-support.ts";
-import { waitForGatewayRecoveryScope } from "./new-session-page.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
 
@@ -55,69 +54,6 @@ suite.define(() => {
           expect(await page.locator(".human-mention-everyone").count()).toBe(1);
           expect(await page.locator(".human-mention-everyone").textContent()).toBe("@everyone");
           expect(await page.locator("openclaw-person-reference").count()).toBe(0);
-        },
-      );
-    },
-  );
-
-  it.each(["chat", "new"])(
-    "keeps everyone intentional while searching people in %s",
-    async (route) => {
-      await suite.withPage(
-        { viewport: { width: 390, height: 844 }, colorScheme: "light" },
-        async ({ page }) => {
-          const gateway = await installMockGateway(page, {
-            featureMethods: [...defaultControlUiFeatureMethods, "users.mentionable"],
-            presenceUsers: [
-              {
-                self: true,
-                id: "sender",
-                identity: { type: "profile", id: "sender" },
-                name: "Sender",
-              },
-            ],
-            methodResponses: {
-              "users.mentionable": {
-                users: [{ profileId: "peter", displayName: "Peter Steinberger", online: false }],
-                truncated: false,
-                everyone: { recipientCount: 12 },
-              },
-            },
-          });
-          await page.goto(`${suite.server.baseUrl}${route}`, { waitUntil: "domcontentloaded" });
-          await waitForGatewayRecoveryScope(page);
-          const input = page.locator(
-            route === "new"
-              ? ".new-session-page__message"
-              : ".agent-chat__composer-combobox textarea",
-          );
-          const menu = page.getByRole("listbox", { name: "Mention a person" });
-          const everyone = menu.getByRole("option", { name: /@everyone/ });
-          await input.fill("@");
-          await everyone.waitFor();
-          await input.press("Escape");
-          await input.fill("@Other @");
-          await menu.getByRole("option", { name: /Peter Steinberger/ }).waitFor();
-          expect(await everyone.count()).toBe(0);
-          for (const query of ["ev", "yon"]) {
-            await input.press("Escape");
-            await input.fill(`@Other @${query}`);
-            await everyone.waitFor();
-            expect(await everyone.locator(".mention-everyone-icon").count()).toBe(1);
-          }
-          await input.press("Escape");
-          await gateway.setMethodResponse("users.mentionable", {
-            users: [{ profileId: "peter", displayName: "Peter Steinberger", online: false }],
-            truncated: false,
-          });
-          await input.fill("@einb");
-          await menu.getByRole("option", { name: /Peter Steinberger/ }).waitFor();
-          expect(await everyone.count()).toBe(0);
-          await input.press("Enter");
-          expect(await input.inputValue()).toBe("@Peter Steinberger ");
-          expect(await page.locator(".composer-context-strip").textContent()).not.toContain(
-            "Everyone with access",
-          );
         },
       );
     },

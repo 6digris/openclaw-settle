@@ -591,21 +591,30 @@ describe("persistUserTurnTranscript", () => {
   });
 
   it.each(["retain", "replace-text", "mutate-spans", "forge"] as const)(
-    "keeps human selections bound to their original bytes through hook %s",
+    "keeps direct and everyone selections bound to their original bytes through hook %s",
     async (mode) => {
       const target = createSqliteTranscriptTarget({ dir: tempDirs.make("mention-hook-") });
-      const mentions = [{ profileId: "ada", start: 6, end: 10 }];
+      const mentions = [
+        { profileId: "ada", start: 6, end: 10 },
+        { kind: "everyone" as const, start: 11, end: 20 },
+      ];
       const recorder = createUserTurnTranscriptRecorder({
-        input: { text: "Hello @Ada", ...(mode === "forge" ? {} : { mentions }) },
+        input: { text: "Hello @Ada @everyone", ...(mode === "forge" ? {} : { mentions }) },
         target,
         beforeMessageWrite: ({ message }) => {
           if (mode === "mutate-spans") {
             Object.assign(message["__openclaw"]!.humanMentions![0]!, { profileId: "forged" });
+            Object.assign(message["__openclaw"]!.humanMentions![1]!, { kind: "forged" });
           }
           return {
             ...message,
             content: mode === "replace-text" ? "[redacted]" : message.content,
-            __openclaw: { humanMentions: [{ profileId: "forged", start: 0, end: 6 }] },
+            __openclaw: {
+              humanMentions: [
+                { profileId: "forged", start: 0, end: 6 },
+                { kind: "everyone", start: 11, end: 20 },
+              ],
+            },
           };
         },
       });
@@ -613,40 +622,10 @@ describe("persistUserTurnTranscript", () => {
       const [message] = await readTranscriptMessages(target);
       expect(message).toHaveProperty(
         "content",
-        mode === "replace-text" ? "[redacted]" : "Hello @Ada",
+        mode === "replace-text" ? "[redacted]" : "Hello @Ada @everyone",
       );
-      expect(
-        (message?.["__openclaw"] as { humanMentions?: unknown } | undefined)?.humanMentions,
-      ).toEqual(mode === "replace-text" || mode === "forge" ? undefined : mentions);
-    },
-  );
-
-  it.each(["retain", "replace-text", "mutate", "forge"] as const)(
-    "protects the everyone selection without carrying delivery custody through %s",
-    async (mode) => {
-      const target = createSqliteTranscriptTarget({ dir: tempDirs.make("everyone-hook-") });
-      const mentions = [{ kind: "everyone" as const, start: 0, end: 9 }];
-      const recorder = createUserTurnTranscriptRecorder({
-        input: {
-          text: "@everyone review",
-          ...(mode === "forge" ? {} : { mentions }),
-        },
-        target,
-        beforeMessageWrite: ({ message }) => {
-          if (mode === "mutate") {
-            Object.assign(message["__openclaw"]!.humanMentions![0]!, { kind: "forged" });
-          }
-          return {
-            ...message,
-            content: mode === "replace-text" ? "[redacted]" : message.content,
-            __openclaw: { humanMentions: mentions },
-          };
-        },
-      });
-      await recorder.persistApproved();
-      const [message] = await readTranscriptMessages(target);
       expect(message?.["__openclaw"]).toEqual(
-        mode === "forge" || mode === "replace-text" ? undefined : { humanMentions: mentions },
+        mode === "replace-text" || mode === "forge" ? undefined : { humanMentions: mentions },
       );
     },
   );

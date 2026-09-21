@@ -158,40 +158,19 @@ describe("structured Goal admission", () => {
 });
 
 describe("human mention submission", () => {
-  it("preserves everyone selection after annotation and reply prefixes", async () => {
+  it("keeps only selected people and everyone after annotation and reply prefixes", async () => {
     const host = makeChatHost({
-      chatMessage: "  @everyone please review  ",
-      chatMentions: [{ kind: "everyone", start: 2, end: 11 }],
+      chatMessage: "  🔎 @Alex @everyone please review  ",
+      chatMentions: [
+        { profileId: "profile-alex", start: 5, end: 10 },
+        { kind: "everyone", start: 11, end: 20 },
+      ],
       chatAttachments: [
-        createBrowserAnnotationAttachment("broadcast", "Context with plain @everyone"),
+        createBrowserAnnotationAttachment("mention", "Unselected @Other @everyone context"),
       ],
       chatReplyTarget: {
         messageId: "synthetic-reply",
-        text: "A quoted @everyone",
-        senderLabel: "Reader",
-      },
-      requestHandlers: { "chat.send": { status: "started" } },
-    });
-    await handleSendChat(host);
-    const payload = findChatSendPayload(host);
-    const message = String(payload.message);
-    expect(payload.mentions).toEqual([
-      {
-        kind: "everyone",
-        start: message.lastIndexOf("@everyone"),
-        end: message.lastIndexOf("@everyone") + 9,
-      },
-    ]);
-  });
-
-  it("keeps only selected recipients after annotation and reply prefixes", async () => {
-    const host = makeChatHost({
-      chatMessage: "  🔎 @Alex please review  ",
-      chatMentions: [{ profileId: "profile-alex", start: 5, end: 10 }],
-      chatAttachments: [createBrowserAnnotationAttachment("mention", "Unselected @Other context")],
-      chatReplyTarget: {
-        messageId: "synthetic-reply",
-        text: "Unselected @Other quote",
+        text: "Unselected @Other @everyone quote",
         senderLabel: "Reader",
       },
       getWorkContext: () => ({ page: "chat", title: "Unselected @Other work context" }),
@@ -201,17 +180,21 @@ describe("human mention submission", () => {
     await handleSendChat(host);
 
     const expected =
-      "> **Reader:** Unselected @Other quote\n\nUnselected @Other context\n\n🔎 @Alex please review";
-    expect(findChatSendPayload(host)).toMatchObject({
-      message: expected,
-      mentions: [
-        {
-          profileId: "profile-alex",
-          start: expected.indexOf("@Alex"),
-          end: expected.indexOf("@Alex") + 5,
-        },
-      ],
-    });
+      "> **Reader:** Unselected @Other @everyone quote\n\nUnselected @Other @everyone context\n\n🔎 @Alex @everyone please review";
+    const payload = findChatSendPayload(host);
+    expect(payload.message).toBe(expected);
+    expect(payload.mentions).toEqual([
+      {
+        profileId: "profile-alex",
+        start: expected.indexOf("@Alex"),
+        end: expected.indexOf("@Alex") + 5,
+      },
+      {
+        kind: "everyone",
+        start: expected.lastIndexOf("@everyone"),
+        end: expected.lastIndexOf("@everyone") + 9,
+      },
+    ]);
   });
 
   it("does not clear a same-label replacement recipient while history is loading", async () => {

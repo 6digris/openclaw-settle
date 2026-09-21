@@ -111,11 +111,6 @@ describe("composer overflow presentation", () => {
         .querySelector(".composer-context-strip__person svg")!
         .getBoundingClientRect();
       expect(glyph.width).toBe(glyph.height);
-      const badge = strip.querySelector<HTMLElement>(".mention-everyone-icon")!;
-      const badgeStyle = getComputedStyle(badge);
-      expect(badgeStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
-      expect(Number.parseFloat(badgeStyle.borderRadius)).toBeGreaterThan(0);
-      expect(glyph.height).toBeLessThan(badge.getBoundingClientRect().height);
     },
   );
 

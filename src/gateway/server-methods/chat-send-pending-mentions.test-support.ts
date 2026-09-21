@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import { getRuntimeConfig } from "../../config/config.js";
@@ -137,72 +138,124 @@ export function registerChatSendPendingMentionTests(
     },
   );
 
-  it("keeps an everyone audience private and immutable through actual pending-input restart recovery", async () => {
-    const fixture = await createMentionFixture();
-    const resumedRelease = createDeferred();
-    const resumedReady = createDeferred<UserTurnTranscriptRecorder>();
-    fixture.params.message = "@everyone review this";
-    fixture.params.mentions = [{ kind: "everyone", start: 0, end: 9 }];
-    try {
-      expect((await fixture.send()).mock.calls[0]?.[0]).toBe(true);
-      const originalRecorder = await fixture.dispatchedRecorder;
-      const original = listSessionPendingInputs(fixture.scope).items[0];
-      expect(original).toBeDefined();
-      const pendingJson = JSON.stringify(original);
-      expect(pendingJson).not.toContain(fixture.bobClient.authenticatedUserProfile.profileId);
-      expect(pendingJson).not.toContain(fixture.carolClient.authenticatedUserProfile.profileId);
-      rotateAgentEventLifecycleGeneration();
-      await fixture.finishDispatch();
-      fixture.context.dedupe.clear();
-      await patchSessionEntryCore(fixture.scope, () => ({ status: "done" }));
-      const originalClock = Date.now();
-      const clock = vi.spyOn(Date, "now").mockReturnValue(originalClock + 8 * 24 * 60 * 60_000);
-      fixture.inbox.dispose();
-      const reopened = createMentionInbox({
-        gatewayInstanceId: "restarted-private-audience",
-        getRuntimeConfig,
-        getClients: () => [fixture.client, fixture.bobClient, fixture.carolClient],
-        broadcastToConnIds: vi.fn(),
-      });
-      fixture.context.mentionInbox = reopened;
-      const late = ensureProfileForEmail("late-after-restart@example.test");
-      dispatchInboundMessageMock.mockImplementation(async (options: unknown) => {
-        const { replyOptions } = options as Parameters<typeof dispatchInboundMessage>[0];
-        const recorder = replyOptions?.userTurnTranscriptRecorder;
-        if (!recorder) {
-          throw new Error("Expected the recovered user-turn recorder");
+  it.each(["empty", "oversized", "truncated", "unavailable"] as const)(
+    "recovers the accepted everyone audience when the current roster is %s",
+    async (roster) => {
+      const fixture = await createMentionFixture();
+      const resumedRelease = createDeferred();
+      const resumedReady = createDeferred<UserTurnTranscriptRecorder>();
+      fixture.params.message = "@everyone review this";
+      fixture.params.mentions = [{ kind: "everyone", start: 0, end: 9 }];
+      try {
+        expect((await fixture.send()).mock.calls[0]?.[0]).toBe(true);
+        const originalRecorder = await fixture.dispatchedRecorder;
+        const rejectFreshRoster = (inbox: typeof fixture.inbox) => {
+          const failure = {
+            ok: false as const,
+            error: errorShape(
+              roster === "unavailable" ? ErrorCodes.UNAVAILABLE : ErrorCodes.INVALID_REQUEST,
+              `Current everyone roster is ${roster}`,
+            ),
+          };
+          return roster === "unavailable"
+            ? vi.spyOn(inbox, "prepareEveryoneRecipients").mockResolvedValue(failure)
+            : vi.spyOn(inbox, "resolveEveryoneRecipients").mockReturnValue(failure);
+        };
+        const binding = { expectedProfileId: fixture.client.authenticatedUserProfile!.profileId };
+        const rosterRead = rejectFreshRoster(fixture.inbox);
+        if (roster === "unavailable") {
+          const wrongSender = await fixture.send(vi.fn<RespondFn>(), {
+            expectedProfileId: fixture.bobClient.authenticatedUserProfile.profileId,
+          });
+          expect(wrongSender.mock.calls[0]?.[2]?.details).toMatchObject({
+            reason: "EXPECTED_PROFILE_MISMATCH",
+          });
+          const entry = loadSessionEntry(fixture.scope)!;
+          const scopes = fixture.client.connect.scopes;
+          fixture.client.connect.scopes = ["operator.read", "operator.write"];
+          replaceSessionEntrySync(fixture.scope, {
+            ...entry,
+            visibility: "draft",
+            createdActor: {
+              type: "human",
+              source: "profile",
+              id: fixture.bobClient.authenticatedUserProfile.profileId,
+            },
+          });
+          const forbiddenSession = await fixture.send(vi.fn<RespondFn>(), binding);
+          expect(forbiddenSession.mock.calls[0]?.[0]).toBe(false);
+          replaceSessionEntrySync(fixture.scope, entry);
+          fixture.client.connect.scopes = scopes;
         }
-        resumedReady.resolve(recorder);
-        await resumedRelease.promise;
-        return {};
-      });
-      Object.assign(fixture.params, { __controlUiReconnectResume: true });
-      expect((await fixture.send()).mock.calls[0]?.[0]).toBe(true);
-      const resumedRecorder = await resumedReady.promise;
-      expect(() => originalRecorder.withPendingInput?.(() => {})).toThrow("ownership ended");
-      const committed = await resumedRecorder.persistApproved();
-      expect(JSON.stringify(committed?.message)).not.toContain(
-        fixture.bobClient.authenticatedUserProfile.profileId,
-      );
-      const bob = reopened.list(fixture.bobClient);
-      const lateView = reopened.list({
-        ...fixture.bobClient,
-        authenticatedUserProfile: {
-          ...fixture.bobClient.authenticatedUserProfile,
-          profileId: late.id,
-        },
-      });
-      expect(bob.ok && bob.value.items).toHaveLength(1);
-      expect(lateView.ok && lateView.value.items).toEqual([]);
-      reopened.dispose();
-      clock.mockRestore();
-    } finally {
-      vi.restoreAllMocks();
-      resumedRelease.resolve();
-      fixture.context.mentionInbox?.dispose();
-      await fixture.cleanup();
-    }
-  });
+        // An accepted same-ID retry must not expand or validate a new broadcast audience.
+        expect((await fixture.send(vi.fn<RespondFn>(), binding)).mock.calls[0]?.[0]).toBe(true);
+        fixture.params.message += " changed";
+        const conflict = await fixture.send(vi.fn<RespondFn>(), binding);
+        expect(conflict.mock.calls[0]?.[2]?.details).toMatchObject({
+          reason: "chat-request-conflict",
+        });
+        fixture.params.message = "@everyone review this";
+        expect(rosterRead).not.toHaveBeenCalled();
+        const original = listSessionPendingInputs(fixture.scope).items[0];
+        expect(original).toBeDefined();
+        const pendingJson = JSON.stringify(original);
+        expect(pendingJson).not.toContain(fixture.bobClient.authenticatedUserProfile.profileId);
+        expect(pendingJson).not.toContain(fixture.carolClient.authenticatedUserProfile.profileId);
+        rotateAgentEventLifecycleGeneration();
+        await fixture.finishDispatch();
+        fixture.context.dedupe.clear();
+        await patchSessionEntryCore(fixture.scope, () => ({ status: "done" }));
+        const originalClock = Date.now();
+        const clock = vi.spyOn(Date, "now").mockReturnValue(originalClock + 8 * 24 * 60 * 60_000);
+        fixture.inbox.dispose();
+        const reopened = createMentionInbox({
+          gatewayInstanceId: "restarted-private-audience",
+          getRuntimeConfig,
+          getClients: () => [fixture.client, fixture.bobClient, fixture.carolClient],
+          broadcastToConnIds: vi.fn(),
+        });
+        fixture.context.mentionInbox = reopened;
+        const reopenedRosterRead = rejectFreshRoster(reopened);
+        const late = ensureProfileForEmail("late-after-restart@example.test");
+        dispatchInboundMessageMock.mockImplementation(async (options: unknown) => {
+          const { replyOptions } = options as Parameters<typeof dispatchInboundMessage>[0];
+          const recorder = replyOptions?.userTurnTranscriptRecorder;
+          if (!recorder) {
+            throw new Error("Expected the recovered user-turn recorder");
+          }
+          resumedReady.resolve(recorder);
+          await resumedRelease.promise;
+          return {};
+        });
+        Object.assign(fixture.params, { __controlUiReconnectResume: true });
+        expect((await fixture.send(vi.fn<RespondFn>(), binding)).mock.calls[0]?.[0]).toBe(true);
+        expect(reopenedRosterRead).not.toHaveBeenCalled();
+        const resumedRecorder = await resumedReady.promise;
+        expect(() => originalRecorder.withPendingInput?.(() => {})).toThrow("ownership ended");
+        const committed = await resumedRecorder.persistApproved();
+        expect(JSON.stringify(committed?.message)).not.toContain(
+          fixture.bobClient.authenticatedUserProfile.profileId,
+        );
+        const bob = reopened.list(fixture.bobClient);
+        const lateView = reopened.list({
+          ...fixture.bobClient,
+          authenticatedUserProfile: {
+            ...fixture.bobClient.authenticatedUserProfile,
+            profileId: late.id,
+          },
+        });
+        expect(bob.ok && bob.value.items).toHaveLength(1);
+        expect(lateView.ok && lateView.value.items).toEqual([]);
+        reopened.dispose();
+        clock.mockRestore();
+      } finally {
+        vi.restoreAllMocks();
+        resumedRelease.resolve();
+        fixture.context.mentionInbox?.dispose();
+        await fixture.cleanup();
+      }
+    },
+  );
 
   it("binds a new-session broadcast to the real runtime-created incarnation", async () => {
     const fixture = await createMentionFixture({ active: false });

@@ -110,6 +110,7 @@ export function createGatewayChatUserTurnController(params: {
       }))
     : Promise.resolve(baseInput);
   // Audience bytes never enter the message, hook input, pending-input JSON or transcript.
+  const everyoneSelected = selectedMentions?.some((mention) => "kind" in mention);
   const audienceRecipients = request.everyoneRecipients
     ? [...request.everyoneRecipients]
     : undefined;
@@ -133,7 +134,7 @@ export function createGatewayChatUserTurnController(params: {
   const bindAudience = () => {
     if (
       !audienceIdentity &&
-      audienceRecipients &&
+      everyoneSelected &&
       senderProfileId &&
       pendingInputRequestFingerprint
     ) {
@@ -159,12 +160,16 @@ export function createGatewayChatUserTurnController(params: {
   };
   const retainAudience = (source: { recovered: boolean }) => {
     const identity = bindAudience();
-    if (!identity || !audienceRecipients || !mentionInbox) {
+    if (!identity || !mentionInbox) {
       return;
     }
+    if (!source.recovered && !audienceRecipients) {
+      throw new Error("Fresh mention input requires an admitted everyone audience");
+    }
     mentionInbox.retainEveryoneAudience(params.client, identity, {
-      recipients: audienceRecipients,
-      recovered: source.recovered,
+      ...(audienceRecipients
+        ? { recipients: audienceRecipients, recovered: source.recovered }
+        : { recovered: true as const }),
       assertCurrent: () => {
         admission.assertWorkAdmissionCurrent();
         params.assertOriginalInputCommit?.();
@@ -185,7 +190,7 @@ export function createGatewayChatUserTurnController(params: {
         }
       : {}),
     input: baseInput,
-    ...(audienceRecipients ? { preparePendingInputSourceCustody: retainAudience } : {}),
+    ...(everyoneSelected ? { preparePendingInputSourceCustody: retainAudience } : {}),
     resolveInput: () => inputPromise,
     target: () => {
       // Retain only the current binding; transcript writers recheck it at commit.

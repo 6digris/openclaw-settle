@@ -410,11 +410,14 @@ export function createMentionInbox(params: {
           throw new Error("Mention audience no longer owns its admitted sender and session");
         }
         // An accepted source without custody must never use a freshly expanded audience.
-        if (options.recovered && !readMentionAudience(db, identity)) {
+        const recipients = options.recovered
+          ? readMentionAudience(db, identity)?.recipients
+          : options.recipients;
+        if (!recipients) {
           throw new Error("Mention audience custody expired or is unavailable; submit a new turn");
         }
         options.assertCurrent();
-        retainMentionAudience(db, identity, options.recipients);
+        retainMentionAudience(db, identity, recipients);
       });
       scheduleExpiry();
     },

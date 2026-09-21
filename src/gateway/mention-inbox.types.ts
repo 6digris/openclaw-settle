@@ -43,7 +43,10 @@ export type MentionInbox = {
   retainEveryoneAudience: (
     client: GatewayClient | null,
     identity: MentionAudienceIdentity,
-    options: { recipients: readonly string[]; recovered: boolean; assertCurrent: () => void },
+    options: { assertCurrent: () => void } & (
+      | { recipients: readonly string[]; recovered: boolean }
+      | { recovered: true }
+    ),
   ) => void;
   list: (client: GatewayClient | null) => Result<MentionsListResult, ErrorShape>;
   dismiss: (
