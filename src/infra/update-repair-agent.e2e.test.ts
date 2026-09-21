@@ -18,6 +18,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withServer } from "../plugin-sdk/test-helpers/http-test-server.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { installationTargetEnv } from "./installation-target-context.js";
+import { updateRepairWorkerMessageSchema as releasedUpdateRepairWorkerMessageSchema } from "./test-fixtures/update-repair-protocol.v2026-9-4.js";
 import {
   captureManagedUpdateLeaseDatabaseIdentity,
   createManagedHandoffLeaseDatabase,
@@ -97,7 +98,10 @@ async function runRepairEnvelope(
       });
       child.on("message", (raw) => {
         void (async () => {
-          const message = raw as UpdateRepairWorkerMessage;
+          const message =
+            (raw as { type?: unknown }).type === "turn-result"
+              ? (raw as Extract<UpdateRepairWorkerMessage, { type: "turn-result" }>)
+              : releasedUpdateRepairWorkerMessageSchema.parse(raw);
           if (message.type === "ready") {
             if (delegation) {
               if (delegation.executor !== "unowned" && delegation.executor.bindChild) {
