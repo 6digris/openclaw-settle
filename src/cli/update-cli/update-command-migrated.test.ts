@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createConfigIO } from "../../config/io.js";
@@ -14,6 +15,7 @@ import {
 } from "../../infra/package-update-integrity.js";
 import { createRetainedPackageSwap } from "../../infra/package-update-swap.test-support.js";
 import { hasNodeErrorCode } from "../../infra/path-guards.js";
+import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import * as temporaryState from "../../infra/tmp-openclaw-dir.js";
 import { readUpdateStateSchemaVersions } from "../../infra/update-candidate-state.js";
 import {
@@ -36,6 +38,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { createUpdateProgress } from "./progress.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
+import { migratedFenceEntrypoints } from "./update-command-legacy-finalize-entrypoint.test-support.js";
 import type { MigratedUpdateFinalizationInput } from "./update-command-migrated-types.js";
 import {
   continueMigratedUpdateInFreshProcess,
@@ -369,7 +372,8 @@ it.each([
       OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
       OPENCLAW_TEST_RUNTIME_LOG: "1",
     };
-    const root = legacy ? path.join(stateDir, "legacy-runtime") : process.cwd();
+    const root = path.join(stateDir, legacy ? "legacy-runtime" : "candidate-runtime");
+    const recoveryObservation = path.join(stateDir, "recovery-observation.json");
     const legacyEffect = path.join(stateDir, "legacy-worker-effect");
     if (legacy) {
       const worker = path.join(root, "dist", "infra", "update-migrated-finalize.worker.js");
@@ -390,6 +394,50 @@ it.each([
           fs.writeFileSync(input.resultPath, JSON.stringify({result:{...input.params.result,runId:input.params.opts.run.runId},exitCode:1,terminalRunId:input.params.opts.run.runId}));
         }
       `,
+      );
+    }
+    if (!legacy) {
+      const worker = resolveRuntimeWorkerUrl(migratedFenceEntrypoints.worker);
+      const verification = resolveRuntimeWorkerUrl(migratedFenceEntrypoints.verification);
+      const entry = path.join(root, "dist", "infra", "update-migrated-finalize.worker.js");
+      await fs.mkdir(path.dirname(entry), { recursive: true });
+      await fs.copyFile(path.join(process.cwd(), "package.json"), path.join(root, "package.json"));
+      // The fence fixture has no serving Gateway. Supply only its external health
+      // observation; the real failure-health owner must record it before finalization.
+      // Keep the candidate worker, delegation, ledger and package owner unmocked.
+      await fs.writeFile(
+        entry,
+        `
+        import {registerHooks} from "node:module";
+        ${worker.pathname.endsWith(".ts") ? `process.env.TSX_TSCONFIG_PATH=${JSON.stringify(path.resolve("tsconfig.json"))}; await import(${JSON.stringify(pathToFileURL(path.resolve("scripts/tsx.mjs")).href)});` : ""}
+        registerHooks({load(url, context, nextLoad) {
+          if(url!==${JSON.stringify(verification.href)}) return nextLoad(url, context);
+          return {format:"module", shortCircuit:true, source:
+            'export * from '+JSON.stringify(url+'?fixture-original')+';'+
+            'import {verifyUpdatedGateway as actual} from '+JSON.stringify(url+'?fixture-original')+';'+
+            ${JSON.stringify(`
+              export async function verifyUpdatedGateway(params) {
+                params.assertCurrent?.();
+                if(params.purpose!=="recovery" || params.serviceEnv.OPENCLAW_STATE_DIR!==${JSON.stringify(stateDir)}) {
+                  throw new Error("Expected the isolated failed-update health observation");
+                }
+                const result = await actual({...params, health: {
+                  healthy: false, waitOutcome: "stopped-free",
+                  runtime: {status:"stopped"}, staleGatewayPids: [],
+                  portUsage: {port:params.gatewayPort, status:"free", listeners:[], hints:[]},
+                  probeError: "The migrated-fence fixture has no serving Gateway."
+                }});
+                const fs = await import("node:fs/promises");
+                await fs.writeFile(${JSON.stringify(recoveryObservation)}, JSON.stringify({
+                  pid:process.pid, purpose:params.purpose, ok:result.ok
+                }));
+                return result;
+              }
+            `)}
+          };
+        }});
+        await import(${JSON.stringify(worker.href)});
+        `,
       );
     }
     const created = createUpdateRun({ trigger: foreground ? "api" : "cli" }, { env });
@@ -462,19 +510,29 @@ it.each([
         ),
       );
     const before = legacy ? await family() : undefined;
-    if (checkWorkMs !== undefined) {
-      const nativeCommand = childCommands.runUtf8CommandWithTimeout;
-      vi.spyOn(childCommands, "runUtf8CommandWithTimeout").mockImplementation(
-        async (argv, options): ReturnType<typeof nativeCommand> => {
-          const child = await nativeCommand(argv, options);
-          const allowance = typeof options === "number" ? options : options.timeoutMs;
-          // Keep the native admission/cleanup flow; model cold-start work in this phase only.
-          return argv.at(-1) === "--check" && (allowance ?? Infinity) < checkWorkMs
-            ? { ...child, code: 124, stdout: "", killed: true, termination: "timeout" }
-            : child;
-        },
-      );
-    }
+    const nativeCommand = childCommands.runUtf8CommandWithTimeout;
+    vi.spyOn(childCommands, "runUtf8CommandWithTimeout").mockImplementation(
+      async (argv, options): ReturnType<typeof nativeCommand> => {
+        const phase = argv.at(-1) === "--check" ? "check" : "finalize";
+        const startedAt = performance.now();
+        const label = `[migrated-finalization] ${created.runId} ${phase}`;
+        process.stderr.write(`${label} started\n`);
+        const child = await nativeCommand(argv, options);
+        process.stderr.write(
+          `${label} joined elapsedMs=${Math.round(performance.now() - startedAt)} code=${child.code} termination=${child.termination} cleanup=${child.cleanup}\n`,
+        );
+        if (child.code !== 0 && child.stderr) {
+          process.stderr.write(`${label} stderr: ${child.stderr.slice(-16 * 1024)}\n`);
+        }
+        const allowance = typeof options === "number" ? options : options.timeoutMs;
+        // Keep the native admission/cleanup flow; model cold-start work in this phase only.
+        return checkWorkMs !== undefined &&
+          phase === "check" &&
+          (allowance ?? Infinity) < checkWorkMs
+          ? { ...child, code: 124, stdout: "", killed: true, termination: "timeout" }
+          : child;
+      },
+    );
     const work = withUpdateCommandExecutor(run.runId, async (executor) => {
       const serviceRoot = retained ? path.join(stateDir, "service-A") : undefined;
       if (serviceRoot) {
@@ -622,6 +680,25 @@ it.each([
         }),
       );
       expect(result.result.recovery?.serviceRestartSafe).toBe(false);
+    }
+    if (!original) {
+      expect(result.result.steps).toContainEqual(
+        expect.objectContaining({
+          name: "gateway recovery verification",
+          exitCode: 1,
+          failureFacts: expect.arrayContaining([
+            expect.objectContaining({ check: "settled", code: "stopped-free" }),
+          ]),
+        }),
+      );
+      expect(result.result.recovery?.serviceRestartSafe).toBe(false);
+      expect(JSON.parse(await fs.readFile(recoveryObservation, "utf8"))).toMatchObject({
+        pid: expect.any(Number),
+        purpose: "recovery",
+        ok: false,
+      });
+    } else {
+      await expect(fs.access(recoveryObservation)).rejects.toMatchObject({ code: "ENOENT" });
     }
     expect(rollback).not.toHaveBeenCalled();
     expect(terminalAtCleanup).toEqual({ status: "failed", reason: "state-migrated-no-rollback" });

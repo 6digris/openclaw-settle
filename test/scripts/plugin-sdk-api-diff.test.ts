@@ -247,6 +247,11 @@ describe("Plugin SDK API diff CLI", () => {
       const exitCode = await withTestTimeout(close, 5_000, "Plugin SDK API diff ignored SIGTERM");
 
       expect(exitCode).toBe(143);
+      // The interrupted stage must survive even though no report was produced.
+      expect(stderr).toContain("[plugin-sdk-api-diff] resources ");
+      expect(stderr).toContain(`[plugin-sdk-api-diff] ${baseSha} worktree elapsedMs=`);
+      expect(stderr).toContain(`[plugin-sdk-api-diff] ${baseSha} install elapsedMs=`);
+      expect(stderr).not.toContain(" render elapsedMs=");
       expect(Date.now() - interruptedAt).toBeLessThan(5_000);
       expect(git(repo, ["worktree", "list"])).not.toContain(runnerTemp);
       // Cleanup owns its temporary root, not runner instrumentation beside it.
