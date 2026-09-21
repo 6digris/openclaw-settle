@@ -2573,7 +2573,6 @@ src/flows/doctor-removed-workspaces-state-check.ts	2
 src/flows/search-setup.ts	1
 src/gateway/agent-runtime-identity-token.ts	1
 src/gateway/agent-turn/agent-dedupe.ts	3
-src/gateway/agent-turn/agent-job.ts	1
 src/gateway/agent-turn/agent-restart-recovery-context.ts	1
 src/gateway/agent-turn/agent-run-dispatch.ts	1
 src/gateway/agent-turn/agent-session-persist.ts	3
@@ -2724,7 +2723,6 @@ src/gateway/server-runtime-handles.ts	8
 src/gateway/server-runtime-state-prepare.ts	1
 src/gateway/server-startup-bootstrap.ts	1
 src/gateway/server-startup-config-helpers.ts	1
-src/gateway/server-startup-config.ts	1
 src/gateway/server-startup-post-attach.ts	1
 src/gateway/server-worker-placement-startup.ts	2
 src/gateway/server.auth.control-ui.bootstrap-lifecycle.suite.ts	8
