@@ -21,9 +21,7 @@ import {
 } from "./package-update-filesystem.js";
 import {
   createPackageIntegrityReader,
-  PackageIntegrityTimeoutError,
   readPackageVersionIfPresent,
-  type PackageDirectoryIdentity,
   type PackageRootIntegrityFingerprint,
 } from "./package-update-integrity.js";
 import { preparePackageSwapLocalOverrides } from "./package-update-local-overrides.js";
@@ -137,7 +135,6 @@ export async function swapStagedPackageInstall(
   let previousVersion: string | null = null;
   let previousDistFiles: string[] | undefined;
   let previousRoot: PackageRootIntegrityFingerprint | undefined;
-  let previousIdentity: PackageDirectoryIdentity | undefined;
   let rootLink: Awaited<ReturnType<typeof createNpmPackageRootLinkLifecycle>> | undefined;
   let packageBackedUp = false;
   let displacedCandidateRoot: string | undefined;
@@ -162,7 +159,15 @@ export async function swapStagedPackageInstall(
   };
   const verifyNpmRecovery = (root: string, fromBackup: boolean) =>
     verifyNpmRootRecovery(
-      { root, fromBackup, hadPackage, previousRoot, previousIdentity, targetSwapRoot, shims },
+      {
+        root,
+        fromBackup,
+        hadPackage,
+        previousRoot,
+        targetSwapRoot,
+        shims,
+        warn: (message) => warnings.push(message),
+      },
       params.timeoutMs,
       rootLink?.verifyRuntime,
     );
@@ -233,11 +238,6 @@ export async function swapStagedPackageInstall(
       try {
         packageRollbackVerified =
           (await verifyNpmRecovery(targetSwapRoot, false)) && messages.length === 0;
-        if (packageRollbackVerified && !previousRoot) {
-          warnings.push(
-            "Package fingerprint verification unavailable; rollback verified by the retained package copy's directory identity and version.",
-          );
-        }
         if (previousRoot?.kind === "link" && !rootLink?.verifyRuntime && messages.length === 0) {
           messages.push(
             `${rollback.length > 0 ? "Restored" : "Verified"} the npm package link and affected launchers; external checkout runtime integrity is unverified.`,
@@ -309,28 +309,11 @@ export async function swapStagedPackageInstall(
         ? await readPackageVersionIfPresent(params.installTarget.packageRoot)
         : null;
     if (hadPackage && !native) {
-      try {
-        previousRoot = await baseline.rootEntry(targetSwapRoot);
-      } catch (error) {
-        if (!(error instanceof PackageIntegrityTimeoutError)) {
-          throw error;
-        }
-        // Capture the identity before mutation even when the full walk exhausted its budget.
-        previousIdentity =
-          (await createPackageIntegrityReader(params.timeoutMs).directoryIdentity(
-            targetSwapRoot,
-          )) ?? undefined;
-        if (!previousIdentity) {
-          throw error;
-        }
-        warnings.push(
-          `baseline package fingerprint incomplete after ${error.budgetMs / 1000} s; rollback will be verified by the retained package copy`,
-        );
+      previousRoot = await baseline.rootEntry(targetSwapRoot);
+      if (previousRoot.kind === "directory" && previousRoot.tree.warning) {
+        warnings.push(`baseline ${previousRoot.tree.warning}`);
       }
-      previousVersion =
-        previousRoot?.kind === "directory"
-          ? previousRoot.tree.version
-          : (previousIdentity?.version ?? null);
+      previousVersion = previousRoot?.kind === "directory" ? previousRoot.tree.version : null;
       if (previousRoot?.kind === "link") {
         rootLink = await createNpmPackageRootLinkLifecycle({
           liveRoot: targetSwapRoot,
@@ -576,10 +559,7 @@ export async function swapStagedPackageInstall(
       }
       activePackageRoot = null;
       packageBackedUp = true;
-      packageRollbackVerified =
-        native !== undefined ||
-        previousRoot?.kind === "directory" ||
-        previousIdentity !== undefined;
+      packageRollbackVerified = native !== undefined || previousRoot?.kind === "directory";
     }
     rollback.push(async (assertCurrent) => {
       if (!native && hadPackage) {
