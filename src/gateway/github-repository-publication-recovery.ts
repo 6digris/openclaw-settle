@@ -1,6 +1,7 @@
 import type { SessionGitHubPublicationResult } from "../../packages/gateway-protocol/src/schema/session-github-publication.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import type { RepositoryGitHubPublicationRow } from "../state/github-publication-read.types.js";
 import { decodeGitHubPublicationRequester } from "../state/github-publication-requester.js";
 import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
 import { OpenClawStateLeaseAcquisitionError } from "../state/openclaw-state-lease-error.js";
@@ -19,7 +20,6 @@ import {
   requireRepositoryGitHubPublication,
   terminalRepositoryGitHubPublication,
   type RepositoryGitHubPublicationExecution,
-  type RepositoryGitHubPublicationRow,
 } from "./github-repository-publication-store.js";
 import {
   assertReceiptOwner,

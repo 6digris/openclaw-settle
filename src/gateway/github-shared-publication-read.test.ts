@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
+import type { GitHubPublicationRow } from "../state/github-publication-read.types.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -10,7 +11,6 @@ import {
 import {
   claimGitHubPublicationExecution,
   createGitHubPublicationExecutionStore,
-  type GitHubPublicationRow,
 } from "./github-publication-store.js";
 import {
   BRANCH,

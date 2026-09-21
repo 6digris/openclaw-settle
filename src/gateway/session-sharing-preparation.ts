@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { ok } from "@openclaw/normalization-core/result";
 import { listAgentIds } from "../agents/agent-scope-config.js";
 import {
+  isPreparedSessionSharingChange,
   projectSessionSharingEntry,
   readCommittedIncognitoSessionSharing,
   retainPreparedSessionSharingFacts,
@@ -32,7 +33,7 @@ import {
 } from "./session-utils-store-lookup.js";
 import { resolveCanonicalSessionStoreMatchFromStoreKeys } from "./session-utils-store.js";
 
-export class SessionMutationFactsUnavailableError extends Error {
+class SessionMutationFactsUnavailableError extends Error {
   constructor(options?: ErrorOptions) {
     super("Session access facts are unavailable; retry after session storage is ready.", options);
     this.name = "SessionMutationFactsUnavailableError";
@@ -122,7 +123,7 @@ export async function prepareSessionMutationFacts(params: {
     if (
       !facts?.target ||
       !selectedPaths.has(path.resolve(change.storePath)) ||
-      !change.sharingPrepared
+      !isPreparedSessionSharingChange(change)
     ) {
       invalidate();
     }

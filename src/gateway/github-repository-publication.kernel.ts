@@ -5,10 +5,10 @@ import {
   getNodeSqliteKysely,
   iterateSqliteQuerySync,
 } from "../infra/kysely-sync.js";
+import type { RepositoryGitHubPublicationRow } from "../state/github-publication-read.types.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
 
-export type RepositoryGitHubPublicationRow = DB["github_repository_publication_requests"];
 const table = "github_repository_publication_requests";
 const query = (db: DatabaseSync) => getNodeSqliteKysely<Pick<DB, typeof table>>(db);
 

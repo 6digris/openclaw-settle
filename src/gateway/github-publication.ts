@@ -8,6 +8,7 @@ import {
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
+import type { GitHubPublicationRow as PublicationRow } from "../state/github-publication-read.types.js";
 import { readGitHubPublicationSessionLifecycleInWorker } from "../state/github-publication-session-lifecycles.js";
 import {
   openOpenClawStateDatabase,
@@ -47,7 +48,6 @@ import {
   listGitHubPublicationsForClaim,
   projectGitHubPublicationResult as publicationResult,
   readGitHubPublicationRequest,
-  type GitHubPublicationRow as PublicationRow,
 } from "./github-publication-store.js";
 import { createRepositoryGitHubPublicationCoordinator } from "./github-repository-publication.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";

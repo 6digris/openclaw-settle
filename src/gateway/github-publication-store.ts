@@ -9,6 +9,11 @@ import {
   iterateSqliteQuerySync,
 } from "../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
+import type {
+  GitHubPublicationExecutionRow,
+  GitHubPublicationReceiptTarget,
+  GitHubPublicationRow,
+} from "../state/github-publication-read.types.js";
 import {
   decodeGitHubPublicationRequester,
   matchesGitHubPublicationRequester,
@@ -40,11 +45,6 @@ type GitHubPublicationDatabase = Pick<
   | "github_publication_session_lifecycles"
   | "worker_session_placements"
 >;
-export type GitHubPublicationRow = StateDatabase["github_publication_requests"];
-export type GitHubPublicationExecutionRow = Omit<
-  GitHubPublicationRow,
-  "claim_id" | "run_id" | "environment_id" | "owner_epoch" | "placement_generation"
-> & { last_effect?: string | null; effect_state?: string | null };
 type PublicationFailureCode = Extract<SessionGitHubPublicationResult, { status: "failed" }>["code"];
 
 const PUBLICATION_FAILURE_CODES = new Set<string>([
@@ -90,17 +90,6 @@ export function readGitHubPublicationRequest(
           .where("idempotency_key", "=", request.idempotencyKey),
   );
 }
-
-export type GitHubPublicationReceiptTarget = Pick<
-  GitHubPublicationExecutionRow,
-  | "worktree_id"
-  | "repository_fingerprint"
-  | "repository"
-  | "branch"
-  | "base_branch"
-  | "identity_account_id"
-  | "pull_request_url"
->;
 
 /** Retained publisher/target receipts identify reused PRs whose body keeps an older marker. */
 export function readKnownGitHubPublicationPullRequestUrlsInDatabase(

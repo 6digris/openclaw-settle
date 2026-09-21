@@ -18,13 +18,13 @@ import {
   authorizePreparedSessionMutation,
   resolveSessionSharingTarget,
 } from "./session-sharing-policy.js";
-import {
-  prepareSessionMutationFacts,
-  SessionMutationFactsUnavailableError,
-} from "./session-sharing-preparation.js";
+import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
 import { rolePolicyConfig, sharingPolicyClient } from "./session-sharing.test-utils.js";
 
 afterEach(() => vi.restoreAllMocks());
+
+const unavailableMessage =
+  "Session access facts are unavailable; retry after session storage is ready.";
 
 it.each(["durable", "incognito"] as const)(
   "keeps %s sharing facts current before observers without SQL in retained assertions",
@@ -39,6 +39,7 @@ it.each(["durable", "incognito"] as const)(
         kind === "incognito"
           ? resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main" })
           : undefined;
+      const databasePath = storePath ?? resolveOpenClawAgentSqlitePath({ agentId: "main" });
       const scope = { agentId: "main", sessionKey, ...(storePath ? { storePath } : {}) };
       const entry: SessionEntry = {
         sessionId: "sharing-session",
@@ -72,7 +73,7 @@ it.each(["durable", "incognito"] as const)(
           prepared &&
           "sessionKey" in change &&
           change.sessionKey === sessionKey &&
-          change.sharingPrepared
+          change.storePath === databasePath
         ) {
           try {
             const current = prepared.readCurrent(cfg);
@@ -116,8 +117,6 @@ it.each(["durable", "incognito"] as const)(
         expect(observed.at(-1)).toEqual({ visibility: "read-only", member: false });
         observed.length = 0;
         const target = read.readCurrent(cfg).target!;
-        const databasePath =
-          storePath ?? resolveOpenClawAgentSqlitePath({ agentId: target.agentId });
         runOpenClawAgentWriteTransaction(
           (database) => {
             writeSessionEntry(database, sessionKey, {
@@ -163,16 +162,15 @@ it.each(["durable", "incognito"] as const)(
           { agentId: target.agentId, path: databasePath },
         );
         expect(observationErrors).toHaveLength(1);
-        expect(observationErrors[0]).toBeInstanceOf(SessionMutationFactsUnavailableError);
-        expect(() => read.readCurrent(cfg)).toThrow(SessionMutationFactsUnavailableError);
+        expect(observationErrors[0]).toBeInstanceOf(Error);
+        expect(observationErrors[0]).toHaveProperty("message", unavailableMessage);
+        expect(() => read.readCurrent(cfg)).toThrow(unavailableMessage);
         replacementRead = await prepareSessionMutationFacts({ cfg, sessionKey, agentId: "main" });
         expect(replacementRead.readCurrent(cfg).target?.entry.sessionId).toBe(
           "replacement-session",
         );
         await closeOpenClawAgentDatabaseByPathAsync(databasePath, target.agentId);
-        expect(() => replacementRead!.readCurrent(cfg)).toThrow(
-          SessionMutationFactsUnavailableError,
-        );
+        expect(() => replacementRead!.readCurrent(cfg)).toThrow(unavailableMessage);
         read.release();
         read.release();
       } finally {
@@ -193,7 +191,7 @@ it("keeps unavailable durable metadata distinct from an absent session", async (
     setRuntimeConfigSnapshot(cfg);
     await expect(
       prepareSessionMutationFacts({ cfg, sessionKey: "agent:main:sharing", agentId: "main" }),
-    ).rejects.toThrow(SessionMutationFactsUnavailableError);
+    ).rejects.toThrow(unavailableMessage);
   });
 });
 
@@ -209,7 +207,7 @@ it("invalidates a prepared absence when a restricted session is created at that 
     setRuntimeConfigSnapshot(cfg);
     const sessionKey = "agent:main:absent";
     await expect(prepareSessionMutationFacts({ cfg, sessionKey, agentId: "main" })).rejects.toThrow(
-      SessionMutationFactsUnavailableError,
+      unavailableMessage,
     );
     replaceSessionEntrySync(
       { agentId: "main", sessionKey: "agent:main:existing", storePath },
@@ -249,8 +247,9 @@ it("invalidates a prepared absence when a restricted session is created at that 
         },
       );
       expect(observed).toHaveLength(1);
-      expect(observed[0]).toBeInstanceOf(SessionMutationFactsUnavailableError);
-      expect(authorize).toThrow(SessionMutationFactsUnavailableError);
+      expect(observed[0]).toBeInstanceOf(Error);
+      expect(observed[0]).toHaveProperty("message", unavailableMessage);
+      expect(authorize).toThrow(unavailableMessage);
     } finally {
       stop();
       prepared?.release();
@@ -283,7 +282,7 @@ it("does not transfer prepared sharing facts to a replacement store behind the s
       expect(prepared.readCurrent(cfg).target?.entry.sessionId).toBe("identical");
       fs.rmSync(alias, { recursive: true });
       fs.symlinkSync(state.statePath("replacement"), alias, "junction");
-      expect(() => prepared.readCurrent(cfg)).toThrow(SessionMutationFactsUnavailableError);
+      expect(() => prepared.readCurrent(cfg)).toThrow(unavailableMessage);
     } finally {
       prepared.release();
     }
@@ -348,8 +347,9 @@ it("invalidates selected facts before observers when another searched store gain
         },
       );
       expect(observed).toHaveLength(1);
-      expect(observed[0]).toBeInstanceOf(SessionMutationFactsUnavailableError);
-      expect(() => prepared!.readCurrent(cfg)).toThrow(SessionMutationFactsUnavailableError);
+      expect(observed[0]).toBeInstanceOf(Error);
+      expect(observed[0]).toHaveProperty("message", unavailableMessage);
+      expect(() => prepared!.readCurrent(cfg)).toThrow(unavailableMessage);
       expect(() => resolveSessionSharingTarget(scope)).toThrow(
         "duplicate rows resolve to canonical session key",
       );

@@ -1,3 +1,4 @@
+import type { RepositoryGitHubPublicationRow } from "../state/github-publication-read.types.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -19,10 +20,7 @@ import {
   githubPublicationTestMocks,
   systemPublicationRequester,
 } from "./github-publication.test-support.js";
-import {
-  repositoryGitHubPublicationDigest,
-  type RepositoryGitHubPublicationRow,
-} from "./github-repository-publication-store.js";
+import { repositoryGitHubPublicationDigest } from "./github-repository-publication-store.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 
 export const sharedPublicationSession: SharedGitHubPublicationSession = {

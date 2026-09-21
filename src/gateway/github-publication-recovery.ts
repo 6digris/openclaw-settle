@@ -1,10 +1,10 @@
 import { managedWorktrees } from "../agents/worktrees/service.js";
-import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
-import { recoverGitHubPublicationBranchAndIndex } from "./github-publication-git-index.js";
 import type {
   GitHubPublicationExecutionRow,
   GitHubPublicationRow,
-} from "./github-publication-store.js";
+} from "../state/github-publication-read.types.js";
+import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
+import { recoverGitHubPublicationBranchAndIndex } from "./github-publication-git-index.js";
 
 type PublicationRow = GitHubPublicationExecutionRow;
 type GitCommandOptions = { cwd?: string; env?: NodeJS.ProcessEnv; input?: string };
