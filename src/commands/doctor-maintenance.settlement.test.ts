@@ -9,6 +9,8 @@ import { UpdateFinalizationLifecycle } from "../cli/update-cli/update-finalizati
 import { GatewayServiceStopUnsafeError } from "../daemon/service-inspection-error.js";
 import type { GatewayService, readGatewayServiceState } from "../daemon/service.js";
 import { collectNestedErrorCandidates } from "../infra/error-graph-internal.js";
+import { GATEWAY_SERVICE_STOP_TIMEOUT_MS } from "../infra/gateway-shutdown-budget.js";
+import { StateDatabaseCoordinatorContentionError } from "../infra/state-database-coordinator.js";
 import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
 import {
   collectUpdateDoctorFailureFacts,
@@ -20,8 +22,6 @@ import {
 import { projectPublicUpdateFailureIdentifiers } from "../infra/update-failure-public-identifiers.js";
 import type { recordUpdateRunStep, finishUpdateRun } from "../infra/update-run-ledger.js";
 import { redactPublicSupportDiagnosticLine } from "../logging/diagnostic-support-redaction.js";
-import { GATEWAY_SERVICE_STOP_TIMEOUT_MS } from "../infra/gateway-shutdown-budget.js";
-import { StateDatabaseCoordinatorContentionError } from "../infra/state-database-coordinator.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { resolveCommandProcessSignal, retainCommandProcessCleanup } from "../process/exec-spawn.js";
 import { defaultRuntime } from "../runtime.js";
