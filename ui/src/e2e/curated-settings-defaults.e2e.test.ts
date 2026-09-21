@@ -63,7 +63,7 @@ function hasOwnPath(value: Record<string, unknown>, pathSegments: readonly strin
 
 function settingsRow(page: Page, title: string): Locator {
   return page.locator(".settings-row").filter({
-    has: page.locator(".settings-row__title", { hasText: title }),
+    has: page.locator(".settings-row__title").getByText(title, { exact: true }),
   });
 }
 

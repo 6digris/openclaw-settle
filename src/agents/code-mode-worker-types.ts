@@ -1,4 +1,4 @@
-import type { Snapshot } from "quickjs-wasi";
+import type { CodeModeExecutorContinuation } from "./code-mode-executor-types.js";
 import type { CodeModeJsonSource, CodeModeOutputSource } from "./code-mode-json.js";
 import type { CodeModeApiVirtualFile } from "./code-mode-namespaces.js";
 
@@ -52,7 +52,7 @@ export type CodeModeNamespaceDescriptor = {
   scope: SerializedCodeModeNamespaceValue;
 };
 
-type CodeModeWorkerInput =
+export type CodeModeWorkerInput<State = CodeModeExecutorContinuation> =
   | {
       kind: "exec";
       source: string;
@@ -66,18 +66,17 @@ type CodeModeWorkerInput =
     }
   | {
       kind: "resume";
-      snapshot: Snapshot;
+      continuation: State;
       config: CodeModeConfig;
       settledRequests: SettledBridgeRequest[];
       pendingRequests?: PendingBridgeRequest[];
     };
 
-export type CodeModeWorkerPayload = CodeModeWorkerInput & {
-  /** Only interactive, non-replay cells can hand full final JSON to the run store. */
-  retainFinalValue?: boolean;
-  wasmModule: WebAssembly.Module;
-  wasmExtensions: Array<{ name: string; wasm: WebAssembly.Module }>;
-};
+export type CodeModeWorkerPayload<State = CodeModeExecutorContinuation> =
+  CodeModeWorkerInput<State> & {
+    /** Only interactive, non-replay cells can hand full final JSON to the run store. */
+    retainFinalValue?: boolean;
+  };
 
 export type CodeModeSettlementMode =
   | { kind: "awaiting" }
@@ -91,7 +90,7 @@ export type CodeModeWorkerBoundary = {
   canceledRequestIds: string[];
   settlementMode: CodeModeSettlementMode;
   output: CodeModeOutputSource;
-  /** QuickJS-owned allocations, not WASM capacity or process RSS. */
+  /** Engine-reported allocations for diagnostics, not RSS or admission authority. */
   memoryUsedBytes: number;
 };
 
@@ -106,7 +105,7 @@ export type CodeModeWorkerContinuation =
 
 export type CodeModeFailurePhase = "input" | "guest" | "bridge" | "host";
 
-type CodeModeWorkerOutcome<Output, Value> = { networkContentObserved?: true } & (
+type CodeModeWorkerOutcome<Output, Value, State> = { networkContentObserved?: true } & (
   | {
       status: "completed";
       value: Value;
@@ -114,7 +113,7 @@ type CodeModeWorkerOutcome<Output, Value> = { networkContentObserved?: true } & 
     }
   | {
       status: "waiting";
-      snapshot: Snapshot;
+      continuation: State;
       pendingRequests: PendingBridgeRequest[];
       canceledRequestIds: string[];
       settlementMode: CodeModeSettlementMode;
@@ -135,8 +134,10 @@ type CodeModeWorkerOutcome<Output, Value> = { networkContentObserved?: true } & 
     }
 );
 
-export type CodeModeVmResult = CodeModeWorkerOutcome<unknown[], unknown>;
-export type CodeModeWorkerThreadResult = CodeModeWorkerOutcome<
-  CodeModeOutputSource,
-  CodeModeJsonSource
+export type CodeModeVmResult<State = CodeModeExecutorContinuation> = CodeModeWorkerOutcome<
+  unknown[],
+  unknown,
+  State
 >;
+export type CodeModeWorkerThreadResult<State = CodeModeExecutorContinuation> =
+  CodeModeWorkerOutcome<CodeModeOutputSource, CodeModeJsonSource, State>;

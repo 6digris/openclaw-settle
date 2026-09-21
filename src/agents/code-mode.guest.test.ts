@@ -23,9 +23,9 @@ describe("Code Mode guest execution", () => {
     vi.useRealTimers();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
-    resetCodeModeTestState();
+    await resetCodeModeTestState();
   });
 
   it("preserves text encoding primitives across explicit suspension", async () => {
@@ -65,7 +65,7 @@ describe("Code Mode guest execution", () => {
     });
   });
 
-  it("runs JavaScript through QuickJS-WASI and resumes nested tool calls with wait", async () => {
+  it("runs JavaScript through the selected executor and resumes nested tool calls with wait", async () => {
     const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
     const ticket = pluginTool("fake_create_ticket", "Create a fake ticket");
     applyCodeModeCatalog({
@@ -738,7 +738,7 @@ describe("Code Mode guest execution", () => {
     expect(testing.activeRuns.size).toBe(beforeRunCount);
   });
 
-  it("surfaces the QuickJS error name and message for guest syntax errors", async () => {
+  it("surfaces the guest error name and message for guest syntax errors", async () => {
     const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
     applyCodeModeCatalog({
       tools: [...codeModeTools, pluginTool("fake_noop", "Noop")],
@@ -758,11 +758,9 @@ describe("Code Mode guest execution", () => {
 
     expect(details.status).toBe("failed");
     const error = String(details.error);
-    // Regression guard: QuickJS stacks are frames only, so the error used to
-    // collapse to a bare "at openclaw-code-mode:user.js:..." location with the
-    // actual cause dropped. The model now sees the name and message.
+    // Preserve the cause alongside user-relative locations across executor stack formats.
     expect(error).toContain("SyntaxError");
-    expect(error).toContain("unexpected token");
+    expect(error).toContain("Unexpected token");
     expect(error).toMatch(/openclaw-code-mode:user\.js:2:\d+/);
     expect(error.startsWith("at ")).toBe(false);
   });
@@ -774,7 +772,7 @@ describe("Code Mode guest execution", () => {
       cause: "missingFn is not defined",
     },
     { name: "TypeError", code: "const value = 1;\nvalue();", cause: "not a function" },
-  ])("surfaces the QuickJS $name at the submitted source line", async ({ name, code, cause }) => {
+  ])("surfaces the guest $name at the submitted source line", async ({ name, code, cause }) => {
     const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
     applyCodeModeCatalog({
       tools: [...codeModeTools, pluginTool("fake_noop", "Noop")],
