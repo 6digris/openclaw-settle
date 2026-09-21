@@ -1,7 +1,10 @@
-import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
-import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
+import {
+  appendTranscriptMessage,
+  loadSessionEntry,
+  upsertSessionEntryCore,
+} from "../config/sessions/session-accessor.js";
 import { addSessionMember } from "../config/sessions/session-sharing-store.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -9,62 +12,199 @@ import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { prepareGatewayRecipientProfile } from "./expected-profile.js";
 import { QuestionManager } from "./question-manager.js";
-import { handleGatewayRequest } from "./server-methods.js";
+import {
+  dispatch,
+  requestContext,
+  roleConfig,
+} from "./server-methods.session-scopes.test-support.js";
 import { createQuestionHandlers } from "./server-methods/question.js";
 import { createSecretStoreWriteService } from "./server-methods/secrets.js";
 import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
-import { initializeSessionReadContext } from "./server-methods/sessions-read-cache.test-support.js";
-import type {
-  GatewayClient,
-  GatewayRequestContext,
-  GatewayRequestHandler,
-  RespondFn,
-} from "./server-methods/types.js";
-import { createGatewayRequestContext } from "./server-request-context.js";
-import { makeContextParams } from "./server-request-context.test-support.js";
+import type { GatewayRequestHandler } from "./server-methods/types.js";
 import { resolveSessionMutationAuthorization } from "./session-sharing.js";
 import { sharingPolicyClient } from "./session-sharing.test-utils.js";
 
 const OWN_KEY = "agent:main:session-organization";
 
-function roleConfig(scopes = ["operator.write"]): OpenClawConfig {
-  return {
-    gateway: {
-      roles: {
-        default: "visitor",
-        definitions: { visitor: { sessions: { others: "write" }, agents: ["main"], scopes } },
-      },
-    },
-  };
-}
-
-function requestContext(getRuntimeConfig: () => OpenClawConfig): GatewayRequestContext {
-  return { ...createGatewayRequestContext(makeContextParams()), getRuntimeConfig };
-}
-
-async function dispatch(params: {
-  method: string;
-  params: Record<string, unknown>;
-  client: GatewayClient;
-  context: GatewayRequestContext;
-  handler?: GatewayRequestHandler;
-  signal?: AbortSignal;
-}) {
-  const respond = vi.fn<RespondFn>();
-  await initializeSessionReadContext(params.context);
-  await handleGatewayRequest({
-    req: { type: "req", id: randomUUID(), method: params.method, params: params.params },
-    client: params.client,
-    context: params.context,
-    isWebchatConnect: () => false,
-    respond,
-    ...(params.signal ? { signal: params.signal } : {}),
-    ...(params.handler ? { extraHandlers: { [params.method]: params.handler } } : {}),
-  });
-  return respond;
-}
-
 describe("session read and organization scopes", () => {
+  it("keeps session reads on committed policy across tentative reload and rollback", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const owner = ensureProfileForEmail("committed-reader@example.test");
+      const other = ensureProfileForEmail("committed-other@example.test");
+      const restricted = roleConfig(["operator.write"], "none");
+      const candidate = roleConfig();
+      let committed = restricted;
+      let runtime = restricted;
+      setRuntimeConfigSnapshot(runtime);
+      const client = sharingPolicyClient({ user: owner.id, scopes: ["operator.sessions.read"] });
+      prepareGatewayRecipientProfile(client);
+      const context = requestContext(
+        () => runtime,
+        () => committed,
+      );
+      const rows = [
+        { name: "own", profile: owner.id, visibility: "shared", incognito: false },
+        { name: "foreign", profile: other.id, visibility: "shared", incognito: false },
+        { name: "own-draft", profile: owner.id, visibility: "draft", incognito: false },
+        { name: "foreign-draft", profile: other.id, visibility: "draft", incognito: false },
+        { name: "incognito", profile: other.id, visibility: "shared", incognito: true },
+      ] as const;
+      const keyFor = (name: string) => `agent:main:committed-policy-${name}`;
+      for (const row of rows) {
+        const key = keyFor(row.name);
+        const target = { agentId: "main", sessionKey: key };
+        await upsertSessionEntryCore(target, {
+          sessionId: key,
+          updatedAt: 1,
+          visibility: row.visibility,
+          ...(row.incognito ? { incognito: true } : {}),
+          createdActor: { type: "human", source: "profile", id: row.profile },
+        });
+        if (row.name === "own" || row.name === "foreign") {
+          await appendTranscriptMessage(
+            { ...target, sessionId: key },
+            {
+              message: { role: "user", content: `Synthetic history for ${key}` },
+            },
+          );
+        }
+      }
+      const assertReads = async (phase: string, foreignVisible: boolean) => {
+        const keys = [keyFor("own"), keyFor("own-draft")];
+        if (foreignVisible) {
+          keys.push(keyFor("foreign"));
+        }
+        expect
+          .soft(
+            await dispatch({
+              method: "sessions.list",
+              params: { agentId: "main" },
+              client,
+              context,
+            }),
+            `${phase}: sessions.list`,
+          )
+          .toHaveBeenCalledExactlyOnceWith(
+            true,
+            expect.objectContaining({
+              count: keys.length,
+              sessions: expect.arrayContaining(keys.map((key) => expect.objectContaining({ key }))),
+            }),
+          );
+        for (const name of ["own", "foreign"] as const) {
+          const key = keyFor(name);
+          const history = {
+            messages: [
+              expect.objectContaining({ role: "user", content: `Synthetic history for ${key}` }),
+            ],
+          };
+          const preview = expect.objectContaining({
+            previews: [expect.objectContaining({ key, status: "ok" })],
+          });
+          for (const [method, params, payload] of [
+            ["sessions.get", { key }, history],
+            ["sessions.preview", { keys: [key] }, preview],
+            ["sessions.resolve", { key }, expect.objectContaining({ ok: true, key })],
+          ] as const) {
+            const response = await dispatch({ method, params, client, context });
+            if (name === "own" || foreignVisible) {
+              expect
+                .soft(response, `${phase}: ${method} ${name}`)
+                .toHaveBeenCalledExactlyOnceWith(true, payload, undefined);
+            } else {
+              expect
+                .soft(response, `${phase}: ${method} ${name}`)
+                .toHaveBeenCalledExactlyOnceWith(
+                  false,
+                  undefined,
+                  expect.objectContaining({ code: "INVALID_REQUEST" }),
+                );
+            }
+          }
+        }
+      };
+      // Warm one retained projection before tentative inputs diverge from committed policy.
+      await assertReads("initial", false);
+      runtime = candidate;
+      setRuntimeConfigSnapshot(runtime);
+      await assertReads("tentative", false);
+      runtime = restricted;
+      setRuntimeConfigSnapshot(runtime);
+      await assertReads("rollback", false);
+      runtime = candidate;
+      setRuntimeConfigSnapshot(runtime);
+      await assertReads("tentative again", false);
+      // Advancing only committed policy must affect the retained projection without manual marks.
+      committed = candidate;
+      await assertReads("committed", true);
+    });
+  });
+
+  it("authorizes the runtime alias target while retaining committed session policy", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const owner = ensureProfileForEmail("routing-owner@example.test");
+      const other = ensureProfileForEmail("routing-other@example.test");
+      const committed: OpenClawConfig = { ...roleConfig(), session: { scope: "per-sender" } };
+      let runtime = committed;
+      setRuntimeConfigSnapshot(runtime);
+      const client = sharingPolicyClient({ user: owner.id, scopes: ["operator.sessions.write"] });
+      prepareGatewayRecipientProfile(client);
+      const context = requestContext(
+        () => runtime,
+        () => committed,
+      );
+      const own = { agentId: "main", sessionKey: "agent:main:main" };
+      const foreign = { agentId: "main", sessionKey: "global" };
+      for (const [target, profileId] of [
+        [own, owner.id],
+        [foreign, other.id],
+      ] as const) {
+        await upsertSessionEntryCore(target, {
+          sessionId: `routing-${target.sessionKey}`,
+          updatedAt: 1,
+          visibility: "shared",
+          createdActor: { type: "human", source: "profile", id: profileId },
+        });
+      }
+      expect(
+        await dispatch({
+          method: "sessions.patch",
+          params: { key: "main", agentId: "main", label: "Own main" },
+          client,
+          context,
+        }),
+      ).toHaveBeenCalledExactlyOnceWith(
+        true,
+        expect.objectContaining({ key: own.sessionKey }),
+        undefined,
+      );
+      const before = [own, foreign].map((target) => loadSessionEntry(target));
+      expect(before[0]?.label).toBe("Own main");
+      runtime = { ...committed, session: { scope: "global" } };
+      setRuntimeConfigSnapshot(runtime);
+      // Label/pin accepts this alias without lifecycle CAS; policy and writer must select one row.
+      expect(
+        await dispatch({
+          method: "sessions.patch",
+          params: { key: "main", agentId: "main", label: "Foreign replacement", pinned: true },
+          client,
+          context,
+        }),
+      ).toHaveBeenCalledExactlyOnceWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          code: "INVALID_REQUEST",
+          details: expect.objectContaining({
+            code: "SESSION_PARTICIPATION_REQUIRED",
+            sessionKey: foreign.sessionKey,
+          }),
+        }),
+      );
+      expect([own, foreign].map((target) => loadSessionEntry(target))).toEqual(before);
+    });
+  });
+
   it.each([false, true])(
     "organizes only owned rows and preserves private state (roles=%s)",
     async (roles) => {
@@ -450,79 +590,92 @@ describe("session read and organization scopes", () => {
     });
   });
 
-  it.each(["current", "role", "scope", "connection", "profile", "signal"] as const)(
-    "rechecks the original %s before the real organization mutation",
-    async (change) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        const owner = ensureProfileForEmail("organization-currentness@example.test");
-        const other = ensureProfileForEmail("organization-new-profile@example.test");
-        const client = sharingPolicyClient({ user: owner.id, scopes: ["operator.sessions.write"] });
-        prepareGatewayRecipientProfile(client);
-        let cfg = roleConfig();
-        setRuntimeConfigSnapshot(cfg);
-        await upsertSessionEntryCore(
-          { agentId: "main", sessionKey: OWN_KEY },
-          {
-            sessionId: OWN_KEY,
-            updatedAt: Date.now(),
-            createdActor: { type: "human", source: "profile", id: owner.id },
-          },
-        );
-        const context = requestContext(() => cfg);
-        const entered = createDeferredCore();
-        const resume = createDeferredCore();
-        const source = new AbortController();
-        const request = dispatch({
-          method: "sessions.patch",
-          params: { key: OWN_KEY, label: "Accepted label" },
-          client,
-          context,
-          signal: source.signal,
-          handler: async (options) => {
-            entered.resolve();
-            await resume.promise;
-            await sessionMutationHandlers["sessions.patch"]!(options);
-          },
-        });
-        try {
-          await Promise.race([
-            entered.promise,
-            request.then(() => {
-              throw new Error("Organization request settled before its owner");
-            }),
-          ]);
-          if (change === "role") {
-            cfg = roleConfig(["operator.sessions.read"]);
-            setRuntimeConfigSnapshot(cfg);
-          } else if (change === "scope") {
-            client.connect.scopes = ["operator.sessions.read"];
-          } else if (change === "connection") {
-            client.invalidated = true;
-          } else if (change === "profile") {
-            client.authenticatedUserProfile = sharingPolicyClient({
-              user: other.id,
-            }).authenticatedUserProfile;
-          } else if (change === "signal") {
-            source.abort(new Error("Organization requester ended"));
-          }
-          resume.resolve();
-          const response = await request;
-          expect(response.mock.calls.at(-1)?.[0]).toBe(change === "current");
-          if (change !== "current") {
-            expect(response).toHaveBeenCalledWith(
-              false,
-              undefined,
-              expect.objectContaining({ code: change === "signal" ? "UNAVAILABLE" : "FORBIDDEN" }),
-            );
-          }
-          expect(loadSessionEntry({ agentId: "main", sessionKey: OWN_KEY })?.label).toBe(
-            change === "current" ? "Accepted label" : undefined,
-          );
-        } finally {
-          resume.resolve();
-          await request.catch(() => {});
-        }
+  it.each([
+    "current",
+    "role",
+    "tentative-role",
+    "scope",
+    "connection",
+    "profile",
+    "signal",
+  ] as const)("rechecks the original %s before the real organization mutation", async (change) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const owner = ensureProfileForEmail("organization-currentness@example.test");
+      const other = ensureProfileForEmail("organization-new-profile@example.test");
+      const client = sharingPolicyClient({ user: owner.id, scopes: ["operator.sessions.write"] });
+      prepareGatewayRecipientProfile(client);
+      let cfg = roleConfig();
+      let committed = cfg;
+      setRuntimeConfigSnapshot(cfg);
+      await upsertSessionEntryCore(
+        { agentId: "main", sessionKey: OWN_KEY },
+        {
+          sessionId: OWN_KEY,
+          updatedAt: Date.now(),
+          createdActor: { type: "human", source: "profile", id: owner.id },
+        },
+      );
+      const context = requestContext(
+        () => cfg,
+        () => committed,
+      );
+      const entered = createDeferredCore();
+      const resume = createDeferredCore();
+      const source = new AbortController();
+      const request = dispatch({
+        method: "sessions.patch",
+        params: { key: OWN_KEY, label: "Accepted label" },
+        client,
+        context,
+        signal: source.signal,
+        handler: async (options) => {
+          entered.resolve();
+          await resume.promise;
+          await sessionMutationHandlers["sessions.patch"]!(options);
+        },
       });
-    },
-  );
+      try {
+        await Promise.race([
+          entered.promise,
+          request.then(() => {
+            throw new Error("Organization request settled before its owner");
+          }),
+        ]);
+        if (change === "role" || change === "tentative-role") {
+          cfg = roleConfig(["operator.sessions.read"]);
+          setRuntimeConfigSnapshot(cfg);
+          if (change === "role") {
+            committed = cfg;
+          }
+        } else if (change === "scope") {
+          client.connect.scopes = ["operator.sessions.read"];
+        } else if (change === "connection") {
+          client.invalidated = true;
+        } else if (change === "profile") {
+          client.authenticatedUserProfile = sharingPolicyClient({
+            user: other.id,
+          }).authenticatedUserProfile;
+        } else if (change === "signal") {
+          source.abort(new Error("Organization requester ended"));
+        }
+        resume.resolve();
+        const response = await request;
+        const allowed = change === "current" || change === "tentative-role";
+        expect(response.mock.calls.at(-1)?.[0]).toBe(allowed);
+        if (!allowed) {
+          expect(response).toHaveBeenCalledWith(
+            false,
+            undefined,
+            expect.objectContaining({ code: change === "signal" ? "UNAVAILABLE" : "FORBIDDEN" }),
+          );
+        }
+        expect(loadSessionEntry({ agentId: "main", sessionKey: OWN_KEY })?.label).toBe(
+          allowed ? "Accepted label" : undefined,
+        );
+      } finally {
+        resume.resolve();
+        await request.catch(() => {});
+      }
+    });
+  });
 });

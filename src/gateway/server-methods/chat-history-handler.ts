@@ -175,7 +175,10 @@ export async function handleChatHistoryRequest({
     return;
   }
   const authorizeSharing = (current: typeof selectedSession) => {
-    const sharing = prepareSessionSharing({ client, cfg: current.cfg });
+    const sharing = prepareSessionSharing({
+      client,
+      cfg: (context.getCommittedRuntimeConfig ?? context.getRuntimeConfig)(),
+    });
     if (
       current.entry
         ? sharing.entryFilter?.(current.legacyKey ?? current.canonicalKey, current.entry) === false

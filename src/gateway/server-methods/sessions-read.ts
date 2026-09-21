@@ -83,6 +83,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
     }
     const prepareSearch = () => {
       const cfg = context.getRuntimeConfig();
+      const policyConfig = context.getCommittedRuntimeConfig?.() ?? cfg;
       const scope = resolveSessionSearchScope(cfg, params);
       if (!scope.ok) {
         respond(false, undefined, scope.error);
@@ -91,8 +92,8 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       const { agentId, configured, requestedAgentId, sessionKeys } = scope;
       const restrictIncognito =
         Boolean(gatewayClientSessionCreator(client)) && !isGatewayAdmin(client);
-      const roleVisibilityFilter = hasOperatorBoundary(client, cfg)
-        ? createSessionListEntryFilter({ client, cfg })
+      const roleVisibilityFilter = hasOperatorBoundary(client, policyConfig)
+        ? createSessionListEntryFilter({ client, cfg: policyConfig })
         : undefined;
       const restrictVisibility = restrictIncognito || Boolean(roleVisibilityFilter);
       const targetDiscoveryCache: GatewaySessionStoreDiscoveryCache = new Map();
@@ -329,14 +330,14 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       previews.push(preview);
       try {
         const record = await withPreviewRows([key], (read) => {
-          const cfg = context.getRuntimeConfig();
+          const { cfg, policyConfig } = read.state;
           const currentAgent = resolveRequestedGlobalAgentId(cfg, key);
           if (!currentAgent.ok) {
             return undefined;
           }
           const current = read.describe({ key, agentId: currentAgent.agentId });
-          const visibilityFilter = hasOperatorBoundary(client, cfg)
-            ? createSessionListEntryFilter({ client, cfg })
+          const visibilityFilter = hasOperatorBoundary(client, policyConfig)
+            ? createSessionListEntryFilter({ client, cfg: policyConfig })
             : undefined;
           return current?.entry.sessionId &&
             visibilityFilter?.(current.key, current.entry) !== false
@@ -375,9 +376,9 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
     await withPreviewRows(
       buffered.map(({ preview }) => preview.key),
       (read) => {
-        const cfg = context.getRuntimeConfig();
-        const visibilityFilter = hasOperatorBoundary(client, cfg)
-          ? createSessionListEntryFilter({ client, cfg })
+        const { cfg, policyConfig } = read.state;
+        const visibilityFilter = hasOperatorBoundary(client, policyConfig)
+          ? createSessionListEntryFilter({ client, cfg: policyConfig })
           : undefined;
         for (const previous of buffered) {
           const agent = resolveRequestedGlobalAgentId(cfg, previous.preview.key);

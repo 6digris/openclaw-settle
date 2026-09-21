@@ -197,7 +197,10 @@ export function captureGatewayRequestOperatorGuard(options: GatewayRequestOption
       );
     }
     if (actor?.kind === "operator") {
-      const error = authorizeCurrentOperatorRoleScopes(client, context.getRuntimeConfig());
+      const error = authorizeCurrentOperatorRoleScopes(
+        client,
+        (context.getCommittedRuntimeConfig ?? context.getRuntimeConfig)(),
+      );
       if (error) {
         throw new SessionMutationAuthorizationChangedError(error);
       }

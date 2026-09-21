@@ -134,7 +134,8 @@ function authorizeGatewayMethod(
     return errorShape(ErrorCodes.FORBIDDEN, "Gateway requester authority changed");
   }
   if (actor?.kind === "operator") {
-    const roleError = authorizeCurrentOperatorRoleScopes(client, context.getRuntimeConfig());
+    const getConfig = context.getCommittedRuntimeConfig ?? context.getRuntimeConfig;
+    const roleError = authorizeCurrentOperatorRoleScopes(client, getConfig());
     if (roleError) {
       return roleError;
     }
@@ -252,7 +253,8 @@ async function authorizeAuthenticatedProfileForMethod(params: {
     params.methodRegistry.requiresAuthenticatedProfile(params.method) ||
     resolveDirectIncognitoTargets(params.method, params.requestParams).length > 0 ||
     (sessionMutationTargetFields(params.method).length > 0 &&
-      params.context.getRuntimeConfig().gateway?.roles !== undefined);
+      (params.context.getCommittedRuntimeConfig ?? params.context.getRuntimeConfig)().gateway
+        ?.roles !== undefined);
   if (!requiresProfile) {
     return null;
   }

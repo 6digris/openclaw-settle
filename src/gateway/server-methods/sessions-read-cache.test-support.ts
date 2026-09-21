@@ -52,6 +52,7 @@ export function initializeSessionReadContext(context: GatewayRequestContext) {
     pending = createSessionRowProjection({
       cfg: context.getRuntimeConfig(),
       getConfig: context.getRuntimeConfig,
+      getPolicyConfig: context.getCommittedRuntimeConfig,
       getModelCatalog: () =>
         readPreparedServerMethodModelCatalogs(context, listAgentIds(context.getRuntimeConfig())),
       context,

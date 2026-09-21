@@ -119,7 +119,8 @@ export function resolveSessionMutationAuthorization(params: {
   expectedTarget?: ExpectedSessionMutationTarget;
   sessionRowRead?: SessionRowReadView;
 }): { authorization?: SessionMutationAuthorization; error: ErrorShape | null } {
-  // Read one config snapshot only when session authorization needs it.
+  const readPolicy = params.context.getCommittedRuntimeConfig ?? params.context.getRuntimeConfig;
+  // Routing follows the runtime writer; permission decisions use only committed policy.
   let cachedCfg: OpenClawConfig | undefined;
   const getCfg = (): OpenClawConfig => (cachedCfg ??= params.context.getRuntimeConfig());
   const organizationPatch =
@@ -127,8 +128,7 @@ export function resolveSessionMutationAuthorization(params: {
     SESSION_WRITE_SCOPE;
   const authorizesAgentRun = isAgentRunStartMethod(params.method, params.requestParams);
   const readsProgress = params.method === "progressCard.get";
-  // Progress belongs to the current conversation, not merely its stable session ID.
-  // Capture this boundary for admins too so delayed work cannot revive a reset card.
+  // Progress authority includes the current conversation lifecycle, even for admins.
   const bindsProgressLifecycle =
     readsProgress ||
     params.method === "progressCard.put" ||
@@ -150,7 +150,7 @@ export function resolveSessionMutationAuthorization(params: {
   const adminBypass =
     isGatewayAdmin(params.client) &&
     !authorizesAgentRun &&
-    !(organizationPatch && hasSessionOnlyWriteAuthority(params.client, getCfg()));
+    !(organizationPatch && hasSessionOnlyWriteAuthority(params.client, readPolicy()));
   if (adminBypass && !bindsProgressLifecycle && !params.expectedTarget) {
     return { error: null };
   }
@@ -169,7 +169,7 @@ export function resolveSessionMutationAuthorization(params: {
   ) {
     const projection = params.sessionRowRead ?? getSessionRowProjection(params.context);
     if (projection) {
-      const { cfg } = projection.state;
+      const { cfg, policyConfig } = projection.state;
       for (const target of resolveDirectSessionTargets(params.method, params.requestParams)) {
         const agent = resolveRequestedSessionAgentId(cfg, target.sessionKey, target.agentId);
         if (!agent.ok) {
@@ -177,7 +177,7 @@ export function resolveSessionMutationAuthorization(params: {
         }
         const row = projection.describe({ key: target.sessionKey, agentId: agent.agentId });
         const sharing = prepareProjectedSessionSharing({
-          cfg,
+          cfg: policyConfig,
           client: params.client,
           isMember: (_target, identityId) => row?.membership.has(identityId) ?? false,
         });
@@ -268,7 +268,7 @@ export function resolveSessionMutationAuthorization(params: {
     !adminBypass &&
     directTargets.length > 0 &&
     gatewayClientSessionCreator(params.client) &&
-    operatorSessionCap(params.client, getCfg()) === "none";
+    operatorSessionCap(params.client, readPolicy()) === "none";
   // Incognito and role-hidden direct reads share the same non-disclosing access boundary.
   const protectedTargets = hidesForeignSessions
     ? directTargets
@@ -324,7 +324,7 @@ export function resolveSessionMutationAuthorization(params: {
   }
   if (talkSessionTarget && authorizesAgentRun) {
     const error = authorizeGatewaySessionCreation({
-      cfg: getCfg(),
+      cfg: readPolicy(),
       client: params.client,
       agentId: talkSessionTarget.agentId,
     });
@@ -341,14 +341,14 @@ export function resolveSessionMutationAuthorization(params: {
     const target = resolved.target;
     const error =
       (!target &&
-      ((organizationPatch && hasSessionOnlyWriteAuthority(params.client, getCfg())) ||
-        (readsProgress && hasOperatorBoundary(params.client, getCfg())))
+      ((organizationPatch && hasSessionOnlyWriteAuthority(params.client, readPolicy())) ||
+        (readsProgress && hasOperatorBoundary(params.client, readPolicy())))
         ? hiddenSessionNotFound(targetRef.sessionKey)
         : null) ??
       expectedSessionMutationTargetError(params.expectedTarget, target, params.method) ??
       (target && authorizesAgentRun
         ? authorizeSessionAgentRun({
-            cfg: getCfg(),
+            cfg: readPolicy(),
             client: params.client,
             target,
           })
@@ -361,9 +361,9 @@ export function resolveSessionMutationAuthorization(params: {
       (target &&
       !(
         VISIBILITY_AUTHORIZED_METHODS.has(params.method) &&
-        (operatorSessionCap(params.client, getCfg()) ?? "write") === "write"
+        (operatorSessionCap(params.client, readPolicy()) ?? "write") === "write"
       )
-        ? authorizeTarget(getCfg(), target)
+        ? authorizeTarget(readPolicy(), target)
         : null);
     if (error) {
       return { error };
@@ -415,7 +415,11 @@ export function resolveSessionMutationAuthorization(params: {
         }
         const error =
           authorizesAgentRun &&
-          authorizeGatewaySessionCreation({ cfg, client: params.client, agentId: current.agentId });
+          authorizeGatewaySessionCreation({
+            cfg: readPolicy(),
+            client: params.client,
+            agentId: current.agentId,
+          });
         if (error) {
           throw new SessionMutationAuthorizationChangedError(error);
         }
@@ -472,7 +476,7 @@ export function resolveSessionMutationAuthorization(params: {
         const error =
           (authorizesAgentRun
             ? authorizeSessionAgentRun({
-                cfg: currentCfg,
+                cfg: readPolicy(),
                 client: params.client,
                 target: current,
               })
@@ -482,7 +486,7 @@ export function resolveSessionMutationAuthorization(params: {
             sessionKey: targetRef.sessionKey,
             target: current,
           }) ??
-          authorizeTarget(currentCfg, current);
+          authorizeTarget(readPolicy(), current);
         if (error) {
           throw new SessionMutationAuthorizationChangedError(error);
         }
@@ -546,6 +550,7 @@ function loadSharingSnapshot(params: Parameters<typeof resolveSessionSharingTarg
 
 export function canReceiveSessionEvent(params: {
   cfg: OpenClawConfig;
+  policyConfig?: OpenClawConfig;
   client: GatewayClient;
   sessionKeys: readonly string[];
   agentId?: string;
@@ -556,8 +561,8 @@ export function canReceiveSessionEvent(params: {
     target: (sessionKey: string, agentId?: string) => SessionSharingTarget | null;
   };
 }): boolean {
-  const { cfg, client, sessionKeys, event } = params;
-  if (authorizeCurrentOperatorRoleScopes(client, cfg)) {
+  const { cfg, policyConfig = cfg, client, sessionKeys, event } = params;
+  if (authorizeCurrentOperatorRoleScopes(client, policyConfig)) {
     return false;
   }
   if (isGatewayAdmin(client)) {
@@ -567,14 +572,14 @@ export function canReceiveSessionEvent(params: {
   const identity = sharingIdentity(client, operatorActor);
   if (!identity) {
     return (
-      (!cfg.gateway?.roles || operatorActor?.kind === "system") &&
+      (!policyConfig.gateway?.roles || operatorActor?.kind === "system") &&
       event !== "session.suggestion" &&
       event !== "session.typing"
     );
   }
-  const sharing = params.prepared?.sharing ?? prepareSessionSharing({ cfg, client });
+  const sharing = params.prepared?.sharing ?? prepareSessionSharing({ cfg: policyConfig, client });
   const hidesForeignSessions =
-    (params.prepared ? sharing.sessionCap : operatorSessionCap(client, cfg)) === "none";
+    (params.prepared ? sharing.sessionCap : operatorSessionCap(client, policyConfig)) === "none";
   // Discovery remains lazy; these facts belong only to this recipient check, never a socket send.
   const lookup: Omit<Parameters<typeof resolveSessionSharingTarget>[0], "sessionKey"> = {
     cfg,

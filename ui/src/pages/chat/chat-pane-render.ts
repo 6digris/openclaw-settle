@@ -193,7 +193,6 @@ export class ChatPane extends ChatPaneLayoutRender {
       selectedSession.sharingRole === "viewer" &&
       isGatewayMethodAdvertised(gatewaySnapshot, "session.suggestions.add") === true &&
       isGatewayMethodAdvertised(gatewaySnapshot, "session.suggestions.list") === true;
-    // Placement progress explains this gate; other gates need a reason or sessionDisabledBanner.
     const disabledReason =
       !hasWriteScope && !hasTalkScope
         ? t("chat.sessionSharing.scopeReadOnlyNotice")
@@ -381,9 +380,8 @@ export class ChatPane extends ChatPaneLayoutRender {
         ? this.captureProgressCardRefreshAction()
         : undefined;
     const selfProfileId = selfUser?.identity?.type === "profile" ? selfUser.identity.id : null;
-    const mentionsUnsupported = Boolean(
-      catalogKey || suggestionViewer || selectedSession?.incognito || !selfProfileId,
-    );
+    const mentionsUnsupported =
+      !selfProfileId || Boolean(catalogKey || suggestionViewer || selectedSession?.incognito);
     const { gatewayQuestionPrompts, inlineApproval } = this.projectConversationAttention(
       state,
       currentAgentId,

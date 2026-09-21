@@ -57,7 +57,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
           const record = read.describe(query);
           if (
             !record ||
-            (hasOperatorBoundary(client, read.state.cfg) &&
+            (hasOperatorBoundary(client, read.state.policyConfig) &&
               presentation.sharing.entryFilter?.(record.key, record.entry) === false)
           ) {
             respond(true, { session: null });
@@ -106,8 +106,9 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
       cfg,
       agentId: requestedAgent.agentId,
     });
-    const boundaryFilter = hasOperatorBoundary(client, cfg)
-      ? createSessionListEntryFilter({ client, cfg })
+    const policyConfig = context.getCommittedRuntimeConfig?.() ?? cfg;
+    const boundaryFilter = hasOperatorBoundary(client, policyConfig)
+      ? createSessionListEntryFilter({ client, cfg: policyConfig })
       : undefined;
     if (!entry?.sessionId || boundaryFilter?.(target.canonicalKey, entry) === false) {
       respond(true, { messages: [] }, undefined);
@@ -141,8 +142,9 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
           agentId: currentRequestedAgent.agentId,
         })
       : null;
-    const currentBoundaryFilter = hasOperatorBoundary(client, currentCfg)
-      ? createSessionListEntryFilter({ client, cfg: currentCfg })
+    const currentPolicy = context.getCommittedRuntimeConfig?.() ?? currentCfg;
+    const currentBoundaryFilter = hasOperatorBoundary(client, currentPolicy)
+      ? createSessionListEntryFilter({ client, cfg: currentPolicy })
       : undefined;
     if (
       !current ||

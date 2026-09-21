@@ -63,8 +63,10 @@ export function resolveChatMetadataReadParams(
     const assertReadAuthorized = () => {
       if (
         session.entry &&
-        createSessionListEntryFilter({ cfg, client })?.(session.canonicalKey, session.entry) ===
-          false
+        createSessionListEntryFilter({
+          cfg: context.getCommittedRuntimeConfig?.() ?? cfg,
+          client,
+        })?.(session.canonicalKey, session.entry) === false
       ) {
         throw new SessionMutationAuthorizationChangedError(
           hiddenSessionNotFound(session.canonicalKey),

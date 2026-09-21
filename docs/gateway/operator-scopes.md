@@ -208,6 +208,9 @@ grant narrowed to a write role retains `operator.write`. The role cannot grant
 capabilities that the original credential did not allow, and an empty grant or
 role remains empty.
 
+Session reads and organization use the last successfully applied role configuration.
+A rejected configuration reload leaves those permissions unchanged.
+
 This includes plugin HTTP requests and WebSocket upgrades: without a scope
 header, ordinary Gateway-authenticated plugin routes start with only
 `operator.write`, then apply the role ceiling. A read-only role therefore retains
