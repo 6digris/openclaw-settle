@@ -193,7 +193,7 @@ describe("bundled channel ingress runtime ownership", () => {
 
   it("drops released-helper provenance when its owner retires during policy resolution", async () => {
     const audit = createChannelAdmissionAudit({ enabled: true });
-    const entered = createDeferredCore<void>();
+    const entered = createDeferredCore();
     const allowFrom = createDeferredCore<string[]>();
     const channel = createLegacyReceiver({
       audit,

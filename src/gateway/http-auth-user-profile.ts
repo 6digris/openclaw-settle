@@ -6,6 +6,7 @@ import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveHostAccountName } from "../infra/host-account-name.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import type { PluginGatewayAccessAuthority } from "../plugins/gateway-access-policy.types.js";
 import { intersectOperatorScopes } from "../shared/operator-scope-compat.js";
 import { prepareUserProfileRoleAuthority } from "../state/user-channel-identity-operations.js";
 import {
@@ -13,10 +14,15 @@ import {
   ensureCanonicalUserProfileForEmail,
   ensureCanonicalUserProfileForTailscaleIdentity,
 } from "../state/user-profile-writes.js";
-import { getUserProfileDisplay } from "../state/user-profiles.js";
+import { getUserProfileDisplay, getUserProfileListItem } from "../state/user-profiles.js";
 import type { GatewayAuthResult } from "./auth.js";
 import { shouldUseGatewayOwnerProfile } from "./gateway-owner-profile.js";
 import { createAuthenticatedGitHubIdentitySync } from "./github-user-identity.js";
+import {
+  GatewayOperatorAccessDeniedError,
+  hasGatewayOperatorAccessPolicies,
+  resolveGatewayOperatorAccessAuthority,
+} from "./operator-access-policy.js";
 import {
   resolveOperatorRolePolicyForAssignment,
   resolveOperatorRolePolicyForProfile,
@@ -27,10 +33,62 @@ import { formatForLog } from "./ws-log.js";
 
 const profileLog = createSubsystemLogger("gateway/user-profiles");
 
-type AuthenticatedHttpUserProfile = {
+export type AuthenticatedHttpUserProfile = {
   authenticatedUserProfile?: GatewayClient["authenticatedUserProfile"];
   operatorRolePolicy?: GatewayOperatorRoleDefinition;
+  operatorAccessAuthority?: PluginGatewayAccessAuthority;
 };
+
+type HttpUserProfileAuthResult =
+  | { ok: true; profile: AuthenticatedHttpUserProfile }
+  | { ok: false; authResult: GatewayAuthResult };
+
+function failedHttpProfileAuthentication(error?: unknown): HttpUserProfileAuthResult {
+  return {
+    ok: false,
+    authResult: {
+      ok: false,
+      reason:
+        error instanceof GatewayOperatorAccessDeniedError
+          ? "operator_access_denied"
+          : "user_profile_unavailable",
+    },
+  };
+}
+
+export async function checkAuthenticatedHttpUserProfile(
+  params: Parameters<typeof resolveAuthenticatedHttpUserProfile>[0],
+): Promise<HttpUserProfileAuthResult> {
+  try {
+    return { ok: true, profile: await resolveAuthenticatedHttpUserProfile(params) };
+  } catch (error) {
+    return failedHttpProfileAuthentication(error);
+  }
+}
+
+/** A signed cookie retains one exact profile reference; current policy still governs its admission. */
+export function checkHttpCookieUserProfile(
+  cfg: OpenClawConfig,
+  profileIds: readonly (string | undefined)[],
+): HttpUserProfileAuthResult {
+  const profileId = profileIds[0];
+  if (
+    profileIds.some((candidate) => candidate !== profileId) ||
+    (!profileId && (cfg.gateway?.roles || hasGatewayOperatorAccessPolicies(cfg)))
+  ) {
+    return failedHttpProfileAuthentication();
+  }
+  // A signed viewer still narrows session sharing when named roles are disabled.
+  if (!profileId) {
+    return { ok: true, profile: {} };
+  }
+  try {
+    const profile = getUserProfileListItem(profileId);
+    return { ok: true, profile: resolveHttpProfile(profileId, profile.updatedAt, cfg) };
+  } catch (error) {
+    return failedHttpProfileAuthentication(error);
+  }
+}
 
 export function usesSharedSecretGatewayMethod(
   method: GatewayAuthResult["method"] | undefined,
@@ -69,6 +127,7 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
   const options = { assertCurrent };
   const authenticatedUserId = normalizeOptionalString(params.authResult.user);
   const rolesConfigured = Boolean(params.cfg.gateway?.roles);
+  const accessPoliciesConfigured = hasGatewayOperatorAccessPolicies(params.cfg);
   if (!authenticatedUserId) {
     if (
       shouldUseGatewayOwnerProfile({
@@ -108,12 +167,17 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
           )
         : await ensureCanonicalUserProfileForEmail(authenticatedUserId, options);
     const profileId = "profileId" in profile ? profile.profileId : profile.id;
-    return await prepareHttpProfile(profileId, profile.updatedAt, assertCurrent, params.cfg);
+    return await prepareHttpProfile(
+      profileId,
+      profile.updatedAt,
+      assertCurrent,
+      usesSharedSecretGatewayMethod(params.authResult.method) ? undefined : params.cfg,
+    );
   } catch (error) {
     assertCurrent();
-    // Attribution enriches authenticated requests; only configured roles make
-    // durable profile resolution a prerequisite for authorization.
-    if (rolesConfigured) {
+    // Attribution enriches authenticated requests; configured role/access policies
+    // make durable profile resolution a prerequisite for authorization.
+    if (rolesConfigured || accessPoliciesConfigured) {
       throw error;
     }
     return {};
@@ -136,20 +200,31 @@ async function prepareHttpProfile(
   const operatorRolePolicy = cfg
     ? resolveOperatorRolePolicyForAssignment(display.id, authority.role, cfg)
     : undefined;
-  return projectHttpProfile(display, updatedAt, operatorRolePolicy);
+  const operatorAccessAuthority = cfg
+    ? resolveGatewayOperatorAccessAuthority(profileId, cfg)
+    : undefined;
+  assertCurrent();
+  if (!authority.isCurrent()) {
+    throw new Error("HTTP profile authority changed during acquisition");
+  }
+  return projectHttpProfile(display, updatedAt, operatorRolePolicy, operatorAccessAuthority);
 }
 
 /** Cookie and media disclosure retain their existing synchronous final policy check. */
 export function resolveHttpProfile(profileId: string, updatedAt: number, cfg?: OpenClawConfig) {
   const display = getUserProfileDisplay(profileId);
   const operatorRolePolicy = cfg ? resolveOperatorRolePolicyForProfile(display.id, cfg) : undefined;
-  return projectHttpProfile(display, updatedAt, operatorRolePolicy);
+  const operatorAccessAuthority = cfg
+    ? resolveGatewayOperatorAccessAuthority(profileId, cfg)
+    : undefined;
+  return projectHttpProfile(display, updatedAt, operatorRolePolicy, operatorAccessAuthority);
 }
 
 function projectHttpProfile(
   display: ReturnType<typeof getUserProfileDisplay>,
   updatedAt: number,
   operatorRolePolicy: GatewayOperatorRoleDefinition | undefined,
+  operatorAccessAuthority: PluginGatewayAccessAuthority | undefined,
 ) {
   return {
     authenticatedUserProfile: {
@@ -160,6 +235,7 @@ function projectHttpProfile(
       updatedAt,
     },
     ...(operatorRolePolicy ? { operatorRolePolicy } : {}),
+    ...(operatorAccessAuthority ? { operatorAccessAuthority } : {}),
   };
 }
 

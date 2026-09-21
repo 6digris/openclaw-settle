@@ -56,8 +56,13 @@ import {
 import { sendGatewayHello } from "./connect-hello.js";
 import { prepareGatewayNodeConnect } from "./connect-node-session.js";
 import {
+  bindGatewayConnectOperatorAccess,
+  prepareGatewayConnectOperatorAccess,
+  rejectGatewayConnectOperatorAccess,
+} from "./connect-operator-access.js";
+import {
   createGatewayConnectProfileLifecycle,
-  resolveGatewayConnectUserProfile,
+  resolveGatewayConnectProfileAdmission,
 } from "./connect-user-profile.js";
 import { resolveControlUiBuildMismatch } from "./control-ui-build-admission.js";
 import type {
@@ -195,44 +200,19 @@ export async function attachAuthenticatedGatewayConnect(
   const ownerProfileExpected =
     shouldTrackPresence &&
     shouldUseGatewayOwnerProfile({ role, authenticatedUserId, authMethod, rolesConfigured });
-  let authenticatedUserProfile: GatewayWsClient["authenticatedUserProfile"];
-  let preparedProfile: Awaited<ReturnType<typeof resolveGatewayConnectUserProfile>> | undefined;
-  if (
-    ownerProfileExpected ||
-    (authenticatedUserId && (!resolveAuthenticatedGitHubIdentity || rolesConfigured))
-  ) {
-    try {
-      // The live profile callback refreshes edits and detached provider-avatar adoption.
-      const prepared = await resolveGatewayConnectUserProfile({
-        ownerProfileExpected,
-        authenticatedUserId,
-        authResult,
-        resolveAuthenticatedGitHubIdentity,
-        assertCurrent: profileLifecycle.assertCurrent,
-      });
-      profileLifecycle.assertCurrent();
-      if (!prepared.authority.isCurrent()) {
-        throw new Error("Gateway profile changed during acquisition");
-      }
-      authenticatedUserProfile = prepared.profile;
-      preparedProfile = prepared;
-    } catch (error) {
-      authenticatedUserProfile = undefined;
-      preparedProfile = undefined;
-      logWsControl.warn(
-        `user profile resolution failed conn=${connId} user=${formatForLog(authenticatedUserId)}: ${formatForLog(error)}`,
-      );
-      if (
-        !ownerProfileExpected &&
-        rolesConfigured &&
-        role === "operator" &&
-        !sharedSecretOperatorOwner
-      ) {
-        await rejectUnavailableProfileConnect(context, error);
-        return;
-      }
-    }
+  const profileAdmission = await resolveGatewayConnectProfileAdmission({
+    context,
+    state,
+    ownerProfileExpected,
+    authenticatedUserId,
+    resolveAuthenticatedGitHubIdentity,
+    assertCurrent: profileLifecycle.assertCurrent,
+  });
+  if (!profileAdmission.ok) {
+    return;
   }
+  const preparedProfile = profileAdmission.prepared;
+  const authenticatedUserProfile = preparedProfile?.profile;
   // Identity-derived scopes must be capped only after their durable profile is known.
   // Configured roles fail closed if profile storage or provider verification is unavailable.
   const effectiveScopes = resolveEffectiveConnectionScopes({
@@ -521,6 +501,12 @@ export async function attachAuthenticatedGatewayConnect(
     close(1011, message);
     return;
   }
+  try {
+    prepareGatewayConnectOperatorAccess(nextClient);
+  } catch {
+    await rejectGatewayConnectOperatorAccess(context);
+    return;
+  }
   if (!profileLifecycle.isCurrent(preparedProfile)) {
     await rejectUnavailableProfileConnect(
       context,
@@ -538,6 +524,9 @@ export async function attachAuthenticatedGatewayConnect(
     return;
   }
   profileLifecycle.bind(nextClient);
+  if (!bindGatewayConnectOperatorAccess(context, nextClient)) {
+    return;
+  }
   clearHandshakeTimer();
   // Only registered operators use bounded router starts. Node lifecycle traffic,
   // workers and preauth retain native yielding and their existing queue/drain rules.

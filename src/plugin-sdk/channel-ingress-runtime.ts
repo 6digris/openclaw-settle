@@ -100,7 +100,7 @@ function registeredIngress(instance: PluginInstanceHandle | undefined, channelId
     : undefined;
 }
 
-/** @deprecated Use runtime.channel.inbound.ingress.createResolver for new receive paths. */
+/** Retain the creating instance when adapting a released reusable resolver. */
 export function createChannelIngressResolver(
   base: CreateChannelIngressResolverParams,
 ): ChannelIngressResolver {
@@ -116,7 +116,7 @@ export function createChannelIngressResolver(
   };
 }
 
-/** @deprecated Use runtime.channel.inbound.ingress.resolve for new receive paths. */
+/** Preserve the released helper's trusted attribution within its managed callback. */
 export async function resolveChannelMessageIngress(
   params: ResolveChannelMessageIngressParams,
 ): Promise<ResolvedChannelMessageIngress> {
@@ -124,7 +124,7 @@ export async function resolveChannelMessageIngress(
   return await (ingress ? ingress.resolve(params) : resolvePolicyIngress(params));
 }
 
-/** @deprecated Use runtime.channel.inbound.ingress.resolveStable for new receive paths. */
+/** Preserve the released stable-identity helper through the same ingress owner. */
 export async function resolveStableChannelMessageIngress(
   params: ResolveStableChannelMessageIngressParams,
 ): Promise<ResolvedChannelMessageIngress> {

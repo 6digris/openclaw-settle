@@ -14,7 +14,7 @@ import type {
   GatewayContextResolver,
   GatewayRequestContext,
 } from "../gateway/server-methods/types.js";
-import { PluginInstance } from "./plugin-instance.js";
+import { getPluginInstance } from "./plugin-instance-scope.js";
 import type { PluginOrigin } from "./plugin-origin.types.js";
 import { markPluginRegistryActive } from "./registry-lifecycle.js";
 import { createPluginRegistry } from "./registry.js";
@@ -54,9 +54,10 @@ export function createRuntimeBuilder(params: {
     config: {} as OpenClawConfig,
     registrationMode: "full",
   });
-  const instance = params.prepare
-    ? new PluginInstance(record.id, { record, registry: registryBuilder.registry })
-    : undefined;
+  const instance = getPluginInstance(record);
+  if (params.prepare && !instance) {
+    throw new Error("Registered API must retain its plugin instance");
+  }
   const register = () => {
     const gateway = params.prepare?.(api);
     api.registerChannel({
@@ -79,7 +80,7 @@ export function createRuntimeBuilder(params: {
       },
     });
   };
-  if (instance) {
+  if (params.prepare && instance) {
     instance.run(register);
   } else {
     register();

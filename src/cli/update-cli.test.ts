@@ -76,6 +76,7 @@ import {
   recoveryVersionMismatch,
   registerFailureSelectorTests,
   registerForegroundFailureRecoveryTests,
+  reportUpdateCliHomeCleanupFailure,
 } from "./update-cli/update-cli-failure-recovery.test-support.js";
 import {
   createUpdateCliPackageFixtures,
@@ -196,17 +197,10 @@ const databasePreflightMocks = vi.hoisted(() => ({
 const restartHealthTestControl = vi.hoisted(() => ({
   snapshot: undefined as unknown,
 }));
-const nodeVersionSatisfiesEngine = vi.fn();
-const resolveNodeRuntimeInfo =
-  vi.fn<(typeof import("../daemon/runtime-paths.js"))["resolveNodeRuntimeInfo"]>();
-const execFile = vi.fn((...args: unknown[]) => {
-  const callback = args.at(-1);
-  if (typeof callback === "function") {
-    callback(null, new Date(Date.now() - 1000).toString(), "");
-  }
-  return new EventEmitter();
-});
-const spawn = vi.fn();
+const { nodeVersionSatisfiesEngine, resolveNodeRuntimeInfo, execFile, spawn } = await vi.hoisted(
+  async () =>
+    (await import("./update-cli/update-cli-process-mocks.test-support.js")).updateCliProcessMocks,
+);
 const { defaultRuntime: runtimeCapture, resetRuntimeCapture } = createCliRuntimeCapture();
 const fixtureEnvSnapshot = captureEnv([
   ...SUPERVISOR_HINT_ENV_VARS,
@@ -1788,7 +1782,12 @@ describe("update-cli", () => {
     // Relocated stores can retain workers whose coordinator lives in this temporary home.
     await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
-    await tempHome?.restore();
+    try {
+      await tempHome?.restore();
+    } catch (error) {
+      reportUpdateCliHomeCleanupFailure(tempHome);
+      throw error;
+    }
     tempHome = undefined;
     await Promise.allSettled(
       [...tempDirsToCleanup].map((dir) => fs.rm(dir, { recursive: true, force: true })),

@@ -14,9 +14,14 @@ import {
   attachGatewayLocalUserIngress,
   type prepareGatewayLocalUserIngress,
 } from "../../local-user-ingress.js";
+import { hasGatewayOperatorAccessPolicies } from "../../operator-access-policy.js";
 import { WEBSOCKET_OPEN_READY_STATE } from "../../server-constants.js";
+import { formatForLog } from "../../ws-log.js";
 import type { GatewayWsClient } from "../ws-types.js";
-import { resolveGatewayConnectPolicyFailure } from "./connect-admission.js";
+import {
+  rejectUnavailableProfileConnect,
+  resolveGatewayConnectPolicyFailure,
+} from "./connect-admission.js";
 import type {
   DeviceAuthorizedGatewayConnect,
   GatewayConnectPhaseContext,
@@ -105,7 +110,7 @@ async function resolveAuthenticatedProfile(
   };
 }
 
-export async function resolveGatewayConnectUserProfile(params: {
+async function resolveGatewayConnectUserProfile(params: {
   ownerProfileExpected: boolean;
   authenticatedUserId: string | undefined;
   authResult: GatewayAuthResult;
@@ -135,4 +140,57 @@ export async function resolveGatewayConnectUserProfile(params: {
   );
   params.assertCurrent?.();
   return resolved;
+}
+
+/** Role and access policies need verified identity before admission; attribution alone may defer it. */
+export async function resolveGatewayConnectProfileAdmission(params: {
+  context: Pick<GatewayConnectPhaseContext, "configSnapshot"> &
+    Parameters<typeof rejectUnavailableProfileConnect>[0] & {
+      handler: Pick<GatewayConnectPhaseContext["handler"], "connId" | "logWsControl">;
+    };
+  state: Pick<DeviceAuthorizedGatewayConnect, "authResult" | "role" | "authMethod">;
+  ownerProfileExpected: boolean;
+  authenticatedUserId: string | undefined;
+  resolveAuthenticatedGitHubIdentity: ReturnType<typeof createAuthenticatedGitHubIdentitySync>;
+  assertCurrent?: () => void;
+}): Promise<{ ok: true; prepared?: PreparedConnectProfile } | { ok: false }> {
+  const { context, state, ownerProfileExpected, authenticatedUserId } = params;
+  const profileRequired =
+    Boolean(context.configSnapshot.gateway?.roles) ||
+    hasGatewayOperatorAccessPolicies(context.configSnapshot);
+  if (
+    !ownerProfileExpected &&
+    (!authenticatedUserId || (params.resolveAuthenticatedGitHubIdentity && !profileRequired))
+  ) {
+    return { ok: true };
+  }
+  try {
+    const prepared = await resolveGatewayConnectUserProfile({
+      ownerProfileExpected,
+      authenticatedUserId,
+      authResult: state.authResult,
+      resolveAuthenticatedGitHubIdentity: params.resolveAuthenticatedGitHubIdentity,
+      assertCurrent: params.assertCurrent,
+    });
+    params.assertCurrent?.();
+    if (!prepared.authority.isCurrent()) {
+      throw new Error("Gateway profile changed during acquisition");
+    }
+    return { ok: true, prepared };
+  } catch (error) {
+    context.handler.logWsControl.warn(
+      `user profile resolution failed conn=${context.handler.connId} user=${formatForLog(authenticatedUserId)}: ${formatForLog(error)}`,
+    );
+    if (
+      !ownerProfileExpected &&
+      profileRequired &&
+      state.role === "operator" &&
+      state.authMethod !== "token" &&
+      state.authMethod !== "password"
+    ) {
+      await rejectUnavailableProfileConnect(context, error);
+      return { ok: false };
+    }
+    return { ok: true };
+  }
 }
