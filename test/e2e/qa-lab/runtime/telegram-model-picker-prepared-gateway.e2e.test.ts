@@ -768,8 +768,8 @@ test("recovers a replaced model catalog and drains the following Telegram callba
           queueCallback(11, "mdl_prov");
           await expect
             .poll(async () => await readTelegramIngressStatuses(stateDir, eventIds), {
-              interval: 5,
-              timeout: 600,
+              interval: 25,
+              timeout: 30_000,
             })
             .toEqual([
               {

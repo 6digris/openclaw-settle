@@ -508,25 +508,26 @@ describe("Gateway child fixture helpers", () => {
     ).rejects.toThrow();
   });
 
-  it("resolves the repo runner before a built Gateway CLI fallback", async () => {
+  it("prefers a built Gateway CLI and falls back to the repo runner", async () => {
     const repoRoot = await tempDirs.makeTempDir("qa-gateway-command-");
     await mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     const runnerPath = path.join(repoRoot, "scripts", "run-node.mjs");
     await writeFile(runnerPath, "export {};\n", "utf8");
 
+    await mkdir(path.join(repoRoot, "dist"), { recursive: true });
+    const builtCliPath = path.join(repoRoot, "dist", "index.js");
+    await writeFile(builtCliPath, "export {};\n", "utf8");
     expect(resolveQaGatewayChildCommand(repoRoot)).toEqual({
       executablePath: process.execPath,
-      argsPrefix: [runnerPath],
+      argsPrefix: [builtCliPath],
       cwd: repoRoot,
       usePackagedPlugins: true,
     });
 
-    await mkdir(path.join(repoRoot, "dist"), { recursive: true });
-    await writeFile(path.join(repoRoot, "dist", "index.js"), "export {};\n", "utf8");
-    await rm(path.join(repoRoot, "scripts"), { recursive: true });
+    await rm(path.join(repoRoot, "dist"), { recursive: true });
     expect(resolveQaGatewayChildCommand(repoRoot)).toEqual({
       executablePath: process.execPath,
-      argsPrefix: [path.join(repoRoot, "dist", "index.js")],
+      argsPrefix: [runnerPath],
       cwd: repoRoot,
       usePackagedPlugins: true,
     });

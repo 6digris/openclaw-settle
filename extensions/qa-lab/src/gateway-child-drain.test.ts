@@ -199,7 +199,9 @@ describe("QA Gateway owned child drain", () => {
         process: "unconfirmed",
         errors: [
           expect.objectContaining({
-            message: "qa gateway child stdio did not close after process-tree shutdown",
+            message: expect.stringContaining(
+              "qa gateway child stdio did not close after process-tree shutdown",
+            ),
           }),
         ],
       });

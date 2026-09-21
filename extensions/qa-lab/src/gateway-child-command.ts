@@ -34,7 +34,10 @@ type QaGatewayChildVerifiedCommand = Omit<QaGatewayChildDirectCommand, "processB
 export type QaGatewayChildCommand = QaGatewayChildDirectCommand | QaGatewayChildVerifiedCommand;
 
 export function resolveQaGatewayChildCommand(repoRoot: string): QaGatewayChildCommand {
-  for (const relativePath of ["scripts/run-node.mjs", "dist/index.mjs", "dist/index.js"]) {
+  // Prefer the built CLI so the lifecycle owns the actual Gateway process
+  // group. The source runner creates another detached group and is only the
+  // fallback when a checkout has not been built yet.
+  for (const relativePath of ["dist/index.mjs", "dist/index.js", "scripts/run-node.mjs"]) {
     const entryPath = path.join(repoRoot, relativePath);
     if (existsSync(entryPath)) {
       return {

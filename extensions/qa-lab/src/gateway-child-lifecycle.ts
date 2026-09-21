@@ -115,8 +115,18 @@ export class QaGatewayChildLifecycle {
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             const label = owned.kind === "cli" ? "CLI" : "child";
+            const outputState = [owned.child.stdout, owned.child.stderr]
+              .map((stream, index) => {
+                const name = index === 0 ? "stdout" : "stderr";
+                return stream
+                  ? `${name}:ended=${stream.readableEnded},closed=${stream.closed},destroyed=${stream.destroyed}`
+                  : `${name}:absent`;
+              })
+              .join("; ");
             reject(
-              new Error(`qa gateway ${label} stdio did not close after process-tree shutdown`),
+              new Error(
+                `qa gateway ${label} stdio did not close after process-tree shutdown (${outputState})`,
+              ),
             );
           }, QA_GATEWAY_CHILD_DRAIN_TIMEOUT_MS);
         }),
