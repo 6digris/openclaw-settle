@@ -4,9 +4,14 @@ import Sodium
 /// Matches cloudflared's encrypted token transfer without persisting its ephemeral key pair.
 struct CloudflareAccessTransfer: Sendable {
     let client: CloudflareAccessClient
+    private let sleep: @Sendable (Duration) async throws -> Void
 
-    init(client: CloudflareAccessClient = CloudflareAccessClient()) {
+    init(
+        client: CloudflareAccessClient = CloudflareAccessClient(),
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) })
+    {
         self.client = client
+        self.sleep = sleep
     }
 
     func signIn(
@@ -33,7 +38,7 @@ struct CloudflareAccessTransfer: Sendable {
             try Task.checkCancellation()
             guard ContinuousClock.now < deadline else { throw CloudflareAccessError.timedOut }
             let (data, response) = try await self.client.request(request, 131_072)
-            if response.statusCode == 200 {
+            if response.statusCode == 200, !data.isEmpty {
                 guard let peer = response.value(forHTTPHeaderField: "service-public-key") else {
                     throw CloudflareAccessError.loginFailed
                 }
@@ -46,7 +51,7 @@ struct CloudflareAccessTransfer: Sendable {
             guard response.statusCode < 300 || (400..<500).contains(response.statusCode) else {
                 throw CloudflareAccessError.loginFailed
             }
-            try await Task.sleep(for: .seconds(1))
+            try await self.sleep(.seconds(1))
         }
         throw CloudflareAccessError.timedOut
     }

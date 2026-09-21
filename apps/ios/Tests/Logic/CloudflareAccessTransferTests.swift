@@ -37,6 +37,64 @@ struct CloudflareAccessTransferTests {
         #expect(urls[0] != urls[1])
     }
 
+    @MainActor
+    @Test(arguments: [false, true])
+    func `empty successful polls keep the same browser transfer`(hasPeer: Bool) async throws {
+        let polls = Polls(data: Data(), peer: hasPeer ? self.peer : nil)
+        let transfer = CloudflareAccessTransfer(
+            client: CloudflareAccessClient(request: polls.request), sleep: { try await polls.sleep($0) })
+        let application = try CloudflareAccessTestTokens.application()
+        var browsers: [URL] = []
+        await #expect(throws: Polls.NextRequest.self) {
+            try await transfer.signIn(application: application, openBrowser: { browsers.append($0) })
+        }
+        let requests = await polls.requests
+        try #require(requests.count == 2)
+        try #require(browsers.count == 1)
+        let components = try #require(URLComponents(url: browsers[0], resolvingAgainstBaseURL: false))
+        let key = try #require(components.queryItems?.first(where: { $0.name == "token" })?.value)
+        #expect(requests.allSatisfy { $0.url == CloudflareAccessTransfer.transferURL(publicKey: key) })
+        #expect(requests.allSatisfy { $0.timeoutInterval == 60 })
+        #expect(await polls.limits == [131_072, 131_072])
+        #expect(await polls.delays == [.seconds(1)])
+    }
+
+    @MainActor
+    @Test(arguments: ["invalid", " "], [false, true])
+    func `nonempty malformed successful polls remain terminal`(body: String, hasPeer: Bool) async throws {
+        let polls = Polls(data: Data(body.utf8), peer: hasPeer ? self.peer : nil)
+        let transfer = CloudflareAccessTransfer(
+            client: CloudflareAccessClient(request: polls.request), sleep: { try await polls.sleep($0) })
+        let application = try CloudflareAccessTestTokens.application()
+        var browserCount = 0
+        await #expect(throws: CloudflareAccessError.self) {
+            try await transfer.signIn(application: application, openBrowser: { _ in browserCount += 1 })
+        }
+        #expect(browserCount == 1)
+        #expect(await polls.requests.count == 1)
+        #expect(await polls.delays.isEmpty)
+    }
+
+    @MainActor
+    @Test func `cancellation of an empty pending response stops the transfer`() async throws {
+        let polls = Polls(data: Data(), peer: nil, holdFirst: true)
+        let transfer = CloudflareAccessTransfer(
+            client: CloudflareAccessClient(request: polls.request), sleep: { try await polls.sleep($0) })
+        let application = try CloudflareAccessTestTokens.application()
+        var browserCount = 0
+        let attempt = Task {
+            try await transfer.signIn(application: application, openBrowser: { _ in browserCount += 1 })
+        }
+        defer { attempt.cancel() }
+        await polls.waitUntilStarted()
+        attempt.cancel()
+        await polls.release()
+        await #expect(throws: CancellationError.self) { try await attempt.value }
+        #expect(browserCount == 1)
+        #expect(await polls.requests.count == 1)
+        #expect(await polls.delays == [.seconds(1)])
+    }
+
     @Test(arguments: [0, 24, 108])
     func `rejects nonce MAC and ciphertext tampering`(index: Int) throws {
         var data = try #require(Data(base64Encoded: self.body))
@@ -113,5 +171,58 @@ struct CloudflareAccessTransferTests {
         let redirect = try #require(URL(string: redirectString))
         #expect(application.origin.contains(redirect))
         #expect(CloudflareAccessTransfer.transferURL(publicKey: publicKey).host == "login.cloudflareaccess.org")
+    }
+
+    private actor Polls {
+        struct NextRequest: Error {}
+
+        let data: Data
+        let peer: String?
+        var requests: [URLRequest] = []
+        var limits: [Int] = []
+        var delays: [Duration] = []
+        private var released: Bool
+        private var pending: CheckedContinuation<Void, Never>?
+        private var started: CheckedContinuation<Void, Never>?
+
+        init(data: Data, peer: String?, holdFirst: Bool = false) {
+            self.data = data
+            self.peer = peer
+            self.released = !holdFirst
+        }
+
+        func request(_ request: URLRequest, maximumBytes: Int) async throws -> (Data, HTTPURLResponse) {
+            self.requests.append(request)
+            self.limits.append(maximumBytes)
+            guard self.requests.count == 1 else { throw NextRequest() }
+            if !self.released {
+                await withCheckedContinuation { continuation in
+                    self.pending = continuation
+                    self.started?.resume()
+                    self.started = nil
+                }
+            }
+            let url = try #require(request.url)
+            let response = try #require(HTTPURLResponse(
+                url: url, statusCode: 200, httpVersion: nil,
+                headerFields: self.peer.map { ["service-public-key": $0] }))
+            return (self.data, response)
+        }
+
+        func waitUntilStarted() async {
+            if self.pending != nil { return }
+            await withCheckedContinuation { self.started = $0 }
+        }
+
+        func sleep(_ duration: Duration) throws {
+            self.delays.append(duration)
+            try Task.checkCancellation()
+        }
+
+        func release() {
+            self.released = true
+            self.pending?.resume()
+            self.pending = nil
+        }
     }
 }
