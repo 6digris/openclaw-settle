@@ -353,77 +353,83 @@ describe("published runtime choice", () => {
     expect(owner.isCurrent()).toBe(true);
   });
 
-  it("rechecks native readiness once per current guard and never after owner revocation", async () => {
-    let current = true;
-    let ready = true;
-    const owner = publish(() => current);
-    const registry = createEmptyPluginRegistry();
-    const readiness = vi.fn(() =>
-      ready ? { accountType: "fixture", authMode: "oauth" } : undefined,
-    );
-    const native = {
-      provider: "fixture",
-      id: "model",
-      name: "Model",
-      nativeRuntime: "fixture-native",
-    };
-    registry.agentHarnesses.push({
-      pluginId: "fixture-native",
-      source: "test",
-      harness: {
-        id: "fixture-native",
-        label: "Fixture",
-        authBootstrap: "harness",
-        supports: () => ({ supported: true }),
-        readModelCatalogReadiness: readiness,
-        runAttempt: async () => {
-          throw new Error("unused");
+  it.each(["explicit", "automatic", "preferred"] as const)(
+    "rechecks native readiness for %s selection and never after owner revocation",
+    async (selection) => {
+      let current = true;
+      let ready = true;
+      const owner = publish(() => current);
+      const registry = createEmptyPluginRegistry();
+      const readiness = vi.fn(() =>
+        ready ? { accountType: "fixture", authMode: "oauth" } : undefined,
+      );
+      const native = {
+        provider: "fixture",
+        id: "model",
+        name: "Model",
+        nativeRuntime: "fixture-native",
+      };
+      registry.agentHarnesses.push({
+        pluginId: "fixture-native",
+        source: "test",
+        harness: {
+          id: "fixture-native",
+          label: "Fixture",
+          authBootstrap: "harness",
+          supports: () => ({ supported: true }),
+          readModelCatalogReadiness: readiness,
+          runAttempt: async () => {
+            throw new Error("unused");
+          },
         },
-      },
-    });
-    const nativeOwner: PreparedModelRuntimeSnapshot = {
-      ...owner,
-      pluginRegistry: registry,
-      modelCatalog: { entries: [native], routeVariants: [native] },
-    };
-    published.owner = nativeOwner;
-    const auth: AuthProfileStore = { version: 1, profiles: {} };
-    setPreparedModelRuntimeAuthStore(nativeOwner, auth);
-    const choice = await preparePublishedModelRuntimeChoice({
-      ...request,
-      runtimeId: "fixture-native",
-    });
-    expect(choice.kind).toBe("ready");
-    if (choice.kind !== "ready") {
-      throw new Error("Expected native fixture readiness");
-    }
-    const prepareProbes = readiness.mock.calls.length;
-    expect(prepareProbes).toBe(1);
-    expect(choice.validate()).toBeUndefined();
-    expect(readiness).toHaveBeenCalledTimes(prepareProbes + 1);
-    ready = false;
-    expect(choice.validate()).toContain("not available");
-    expect(readiness).toHaveBeenCalledTimes(prepareProbes + 2);
-    current = false;
-    expect(choice.validate()).toContain("not available");
-    expect(readiness).toHaveBeenCalledTimes(prepareProbes + 2);
-    await waitForDiagnosticEventsDrained();
-    expect(events.map((event) => event.reason)).toEqual([
-      "ready",
-      "ready",
-      "native-unavailable",
-      "owner-stale",
-    ]);
-    expect(events[2]?.checks).toMatchObject({
-      commitOwnerFreshness: "current",
-      nativeAvailability: "unavailable",
-    });
-    expect(events[3]?.checks).toMatchObject({
-      commitOwnerFreshness: "stale",
-      nativeAvailability: "not-reached",
-    });
-    expect(auth).toEqual({ version: 1, profiles: {} });
-  });
+      });
+      const nativeOwner: PreparedModelRuntimeSnapshot = {
+        ...owner,
+        pluginRegistry: registry,
+        modelCatalog: { entries: [native], routeVariants: [native] },
+      };
+      published.owner = nativeOwner;
+      const auth: AuthProfileStore = { version: 1, profiles: {} };
+      setPreparedModelRuntimeAuthStore(nativeOwner, auth);
+      const choice = await preparePublishedModelRuntimeChoice({
+        ...request,
+        runtimeId: selection === "explicit" ? "fixture-native" : undefined,
+        preferredRuntimeId: selection === "preferred" ? "fixture-native" : undefined,
+      });
+      expect(choice.kind).toBe("ready");
+      if (choice.kind !== "ready") {
+        throw new Error("Expected native fixture readiness");
+      }
+      expect(choice.runtimeId).toBe("fixture-native");
+      expect(choice.harness).toBe(registry.agentHarnesses[0]?.harness);
+      const prepareProbes = readiness.mock.calls.length;
+      expect(prepareProbes).toBe(1);
+      expect(choice.validate()).toBeUndefined();
+      expect(readiness).toHaveBeenCalledTimes(prepareProbes + 1);
+      ready = false;
+      expect(choice.validate()).toContain("not available");
+      expect(readiness).toHaveBeenCalledTimes(prepareProbes + 2);
+      current = false;
+      expect(choice.validate()).toContain("not available");
+      expect(readiness).toHaveBeenCalledTimes(prepareProbes + 2);
+      await waitForDiagnosticEventsDrained();
+      expect(events.map((event) => event.reason)).toEqual([
+        "ready",
+        "ready",
+        "native-unavailable",
+        "owner-stale",
+      ]);
+      expect(events[2]?.checks).toMatchObject({
+        commitOwnerFreshness: "current",
+        nativeAvailability: "unavailable",
+      });
+      expect(events[3]?.checks).toMatchObject({
+        commitOwnerFreshness: "stale",
+        nativeAvailability: "not-reached",
+      });
+      expect(auth).toEqual({ version: 1, profiles: {} });
+    },
+  );
 
   it("rechecks the same generation at the session commit boundary", async () => {
     let current = true;
