@@ -8,7 +8,10 @@ import { resolveNodeRuntimeInfo } from "../daemon/runtime-paths.js";
 import { runExec } from "../process/exec.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 import { reconcileWindowsGitLauncher } from "./windows-git-launcher.js";
-import { decodeWindowsLauncherScript } from "./windows-launcher-encoding.js";
+import {
+  decodeWindowsLauncherScript,
+  encodeWindowsLauncherScript,
+} from "./windows-launcher-encoding.js";
 
 vi.mock("../process/exec.js", () => ({ runExec: vi.fn() }));
 
@@ -166,6 +169,11 @@ describe("reconcileWindowsGitLauncher", () => {
           nodePath: replacementNodePath,
         }),
       ).resolves.toEqual({ status: "unchanged", launcherPath: fixture.launcherPath });
+
+      // A canonical launcher containing literal percent escapes remains repairable.
+      await expect(
+        reconcileWindowsGitLauncher({ root, repair: true, platform: "win32", ...fixture }),
+      ).resolves.toEqual({ status: "updated", launcherPath: fixture.launcherPath });
     });
   });
 
@@ -334,6 +342,33 @@ describe("reconcileWindowsGitLauncher", () => {
           ...fixture,
         }),
       ).resolves.toEqual({ status: "created", launcherPath: fixture.launcherPath });
+    });
+  });
+
+  it("preserves a custom launcher with an expanding Node runtime path", async () => {
+    await withTestDir({ prefix: "openclaw-windows-git-launcher-" }, async (root) => {
+      const fixture = await createLauncherFixture(root);
+      const params = { root, repair: true, create: true, platform: "win32" as const, ...fixture };
+      await reconcileWindowsGitLauncher(params);
+      const managed = decodeWindowsLauncherScript({
+        buffer: await fs.readFile(fixture.launcherPath),
+      });
+      const custom = encodeWindowsLauncherScript({
+        format: "cmd",
+        content: managed.replaceAll(
+          fixture.nodePath.replaceAll("%", "%%"),
+          "%CUSTOM_NODE%\\node.exe",
+        ),
+      });
+      await fs.writeFile(fixture.launcherPath, custom);
+      runRuntimeProbe.mockClear();
+
+      await expect(reconcileWindowsGitLauncher(params)).resolves.toEqual({
+        status: "skipped",
+        reason: "foreign",
+      });
+      expect(runRuntimeProbe).not.toHaveBeenCalled();
+      expect(await fs.readFile(fixture.launcherPath)).toEqual(custom);
     });
   });
 

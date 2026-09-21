@@ -64,12 +64,15 @@ function isManagedLauncherForEntry(content: string, entryPath: string): boolean 
     /^@echo off\r?\nrem OpenClaw Git launcher\r?\nsetlocal DisableDelayedExpansion\r?\nif exist "([^"\r\n]+)" goto openclaw_runtime_ready\r?\necho \[!\] OpenClaw's validated Node\.js runtime is missing\. 1>&2\r?\necho \[i\] Re-run the OpenClaw installer to repair this Git installation\. 1>&2\r?\nexit \/b 1\r?\n:openclaw_runtime_ready\r?\n"\1" "([^"\r\n]+)" %\*\r?\n$/u.exec(
       content,
     );
+  const encodedNodePath = managedMatch?.[1];
   const encodedEntryPath = managedMatch?.[2];
-  if (!encodedEntryPath) {
+  if (!encodedNodePath || !encodedEntryPath) {
     return false;
   }
+  const decodedNodePath = encodedNodePath.replaceAll("%%", "%");
   const decodedEntryPath = encodedEntryPath.replaceAll("%%", "%");
   return (
+    escapeCmdLiteral(decodedNodePath) === encodedNodePath &&
     escapeCmdLiteral(decodedEntryPath) === encodedEntryPath &&
     normalizeWindowsPath(decodedEntryPath) === normalizedEntryPath
   );
