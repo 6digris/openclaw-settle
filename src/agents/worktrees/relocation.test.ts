@@ -326,9 +326,9 @@ describe.skipIf(process.platform === "win32")("native managed worktree relocatio
     const remove = vi.spyOn(service, "remove");
     // An unresolved move fences the whole cleanup pass, including unrelated
     // eligible worktrees, before GC can retire paths or prune recovery evidence.
-    await expect(
-      service.gc({ limits: { maxCount: 0 }, shouldRemoveOwner }),
-    ).rejects.toThrow("Workspace relocation is unresolved");
+    await expect(service.gc({ limits: { maxCount: 0 }, shouldRemoveOwner })).rejects.toThrow(
+      "Workspace relocation is unresolved",
+    );
     expect(shouldRemoveOwner).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
     expect(await service.inventory()).toEqual(beforeCleanup);
