@@ -158,6 +158,7 @@ export async function reloadGatewayPlugins(
     changedPluginIds,
     port,
     pluginWorkspaceDir,
+    abortSignal: AbortSignal.any([runtime.requestEntryLifetime.signal, restartDrainSignal]),
     log,
     // SAFETY: Gateway cron implements the SDK hook surface, which erases core-only job fields.
     getCron: kernel.getCronService as () => PluginHookGatewayCronService,

@@ -20,6 +20,7 @@ import {
   listBundledPluginPackArtifacts,
 } from "../../scripts/lib/bundled-plugin-build-entries.mjs";
 import { collectRuntimeImportClosure } from "../../scripts/lib/runtime-import-closure.mts";
+import { resolveVitestNodeArgs } from "../../scripts/lib/vitest-process-env.mts";
 import {
   createPackedTarballInstallArgs,
   prepareReleaseCheckLocalPackageTarballs,
@@ -135,7 +136,7 @@ describe("release-check", () => {
       const moduleUrl = pathToFileURL(join(toolingRoot, "scripts/release-check.ts")).href;
       const runtimeArgs = process.versions.bun
         ? []
-        : ["--import", join(toolingRoot, "scripts/tsx.mjs")];
+        : [...resolveVitestNodeArgs(), "--import", join(toolingRoot, "scripts/tsx.mjs")];
       const fixtureEnv = {
         ...process.env,
         TSX_TSCONFIG_PATH: join(toolingRoot, "tsconfig.json"),
@@ -152,6 +153,7 @@ describe("release-check", () => {
             `const { createPackedPluginSdkTypescriptSmokeProject } = await import(${JSON.stringify(moduleUrl)});\n` +
             `createPackedPluginSdkTypescriptSmokeProject({ consumerDir: "consumer", packageSpec: "file:fixture.tgz" });\n` +
             `console.log(JSON.stringify({\n` +
+            `  execArgv: process.execArgv,\n` +
             `  fixture: readFileSync("consumer/src/index.ts", "utf8"),\n` +
             `  setupConsumer: readFileSync("consumer/src/packed-plugin-sdk-setup-consumer.ts", "utf8")\n` +
             `}));`,
@@ -164,7 +166,13 @@ describe("release-check", () => {
       );
       expect(probe.error, "sparse release tooling import").toBeUndefined();
       expect(probe.status, probe.stderr).toBe(0);
-      expect(JSON.parse(probe.stdout)).toEqual({
+      const { execArgv, ...smokeProject } = JSON.parse(probe.stdout);
+      if (!process.versions.bun) {
+        expect(execArgv, "CLI fixtures inherit the Node shutdown policy").toContain(
+          "--no-concurrent-sparkplug",
+        );
+      }
+      expect(smokeProject).toEqual({
         fixture: readFileSync(
           join(toolingRoot, "scripts/fixtures/packed-plugin-sdk-type-smoke.ts"),
           "utf8",

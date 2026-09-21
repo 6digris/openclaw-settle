@@ -13,7 +13,10 @@ import { clearActivePluginRegistry, resetPluginRuntimeStateForTest } from "../pl
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { cleanupTrackedTempDirs, makeTrackedTempDir } from "../plugins/test-helpers/fs-fixtures.js";
 import type { OpenClawPluginApi, OpenClawPluginServiceContext } from "../plugins/types.js";
-import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
+import {
+  markGatewayRestartDraining,
+  resetGatewayWorkAdmission,
+} from "../process/gateway-work-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -175,6 +178,7 @@ it.each(["commit", "rollback"] as const)(
   async (outcome) => {
     let serviceGetter: OpenClawPluginServiceContext["getCron"];
     let hookGetter: PluginHookGatewayContext["getCron"];
+    let hookSignal: PluginHookGatewayContext["abortSignal"];
     const schedulers = ["first", "next"].map((name) => {
       const cron = new CronService({
         storePath: path.join(makeTrackedTempDir(`reload-cron-${name}`, tempDirs), "jobs.sqlite"),
@@ -209,6 +213,7 @@ it.each(["commit", "rollback"] as const)(
         });
         api.on("gateway_start", (_event, ctx) => {
           hookGetter = ctx.getCron;
+          hookSignal = ctx.abortSignal;
         });
       },
     });
@@ -234,6 +239,13 @@ it.each(["commit", "rollback"] as const)(
     const remove = vi.spyOn(first.cron, "remove");
     await expect(stale.remove("must-not-mutate")).rejects.toThrow("scheduler was replaced");
     expect(remove).not.toHaveBeenCalled();
+    expect(hookSignal?.aborted).toBe(false);
+    if (outcome === "commit") {
+      fixture.runtime.requestEntryLifetime.beginClose();
+    } else {
+      markGatewayRestartDraining();
+    }
+    expect(hookSignal?.aborted).toBe(true);
   },
 );
 
