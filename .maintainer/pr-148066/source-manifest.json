@@ -1,0 +1,99 @@
+{
+  "originalSource": "7c532c395d62d36b989a0f35bf15ccafb90c6668",
+  "originalRun": 35540911350,
+  "originalJob": 106158393874,
+  "originalRunnerLabel": "windows-2025",
+  "originalImage": "windows-2025-vs2026",
+  "originalNode": "24.20.0",
+  "candidate": "66a495d350eb87c3af1536ca30e58d3bafb24e95",
+  "transportSource": "0c6e776b94d54d5d5479b4f899ebac8bab740ccd",
+  "files": {
+    "src/daemon/schtasks-state-probe.ts": {
+      "sha256": "1a927e83ca37540c35706a9f92f198994e3148772ba086972b6c3bbe88e97ad6",
+      "bytes": 4489,
+      "gitBlob": "a94718737c45791c6b02d76fc80441040e250b89"
+    },
+    "src/daemon/schtasks-state-probe.windows.test.ts": {
+      "sha256": "1d8dec58032ca405a156dad0cb39ed9605cdacfdb1ce14fea69d77ed41d92a79",
+      "bytes": 1462,
+      "gitBlob": "d9d27705fe43d66882d73c4ceb0979ef41501685"
+    },
+    "src/daemon/service-process-env.ts": {
+      "sha256": "aa5330f0d4deaa16e2be4b829d623b55f98ab488efaddc26571c0f9ae176747d",
+      "bytes": 1042,
+      "gitBlob": "547c05809c95472282f5a4cfc087819150e63536"
+    },
+    "src/infra/process-env.ts": {
+      "sha256": "30ae6521c7d7fb07d0627b3280c17e4dd2f537bde79f0952dddc63b8a5b93e6b",
+      "bytes": 3517,
+      "gitBlob": "7fd14da9ec56dc2d312e38ef3a1be72c52cd58cc"
+    },
+    "src/infra/windows-install-roots.ts": {
+      "sha256": "29a9cf364806321f0a3eb57c31abf4273d58e72e0302521702ee05afb27de9f9",
+      "bytes": 9502,
+      "gitBlob": "418263f2b0acdfb0aed1aad9886d82e4121b23a2"
+    },
+    "src/infra/errno.ts": {
+      "sha256": "3cab4bd3ceabc8b864b37ef87b929c84ae03273dc47c9119cf29e34cc9039f19",
+      "bytes": 655,
+      "gitBlob": "c54937e93f6c62529117f53363df09faccfbfbf2"
+    },
+    "packages/normalization-core/src/record-coerce.ts": {
+      "sha256": "a5f7df2bfb3218e403448d43491a79ad90a70ed496754e82cb2d424e770c4b28",
+      "bytes": 2481,
+      "gitBlob": "96ea2e55442827dd2334b847de7f6907ebcbf1df"
+    },
+    "packages/normalization-core/src/string-coerce.ts": {
+      "sha256": "8df47fcd91cd520eacfe003fe81cb941d3a2e868b88f8e1f6cbc246bd738613c",
+      "bytes": 4915,
+      "gitBlob": "6f960a6a3cb8fbab3818c993c12ebfb5f80c52b5"
+    },
+    "test/test-env.ts": {
+      "sha256": "aa52b5d73162d321512bb264e0673a440703f28f43a5627859fb11f434ee10ef",
+      "bytes": 19826,
+      "gitBlob": "32a356432236f0ba49276f62e984c1087c482c49"
+    },
+    "test/test-home-context.mts": {
+      "sha256": "ab02ed0c3e96d2adbaae760779ae6d930e0d8325b125203c943cc647cafae329",
+      "bytes": 3432,
+      "gitBlob": "b4c3f01c768fec6685829c5a1c2f8355c04bbead"
+    },
+    "src/infra/supervisor-markers.ts": {
+      "sha256": "6e21ca56f13ee8654eb7e05d58fd820e95186d3ebcce4319492ecf9918237588",
+      "bytes": 4089,
+      "gitBlob": "d9051ee55bffde26ab705b00881963d000959b9e"
+    },
+    "src/test-utils/env.ts": {
+      "sha256": "8e9010865a1119c0e13c4d7ac7df72dc71329e5f5ce6a9ee7363bfedc37e9531",
+      "bytes": 3997,
+      "gitBlob": "3de3c135ba94cc3a705818cf84831739a46c7588"
+    },
+    "scripts/lib/vitest-process.mts": {
+      "sha256": "d23e85b474105f57e80aab0910e38d1d7061a937d6266615a0d940045258378e",
+      "bytes": 6342,
+      "gitBlob": "3b9a8631f19dc67a7d5f81a4192af4106db881d9"
+    },
+    "test/setup.ts": {
+      "sha256": "7e65e828bb3e4e46a5b39c47f34ffcec74bb29c15a1fe3f7da0edf7ee97464bf",
+      "bytes": 292,
+      "gitBlob": "b728e1ec262cec23f12d4ce37a8ba02c73b6d8e8"
+    },
+    "test/setup.shared.ts": {
+      "sha256": "d8700cf4f3daef8fd144d64fbaba23e58c88ee57e213b65aedfa2a8aa4f28c52",
+      "bytes": 3141,
+      "gitBlob": "07c60e41ae0c548fadd95abad87d2d508941e494",
+      "referenceOnly": true
+    },
+    ".github/workflows/ci.yml": {
+      "sha256": "a324cd7995f60e1d0c538ec11cd4a5da111f38143339094d418a73d4c1b43c3a",
+      "bytes": 345969,
+      "gitBlob": "11699e1dfc374026bbb8edb3c1fd694baeb16d2c",
+      "referenceOnly": true
+    }
+  },
+  "originalImageVersion": "20260907.229.1",
+  "originalOS": "Microsoft Windows Server 2025 10.0.26100",
+  "originalRunnerVersion": "2.337.0",
+  "originalFixtureNamespace": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\oc-vt-6Su6Ow",
+  "originalFixtureHome": "Not recorded in historical log; exact source selection reproduced, not historical random suffix"
+}
