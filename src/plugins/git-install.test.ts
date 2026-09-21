@@ -592,6 +592,9 @@ describe("installPluginFromGitSpec", () => {
       });
       const cloneParent = await fs.realpath(path.dirname(path.dirname(path.resolve(cloneDest))));
       const targetParent = await fs.realpath(path.dirname(persistentRepoDir));
+      if (process.platform !== "win32") {
+        expect((await fs.stat(targetParent)).mode & 0o022).toBe(0);
+      }
       expect(cloneParent).toBe(targetParent);
     } finally {
       await fs.rm(gitDir, { recursive: true, force: true });
