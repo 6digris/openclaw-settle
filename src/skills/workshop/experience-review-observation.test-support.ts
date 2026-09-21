@@ -6,7 +6,7 @@ import { readExperienceReviewMessageText } from "./experience-review-message-tex
 
 export async function observeExperienceReview(run: () => Promise<void>) {
   let session: SessionManager | undefined;
-  const requests: Array<{ toolNames: string[]; outputs: unknown[] }> = [];
+  const requests: Array<{ toolNames: string[]; systemPrompt: string; outputs: unknown[] }> = [];
   const openModelContext = SessionManager.openModelContextAsync.bind(SessionManager);
   const createEgressObserver = responsesEgress.createResponsesPromptEgressObserver;
   // Keep the actual runner and transport. Silent reviews suppress public assistant events;
@@ -25,7 +25,27 @@ export async function observeExperienceReview(run: () => Promise<void>) {
         const payload: unknown = request;
         const tools = isRecord(payload) && Array.isArray(payload.tools) ? payload.tools : [];
         const input = Array.isArray(request.input) ? request.input : [];
+        const systemMessage = input.find(
+          (item) => isRecord(item) && (item.role === "developer" || item.role === "system"),
+        );
+        const systemContent: unknown = systemMessage?.content;
         requests.push({
+          systemPrompt:
+            typeof request.instructions === "string"
+              ? request.instructions
+              : typeof systemContent === "string"
+                ? systemContent
+                : Array.isArray(systemContent)
+                  ? systemContent
+                      .flatMap((part: unknown) =>
+                        isRecord(part) &&
+                        part.type === "input_text" &&
+                        typeof part.text === "string"
+                          ? [part.text]
+                          : [],
+                      )
+                      .join("")
+                  : "",
           toolNames: tools.flatMap((tool) =>
             isRecord(tool) && typeof tool.name === "string" ? [tool.name] : [],
           ),
