@@ -343,7 +343,7 @@ export function renderChatPaneHeader(props: ChatPaneHeaderProps) {
                 open-on-click
               >
                 <button type="button" class="chat-pane__incognito">
-                  <span aria-hidden="true">${icons.shredder}</span>
+                  <span aria-hidden="true">${icons.incognito}</span>
                   ${t("sessionsView.incognitoLabel")}
                 </button>
               </openclaw-tooltip>`
@@ -554,7 +554,7 @@ export function renderChatPaneHeader(props: ChatPaneHeaderProps) {
             aria-label=${t("sessionsView.incognitoLabel")}
           >
             <span class="chat-pane__incognito-notice-icon" aria-hidden="true"
-              >${icons.shredder}</span
+              >${icons.incognito}</span
             >
             <div>
               <p>${t("sessionsView.incognitoDescription")}</p>

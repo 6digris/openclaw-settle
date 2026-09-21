@@ -79,7 +79,7 @@ export function renderNewSessionIncognitoControl(
             }
           }}
         >
-          ${icons.shredder}
+          ${icons.incognito}
           ${
             active
               ? html`<span class="new-session-page__incognito-toggle-label"
@@ -105,7 +105,7 @@ export function renderNewSessionIncognitoNotice(active: boolean) {
       aria-hidden=${String(!active)}
     >
       <span class="new-session-page__incognito-notice-icon" aria-hidden="true">
-        ${icons.shredder}
+        ${icons.incognito}
       </span>
       <span>${description} ${t("sessionsView.incognitoLimits")}</span>
     </div>
