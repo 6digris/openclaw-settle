@@ -154,6 +154,25 @@ async function expectHeaderCopy(page: Page, active: "plugins" | "skills" | "skil
   }[active];
   const header = page.locator(".plugins-hub-header");
   expect(await header.getByRole("heading", { level: 1 }).textContent()).toBe(expected.title);
+  // All three routes share the settings-style header. Allow subtitle wrapping
+  // to change its height, but keep the visible title and tabs left-aligned.
+  await expect
+    .poll(() =>
+      header.evaluate((element) => {
+        const title = element.querySelector(".page-title")?.getBoundingClientRect();
+        const intro = element.querySelector(".hub-page-header__title")?.getBoundingClientRect();
+        const tabs = element.querySelector(".hub-page-header__tabs")?.getBoundingClientRect();
+        if (!title || !intro || !tabs) {
+          return null;
+        }
+        return {
+          visibleTitle: title.width > 1 && title.height > 1,
+          leftAligned: Math.abs(tabs.left - title.left) <= 1,
+          tabsBelowIntro: tabs.top >= intro.bottom,
+        };
+      }),
+    )
+    .toEqual({ visibleTitle: true, leftAligned: true, tabsBelowIntro: true });
   expect(await header.locator(".page-subtitle").textContent()).toContain(expected.subtitle);
   expect(await header.getByRole("link", { name: "Learn more" }).getAttribute("href")).toBe(
     expected.docs,
@@ -273,32 +292,6 @@ suite.define(() => {
           .boundingBox();
         expect(tabBox).not.toBeNull();
         expect(pluginTabBox).not.toBeNull();
-        if (viewport.width > 900) {
-          // Desktop shells put hub tabs centered in the page toolbar row; the
-          // shell grid may still be settling, so poll both axes.
-          await expect
-            .poll(async () => {
-              const [cell, header] = await Promise.all([
-                page.locator(".plugins-hub-header .hub-page-header__tabs").boundingBox(),
-                page.locator(".plugins-hub-header").boundingBox(),
-              ]);
-              if (!cell || !header) {
-                return Number.POSITIVE_INFINITY;
-              }
-              return Math.max(
-                Math.abs(cell.y + cell.height / 2 - (header.y + 26)),
-                Math.abs(cell.x + cell.width / 2 - (header.x + header.width / 2)),
-              );
-            })
-            .toBeLessThanOrEqual(1);
-        } else {
-          // Drawer layouts keep the stacked header: tabs above the title,
-          // sharing its left edge.
-          const titleBox = await page.locator(".plugins-hub-header .page-title").boundingBox();
-          expect(titleBox).not.toBeNull();
-          expect(tabBox!.y + tabBox!.height).toBeLessThanOrEqual(titleBox!.y);
-          expect(Math.abs(tabBox!.x - titleBox!.x)).toBeLessThanOrEqual(1);
-        }
         expect(pluginTabBox?.height ?? 0).toBeLessThanOrEqual(36);
         await expectActivePanelLabel(page, "plugins-tab-plugins");
         const pluginInstallPresentation = await installButtonPresentation(page);
@@ -335,6 +328,9 @@ suite.define(() => {
           .getByRole("tab", { name: "Skills", exact: true })
           .click();
         await waitForControlUiRoute(page, { pathname: "/skills", routeId: "skills" });
+        expectStableHeader(await headerGeometry(page), pluginsHeader);
+        await expectHeaderCopy(page, "skills");
+        await expectActivePanelLabel(page, "plugins-tab-skills");
         await page.getByRole("tab", { name: "Plugins", exact: true }).click();
         await waitForControlUiRoute(page, { pathname: "/plugins", routeId: "plugins" });
         expectStableHeader(await headerGeometry(page), pluginsHeader);
