@@ -173,6 +173,15 @@ per-row uncertainty within a valid continuation. Placement retirement still uses
 its existing live placement, claim, and environment checks; this read migration
 changes no destructive-retirement permission, schema, retention, or update behavior.
 
+Session-row placement display facts use the shared-state fixed-read worker. Each
+batch reads placement, move, pending workspace result, and environment facts from
+one committed snapshot. Resident rows refresh after owner publications; archived
+pages and private exact reads prepare only selected rows. Presentation consumes
+prepared facts without reopening SQLite, and host-only conflict payloads remain
+bound to the captured placement generation, environment, epoch, or retained
+workspace-result claim. Placement mutations, authority checks, schema, retention,
+and update behavior keep their existing owners and contracts.
+
 Observed-project discovery and the CLI's lossless worktree cleanup result read
 managed worktree registry records through the shared-state worker. The read
 captures its database before waiting and preserves record ordering, cleanup
@@ -752,6 +761,17 @@ use one snapshot and bypass secondary indexes so stale indexes cannot hide rows.
 Only pending reads coalesce; completed results are not cached. Physical integrity
 verification remains with full registry restoration and Doctor, while known
 database failures and quarantine still refuse summary reads.
+
+Task-flow maintenance prepares cold and dirty flow projections through their
+existing worker owner. Linked-task checks join accepted event work and preserve
+unsettled publications; absence in a durable snapshot cannot retire pending work.
+The worker rereads the flow revision and linked tasks inside its transaction,
+while host admission rechecks live ownership before writing and committing.
+Timestamp repair still precedes cancellation, and both precede retention on a
+later pass. Only explicit revision conflicts retry; write failures and uncertain
+outcomes are not replayed. Committed outcomes survive later cleanup or publication
+failures. The seven-day retention policy, schemas, and update behavior are unchanged.
+Task reconciliation and ACP session and binding cleanup retain their separate owners.
 
 Offline `status --json --all` checks for existing built-in memory data through
 memory-core's retrieval worker before constructing a memory manager. The check
