@@ -12,6 +12,7 @@ import {
   isOpenClawAgentDatabaseOpen,
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
+  withAgentDatabaseMaintenanceLease,
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseByPath } from "../../state/openclaw-state-db-cache.js";
@@ -252,15 +253,11 @@ describe("session transcript reconcile worker lifecycle", () => {
     const operationSpy = vi.spyOn(reconcilePool, "runSessionTranscriptReconcileOperation");
     const startDeferred = (options: OpenClawAgentDatabaseOptions) => {
       const release = createDeferred();
-      operationSpy.mockImplementationOnce((generation, run, owner) =>
-        runOperation(
-          generation,
-          async (operation) => {
-            await release.promise;
-            return run(operation);
-          },
-          owner,
-        ),
+      operationSpy.mockImplementationOnce((generation, run) =>
+        runOperation(generation, async (operation) => {
+          await release.promise;
+          return run(operation);
+        }),
       );
       startSessionTranscriptIndexReconcile(options);
       return release;
@@ -565,6 +562,11 @@ describe("session transcript reconcile worker lifecycle", () => {
               expect(() => assertNoOpenClawAgentDatabaseLeases("main")).toThrow(
                 "still open in another process",
               );
+              const maintain = vi.fn(async () => undefined);
+              await expect(withAgentDatabaseMaintenanceLease({}, maintain)).rejects.toThrow(
+                "still open in another process",
+              );
+              expect(maintain).not.toHaveBeenCalled();
             }
           } finally {
             probe.release();

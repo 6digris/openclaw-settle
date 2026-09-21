@@ -283,10 +283,8 @@ export async function reconcileSessionTranscriptIndexes(
   params: SessionTranscriptReconcileParams,
 ): Promise<SessionTranscriptReconcileResult> {
   const prepared = prepareReconcileParams(params);
-  return runSessionTranscriptReconcileOperation(
-    prepared.generation,
-    (operation) => reconcilePreparedTranscriptIndexes(prepared, operation),
-    { agentId: prepared.agentId, path: reconcileKey(prepared) },
+  return runSessionTranscriptReconcileOperation(prepared.generation, (operation) =>
+    reconcilePreparedTranscriptIndexes(prepared, operation),
   );
 }
 
@@ -294,7 +292,6 @@ async function reconcilePreparedTranscriptIndexes(
   params: PreparedReconcileParams,
   operation: SessionTranscriptReconcileOperation,
 ): Promise<SessionTranscriptReconcileResult> {
-  operation.signal.throwIfAborted();
   const databasePath = resolveOpenClawAgentSqlitePath(params);
   const databaseOptions: ReconcileDatabaseOptions = {
     agentId: params.agentId,
@@ -332,7 +329,6 @@ async function reconcilePreparedTranscriptIndexes(
         return { reconciledSessions: 0 };
       }
     }
-    operation.signal.throwIfAborted();
     // Recheck under write admission: a request may commit after the read-only probe.
     // Keep the post-worker orphan sweep for writers racing projection publication.
     await runProjectionWrite(
@@ -543,7 +539,6 @@ async function reconcilePreparedTranscriptIndexes(
         `Transcript lease cleanup incomplete; restart OpenClaw before deleting this agent: ${toStringifiedError(error).message}`,
         { cause: error },
       );
-      operation.retainCleanupFailure(failure);
       throw outcome.ok
         ? failure
         : new AggregateError([outcome.error, failure], failure.message, { cause: failure });
@@ -592,16 +587,12 @@ function startPreparedSessionTranscriptIndexReconcile(params: PreparedReconcileP
   // Capture before the first yield: disposal must revoke this scheduled owner,
   // including a later pass, before preflight can reopen its sentinel.
   const memorySource = captureMemorySource(params);
-  let operationSignal: AbortSignal | undefined;
-  const pending = runSessionTranscriptReconcileOperation(
-    params.generation,
-    (operation) => {
-      operationSignal = operation.signal;
-      return yieldToGateway().then(async () => {
+  const pending = runSessionTranscriptReconcileOperation(params.generation, (operation) =>
+    yieldToGateway()
+      .then(async () => {
         let reconciledSessions = 0;
         let retryCount = 0;
         while (true) {
-          operation.signal.throwIfAborted();
           // Leave a successor's pending request intact if the previous memory
           // owner was disposed while its successful pass was settling.
           memorySource?.assertCurrentOwner();
@@ -628,34 +619,28 @@ function startPreparedSessionTranscriptIndexReconcile(params: PreparedReconcileP
           }
           return { reconciledSessions };
         }
-      });
-    },
-    { agentId: params.agentId, path: key },
-  ).catch(async (error: unknown) => {
-    log.warn(
-      `session transcript reconcile failed agent=${params.agentId} error=${error instanceof Error ? error.message : String(error)}`,
-    );
-    const shouldHandoff = state.pending;
-    const preferredSessionId = state.preferredSessionId;
-    if (runningReconciles.get(key) === state) {
-      runningReconciles.delete(key);
-    }
-    // A pending request may own an already-created successor; never create one
-    // merely to retry the disposed memory owner's work.
-    if (
-      shouldHandoff &&
-      operationSignal &&
-      !operationSignal.aborted &&
-      (!memorySource || captureMemorySource(params))
-    ) {
-      startPreparedSessionTranscriptIndexReconcile({
-        ...params,
-        ...(preferredSessionId ? { preferredSessionId } : {}),
-      });
-      await waitForSessionTranscriptIndexReconcile(params);
-    }
-    return { reconciledSessions: 0 };
-  });
+      })
+      .catch(async (error: unknown) => {
+        log.warn(
+          `session transcript reconcile failed agent=${params.agentId} error=${error instanceof Error ? error.message : String(error)}`,
+        );
+        const shouldHandoff = state.pending;
+        const preferredSessionId = state.preferredSessionId;
+        if (runningReconciles.get(key) === state) {
+          runningReconciles.delete(key);
+        }
+        // A pending request may own an already-created successor; never create one
+        // merely to retry the disposed memory owner's work.
+        if (shouldHandoff && (!memorySource || captureMemorySource(params))) {
+          startPreparedSessionTranscriptIndexReconcile({
+            ...params,
+            ...(preferredSessionId ? { preferredSessionId } : {}),
+          });
+          await waitForSessionTranscriptIndexReconcile(params);
+        }
+        return { reconciledSessions: 0 };
+      }),
+  );
   state.promise = pending;
   runningReconciles.set(key, state);
 }

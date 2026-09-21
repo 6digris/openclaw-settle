@@ -144,10 +144,6 @@ database ownership, schema, and migration checks still run before readiness;
 plugin runtime loading remains part of validation. The serving Gateway prepares
 its session catalogs and maintenance normally after activation.
 
-Doctor waits for accepted transcript reconciliation and its SQLite lease cleanup
-before closing agent database connections. That lifecycle boundary also applies
-to plugin migration settlement after candidate validation has passed.
-
 Update build and validation processes resolve source-linked plugin SDKs from
 the staged installation root, even when the serving source launcher passed its own checkout
 root. This keeps staged assets and validation independent of the old checkout.
@@ -156,15 +152,6 @@ Doctor warnings do not block update checks or readiness after plugin updates.
 The updater retains them in the run report shown by `openclaw update status`,
 including when an intentional open channel policy requires no configuration change.
 Error findings and failed check execution still refuse the update.
-
-In the private migration rehearsal, Doctor lint defers optional core inspections
-until after activation. This includes per-agent model and tool-schema diagnostics;
-lint does not prepare their runtime metadata when those checks are deferred.
-Each omitted inspection records a warning with its check ID and a command to run
-after the update. Required migration, configuration, plugin, and Gateway readiness
-checks still run. Standalone Doctor lint and explicitly selected `--only` checks
-keep their normal scope. The candidate recognizes the private-copy markers already
-set by the published 2026.9.4 updater, so this reduces work on that first hop too.
 
 These checks do not run an agent turn or require a usable model-auth route.
 OAuth-only installations and installations without provider credentials can update.

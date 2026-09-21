@@ -5,7 +5,6 @@ import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
-import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import {
   withSqliteWorkerLifecycleCoordination,
@@ -33,8 +32,6 @@ const runtime = resolveGlobalSingleton<ReconcileRuntime>(
 );
 
 export type SessionTranscriptReconcileOperation = {
-  signal: AbortSignal;
-  retainCleanupFailure(error: Error): void;
   startTask: typeof startReconcileWorkerTask;
 };
 
@@ -50,49 +47,23 @@ export function isSessionTranscriptReconcileGenerationCurrent(generation: number
 export function runSessionTranscriptReconcileOperation<T>(
   generation: number,
   run: (operation: SessionTranscriptReconcileOperation) => Promise<T>,
-  owner: { agentId: string; path: string },
 ): Promise<T> {
   if (!isSessionTranscriptReconcileGenerationCurrent(generation)) {
     return Promise.reject(new Error("Session transcript reconciliation lifecycle is closed"));
   }
   let active = true;
-  const controller = new AbortController();
-  let cleanupFailure: Error | undefined;
-  let unregister: (() => void) | undefined;
   const completion = createDeferredCore<T>();
   const promise = completion.promise.finally(() => {
     active = false;
     runtime.operations.delete(promise);
-    if (!cleanupFailure) {
-      unregister?.();
-    }
   });
   runtime.operations.add(promise);
   try {
-    unregister = registerOpenClawAgentDatabaseAsyncResource({
-      ...owner,
-      revoke: () => controller.abort(new Error("Session transcript reconciliation was revoked")),
-      async close() {
-        // Failed projection work is advisory; an unsettled native lease retains custody.
-        await promise.catch(() => {});
-        if (cleanupFailure) {
-          throw cleanupFailure;
-        }
-      },
-    });
     completion.resolve(
       run({
-        signal: controller.signal,
-        retainCleanupFailure: (error) => {
-          cleanupFailure ??= error;
-        },
         startTask: (input) => {
           if (!active) {
             throw new Error("Session transcript reconciliation operation is closed");
-          }
-          // Native exit may require a release task after the agent owner revokes new work.
-          if (input.mode !== "release") {
-            controller.signal.throwIfAborted();
           }
           return startReconcileWorkerTask(input);
         },
