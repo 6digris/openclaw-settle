@@ -9,6 +9,10 @@ import type {
   ExecutionIdentityInspectionQuery,
   ExecutionIdentityInspectionOutcome,
 } from "../audit/execution-identity-inspection.types.js";
+import type {
+  CronRunRecoveryReadCommand,
+  CronRunRecoveryObservation,
+} from "../cron/store/run-recovery-read.types.js";
 import type { FleetCellRecord } from "../fleet/registry.types.js";
 import type {
   WorkerPlacementConflictBinding,
@@ -55,7 +59,7 @@ export type OpenClawStateReadAuthority = {
 export type OpenClawStateReadCommand =
   | { type: "conversationBindings.inspect"; conversation: ConversationRef }
   | PluginBlobReadCommand
-  | { type: "devicePairing.inventory" }
+  | CronRunRecoveryReadCommand
   | { type: "exec-approvals.read" }
   | {
       [Kind in keyof SkillLibraryReadOnlyOperations]: {
@@ -73,6 +77,7 @@ export type OpenClawStateReadCommand =
   | { type: "fleet.list" }
   | { type: "fleet.get"; tenantId: string }
   | { type: "nodeHost.config" }
+  | { type: "devicePairing.inventory" }
   | { type: "workspace.snapshot"; workspaceDir: string }
   | { type: "sandboxRegistry.list" }
   | { type: "sandboxRegistry.get"; containerName: string }
@@ -116,9 +121,9 @@ export type OpenClawStateReadReply = (
     }
   | {
       ok: true;
-      type: "devicePairing.inventory";
+      type: "cron.observeRunRecovery";
       sourceAdmitted: true;
-      state: DevicePairingStoreState;
+      observation: CronRunRecoveryObservation;
     }
   | {
       ok: true;
@@ -170,6 +175,12 @@ export type OpenClawStateReadReply = (
       type: "nodeHost.config";
       sourceAdmitted: true;
       row: Pick<Selectable<ConfigMachineState>, "value_json" | "updated_at_ms"> | undefined;
+    }
+  | {
+      ok: true;
+      type: "devicePairing.inventory";
+      sourceAdmitted: true;
+      state: DevicePairingStoreState;
     }
   | { ok: true; type: "workspace.snapshot"; sourceAdmitted: true; snapshot: WorkspaceStateSnapshot }
   | {
