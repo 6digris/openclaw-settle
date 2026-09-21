@@ -7,13 +7,15 @@ final class ManualTestClock: Clock, Sendable {
 
     private struct Sleep {
         let deadline: Instant
+        let registration: UInt64
         let continuation: CheckedContinuation<Void, any Error>
     }
 
     private struct State {
         var now = ContinuousClock.now
+        var registrations: UInt64 = 0
         var sleeps: [UUID: Sleep] = [:]
-        var admissions: [(deadline: Instant, gate: AsyncTestGate)] = []
+        var admissions: [(deadline: Instant, after: UInt64, gate: AsyncTestGate)] = []
     }
 
     private let state = Mutex(State())
@@ -26,6 +28,10 @@ final class ManualTestClock: Clock, Sendable {
         .nanoseconds(1)
     }
 
+    var sleepRegistrations: UInt64 {
+        self.state.withLock { $0.registrations }
+    }
+
     func sleep(until deadline: Instant, tolerance: Duration?) async throws {
         let id = UUID()
         try await withTaskCancellationHandler {
@@ -33,9 +39,15 @@ final class ManualTestClock: Clock, Sendable {
                 let (result, gates) = self.state.withLock { state -> (Result<Void, any Error>?, [AsyncTestGate]) in
                     guard !Task.isCancelled else { return (.failure(CancellationError()), []) }
                     guard deadline > state.now else { return (.success(()), []) }
-                    state.sleeps[id] = Sleep(deadline: deadline, continuation: continuation)
-                    let gates = state.admissions.filter { $0.deadline == deadline }.map(\.gate)
-                    state.admissions.removeAll { $0.deadline == deadline }
+                    state.registrations += 1
+                    let registration = state.registrations
+                    state.sleeps[id] = Sleep(
+                        deadline: deadline, registration: registration, continuation: continuation)
+                    let admitted = { (admission: (deadline: Instant, after: UInt64, gate: AsyncTestGate)) in
+                        admission.deadline == deadline && admission.after < registration
+                    }
+                    let gates = state.admissions.filter(admitted).map(\.gate)
+                    state.admissions.removeAll(where: admitted)
                     return (nil, gates)
                 }
                 gates.forEach { $0.open() }
@@ -47,11 +59,13 @@ final class ManualTestClock: Clock, Sendable {
         }
     }
 
-    func waitForSleep(until deadline: Instant) async {
+    func waitForSleep(until deadline: Instant, after registration: UInt64 = 0) async {
         let gate = AsyncTestGate()
         let admitted = self.state.withLock { state in
-            if state.sleeps.values.contains(where: { $0.deadline == deadline }) { return true }
-            state.admissions.append((deadline, gate))
+            if state.sleeps.values.contains(where: { $0.deadline == deadline && $0.registration > registration }) {
+                return true
+            }
+            state.admissions.append((deadline, registration, gate))
             return false
         }
         if admitted { gate.open() }

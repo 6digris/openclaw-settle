@@ -247,7 +247,8 @@ struct GatewayProcessManagerTests {
     private nonisolated func gatewayTask(
         healthSucceedsAfter unavailableResponses: Int?,
         stallsFirstHealthResponse: Bool = false,
-        healthResponseGates: [AsyncTestGate] = []) -> GatewayTestWebSocketTask
+        healthResponseGates: [AsyncTestGate] = [],
+        firstHealthRequest: AsyncTestGate? = nil) -> GatewayTestWebSocketTask
     {
         let healthRequests = Mutex(0)
         return GatewayTestWebSocketTask(
@@ -262,6 +263,7 @@ struct GatewayProcessManagerTests {
                     $0 += 1
                     return $0
                 }
+                if healthIndex == 1 { firstHealthRequest?.open() }
                 if healthResponseGates.indices.contains(healthIndex - 1) {
                     await healthResponseGates[healthIndex - 1].wait()
                 }
@@ -1285,16 +1287,21 @@ struct GatewayProcessManagerTests {
                 let url = try #require(URL(string: "ws://example.invalid"))
                 let clock = ManualTestClock()
                 let startedAt = clock.now
+                let firstHealthRequest = AsyncTestGate()
                 let responseGate = AsyncTestGate()
                 defer { responseGate.open() }
                 let (session, connection, manager) = self.makeGatewayReadinessFixture(url: url, clock: clock) {
-                    self.gatewayTask(healthSucceedsAfter: 1, healthResponseGates: [responseGate])
+                    self.gatewayTask(
+                        healthSucceedsAfter: 1,
+                        healthResponseGates: [responseGate],
+                        firstHealthRequest: firstHealthRequest)
                 }
                 let descriptor = self.gatewayDescriptor(pid: 4242)
 
                 manager.setTestingDesiredActive(true)
                 manager.setTestingStatus(.starting)
                 manager._testClearLaunchAgentReadinessFailure()
+                manager._testSetLaunchAgentReadinessCandidate(port: port, pid: 4242)
                 await PortGuardian.shared.setTestingDescriptor(descriptor, forPort: port)
                 defer {
                     manager.setTestingDesiredActive(false)
@@ -1306,9 +1313,12 @@ struct GatewayProcessManagerTests {
                 _ = try await connection.request(method: "status", params: nil, retryTransportFailures: false)
                 let readiness = Task { await manager.waitForGatewayReady(timeout: 1) }
                 await clock.waitForSleep(until: startedAt.advanced(by: .seconds(1)))
+                await firstHealthRequest.wait()
                 clock.advance(by: responseDelay)
+                let probeRegistration = clock.sleepRegistrations
                 responseGate.open()
-                await clock.waitForSleep(until: clock.now.advanced(by: retryDelay))
+                // A clipped retry shares the old probe's deadline, but must own a new timer.
+                await clock.waitForSleep(until: clock.now.advanced(by: retryDelay), after: probeRegistration)
                 #expect(session.latestTask()?.snapshotSendCount() == 3)
                 #expect(manager.status == .starting)
                 #expect(!manager._testHasLaunchAgentReadinessFailure())
