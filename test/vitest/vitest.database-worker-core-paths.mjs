@@ -3,6 +3,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/agent-bundle-mcp-requester-connect.read.test.ts",
   "src/agents/mcp-oauth-provider.read.test.ts",
   "src/agents/mcp-oauth-store.test.ts",
+  "src/config/sessions/provider-review-store.test.ts",
   "src/plugins/diffs-cleanup.lifecycle.test.ts",
   "src/agents/agent-tools-agent-config.exec.test.ts",
   "src/agents/agent-tools.safe-bins.test.ts",

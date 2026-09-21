@@ -86,6 +86,7 @@ describe("session sharing policy", () => {
         ["agent", { sessionKey }],
         ["chat.send", { sessionKey }],
         ["sessions.goal.update", { sessionKey, action: "resume" }],
+        ["sessions.providerReview.continue", { sessionKey }],
         ["message.action", { sessionKey }],
         ["send", { sessionKey }],
         ["sessions.dispatch", { key: sessionKey }],

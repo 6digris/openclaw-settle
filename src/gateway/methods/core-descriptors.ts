@@ -250,6 +250,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["sessions.patch", "sessions-mutations", "dynamic", "<=2026.7"],
   ["sessions.goal.update", "sessions-goal", "operator.write", "2026.8"],
   ["sessions.goal.clear", "sessions-goal", "operator.write", "2026.8"],
+  ["sessions.providerReview.continue", "sessions-provider-review", "operator.write", "2026.9"],
   ["sessions.pluginPatch", "sessions-mutations", "operator.admin", "<=2026.7"],
   ["sessions.cleanup", "sessions-read", "operator.admin", "<=2026.7"],
   ["sessions.reset", "sessions-mutations", "operator.admin", "<=2026.7"],
