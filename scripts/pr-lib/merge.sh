@@ -467,12 +467,11 @@ prepare_squash_merge_body() {
   printf '%s\n' "$body_file"
 }
 
-# Replacement approval names a reviewed head, not permission to reuse another
-# head's artifacts. Subshell isolation prevents sourced stamps from changing admission.
-verify_merge_replacement_artifacts() (
-  local pr="$1" head="$2"
+# Approval names a reviewed head, not permission to reuse another head's artifacts. Subshell isolation prevents sourced stamps from changing admission.
+verify_merge_head_artifacts() (
+  local pr="$1" head="$2" gate_contract="${3:-completed}"
   local PR_NUMBER="" PR_HEAD_SHA="" PR_HEAD_SHA_BEFORE=""
-  local PREP_HEAD_SHA="" LOCAL_PREP_HEAD_SHA="" LAST_VERIFIED_HEAD_SHA="" GATES_MODE=""
+  local PREP_HEAD_SHA="" LOCAL_PREP_HEAD_SHA="" LAST_VERIFIED_HEAD_SHA="" GATES_MODE="" HOSTED_GATES_TARGET_HEAD_SHA=""
   source .local/pr-meta.env || return 1
   [ "$PR_NUMBER" = "$pr" ] && [ "$PR_HEAD_SHA" = "$head" ] || return 1
   PR_NUMBER=""
@@ -485,11 +484,90 @@ verify_merge_replacement_artifacts() (
   [ "$(pr_git rev-parse "$LOCAL_PREP_HEAD_SHA^{tree}")" = "$(pr_git rev-parse "$head^{tree}")" ] || return 1
   PR_NUMBER=""
   source .local/gates.env || return 1
-  [ "$PR_NUMBER" = "$pr" ] && [ "$LAST_VERIFIED_HEAD_SHA" = "$LOCAL_PREP_HEAD_SHA" ] || return 1
+  [ "$PR_NUMBER" = "$pr" ] || return 1
+  if [ "$gate_contract" = github_pending ]; then
+    [ "$GATES_MODE" = github_pending ] && [ "$HOSTED_GATES_TARGET_HEAD_SHA" = "$head" ]
+    return
+  fi
+  [ "$LAST_VERIFIED_HEAD_SHA" = "$LOCAL_PREP_HEAD_SHA" ] || return 1
   case "$GATES_MODE" in
     full|docs_only|reused_docs_only|remote_testbox|remote_crabbox_aws|hosted_exact_or_recent_parent) ;;
     *) return 1 ;;
   esac
+)
+
+# Adoption records newly reviewed work under GitHub's live auto request. It does
+# not retry the retained dispatch or infer continuity from the old accepted bit.
+merge_adopt_head() (
+  local pr="$1" expected_outcome="$2" head="$3"
+  local MERGE_OUTCOME_REF MERGE_OUTCOME_OID MERGE_OUTCOME_RECORD MERGE_REPO
+  local MERGE_REPO_URL MERGE_REPO_HOST MERGE_REPO_NAME MERGE_OBSERVATION MERGE_TRANSPORT=graphql
+  local MERGE_ADMISSION_ACTIVE=false
+  [[ "$expected_outcome" =~ ^[0-9a-f]{40}$ ]] && [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 2
+  merge_outcome_init "$pr" || return 1
+  if [ "$MERGE_OUTCOME_OID" != "$expected_outcome" ] ||
+    ! printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -e --arg head "$head" '
+      .phase == "intent" and .accepted == true and .route == "auto" and .head != $head
+    ' >/dev/null; then
+    merge_outcome_stop "head adoption requires the exact accepted auto intent and a different reviewed head"; return 1
+  fi
+  merge_outcome_observe "$pr" || return 1
+  if ! printf '%s\n' "$MERGE_OBSERVATION" | jq -e --arg head "$head" --argjson record "$MERGE_OUTCOME_RECORD" '
+    (.transport // "graphql") == "graphql" and .pr.id == $record.prId and
+    .pr.state == "OPEN" and .pr.isDraft == false and .pr.headRefOid == $head and
+    .pr.baseRefName == $record.base and .pr.isInMergeQueue == false and .pr.isMergeQueueEnabled == false and
+    .pr.autoMergeRequest.mergeMethod == ($record.method | ascii_upcase) and
+    (.pr.autoMergeRequest.enabledAt | type == "string" and length > 0) and
+    (.pr.autoMergeRequest.enabledBy.id | type == "string" and length > 0)
+  ' >/dev/null; then
+    merge_outcome_stop "head adoption requires a live matching non-queue auto request at the reviewed head"; return 1
+  fi
+  review_artifact_preflight "$pr" true || return 1
+  enter_worktree "$pr" false || return 1
+  local artifacts=(.local/review.json .local/pr-meta.env .local/pr-meta.json .local/prep-context.env .local/prep.env .local/prep.md .local/gates.env)
+  local artifact captured actor next proof adoption_observation
+  adoption_observation="$MERGE_OBSERVATION"
+  for artifact in "${artifacts[@]}"; do
+    [ -f "$artifact" ] && [ ! -L "$artifact" ] || { merge_outcome_stop "head adoption requires regular review/prepare artifacts"; return 1; }
+  done
+  validate_review_artifact_data || return 1
+  # Reuse exact-head stamp validation, while leaving redispatch recovery's
+  # completed-gate requirement unchanged.
+  verify_merge_head_artifacts "$pr" "$head" github_pending || {
+    merge_outcome_stop "head adoption requires fresh exact-head review, prepare, and GitHub gate stamps"; return 1;
+  }
+  captured=$(pr_git hash-object --no-filters -- "${artifacts[@]}") || return 1
+  merge_verify "$pr" '' true || return 1
+  actor=$(pr_gh_writer_login "$MERGE_REPO_HOST") || return 1
+  [ -n "$actor" ] || return 1
+  [ "$captured" = "$(pr_git hash-object --no-filters -- "${artifacts[@]}")" ] &&
+    verify_merge_head_artifacts "$pr" "$head" github_pending || {
+      merge_outcome_stop "head adoption artifacts changed during verification"; return 1;
+    }
+  fetch_clawsweeper_review_comments "$pr" "$MERGE_REPO_NAME" "$MERGE_REPO_HOST" || return 1
+  # A merge or revoked/replaced auto request during verification must leave the
+  # original receipt intact. GitHub and the local CAS cannot be one transaction.
+  [ "$MERGE_TRANSPORT" = graphql ] || { merge_outcome_stop "head adoption requires GraphQL auto authorization"; return 1; }
+  MERGE_OBSERVATION="$adoption_observation"
+  MERGE_ADMISSION_ACTIVE=false
+  merge_outcome_stable "$pr" || return 1
+  [ "$MERGE_TRANSPORT" = graphql ] || { merge_outcome_stop "head adoption requires GraphQL auto authorization"; return 1; }
+  validate_clawsweeper_review_comments "$pr" "$head" || return 1
+  proof=$(printf '%s\n' "$captured" | jq -Rsc '
+    split("\n") | map(select(length > 0)) |
+    ["review.json","pr-meta.env","pr-meta.json","prep-context.env","prep.env","prep.md","gates.env"] as $names |
+    to_entries | map({key:$names[.key],value:.value}) | from_entries
+  ') || return 1
+  next=$(printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -c \
+    --arg head "$head" --arg localHead "$LOCAL_PREP_HEAD_SHA" --arg actor "$actor" \
+    --arg outcome "$expected_outcome" --argjson observed "$MERGE_OBSERVATION" \
+    --argjson proof "$proof" --argjson review "$CLAWSWEEPER_REVIEW_EVIDENCE" '
+    .adoption={outcome:$outcome,head:.head,actor:$actor,
+      autoMergeRequest:$observed.pr.autoMergeRequest,artifacts:$proof} |
+    .head=$head | .localHead=$localHead | .main=$observed.main | .clawsweeperReview=$review
+  ') || return 1
+  merge_outcome_write "$next" "${artifacts[@]}" || return 1
+  echo "Adopted reviewed head $head for PR #$pr under the existing auto request; not merged, no merge request sent."
 )
 
 merge_run() {
@@ -564,7 +642,7 @@ merge_run() {
       required_artifacts+=("$capture")
     done
     replacement_artifacts=$(pr_git hash-object --no-filters -- "${required_artifacts[@]}") || return 1
-    if ! verify_merge_replacement_artifacts "$pr" "$replacement_head"; then
+    if ! verify_merge_head_artifacts "$pr" "$replacement_head"; then
       merge_outcome_stop "replacement head requires matching PR, freshly reviewed prepare context, prepared tree, and completed gate stamps; re-run review and prepare"
       return 1
     fi

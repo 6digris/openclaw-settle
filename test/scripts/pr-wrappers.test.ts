@@ -629,6 +629,47 @@ describe("scripts/pr wrappers", () => {
     },
   );
 
+  itPosix("dispatches exact-head adoption under the native operation lock", () => {
+    const fixture = makeMismatchedWrapperRepo();
+    writeFileSync(
+      join(fixture.bin, "gh"),
+      `#!/bin/sh\nif [ "$1 $2" = "browse --no-browser" ]; then printf 'https://github.com/fixture/repo\\n'; else printf '{"base":{"ref":"main"}}\\n'; fi\n`,
+    );
+    writeFileSync(
+      join(fixture.canonical, "scripts/pr-lib/merge.sh"),
+      `merge_adopt_head() { git show-ref --verify --quiet refs/openclaw/pr-operation-locks/123 || return 91; printf '<%s>\\n' "$@"; }\nmerge_run() { exit 99; }\n`,
+    );
+    const oid = "a".repeat(40);
+    const head = "b".repeat(40);
+    for (const args of [
+      ["123", oid],
+      ["123", "HEAD", head],
+      ["0123", oid, head],
+      ["123", oid, head, "--auto-merge"],
+    ]) {
+      const result = spawnSync(
+        join(fixture.canonical, "scripts/pr"),
+        ["merge-adopt-head", ...args],
+        { cwd: fixture.canonical, encoding: "utf8", env: fixture.env },
+      );
+      expect(result.status, result.stdout + result.stderr).toBe(2);
+    }
+    const result = spawnSync(
+      join(fixture.canonical, "scripts/pr"),
+      ["merge-adopt-head", "123", oid, head],
+      { cwd: fixture.canonical, encoding: "utf8", env: fixture.env },
+    );
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toBe(`<123>\n<${oid}>\n<${head}>\n`);
+    expect(
+      fixture.git(fixture.canonical, [
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/openclaw/pr-operation-locks/123",
+      ]).stdout,
+    ).toBe("");
+  });
+
   itPosix("rejects ambiguous body flags and keeps recovery confirmation mandatory", () => {
     const fixture = makeMismatchedWrapperRepo();
     for (const args of [
@@ -761,7 +802,7 @@ describe("scripts/pr wrappers", () => {
     expect(result.stderr).not.toContain("Refusing to silently substitute");
   });
 
-  it.each(["prepare-run", "merge-recover"])(
+  it.each(["prepare-run", "merge-recover", "merge-adopt-head"])(
     "routes mismatched %s to the canonical wrapper despite opt-in",
     (command) => {
       const fixture = makeMismatchedWrapperRepo();
@@ -775,6 +816,7 @@ describe("scripts/pr wrappers", () => {
           command,
           "123",
           ...(command === "merge-recover" ? ["a".repeat(40), "--confirmed-operator-recovery"] : []),
+          ...(command === "merge-adopt-head" ? ["a".repeat(40), "b".repeat(40)] : []),
         ],
         { cwd: fixture.linked, encoding: "utf8", env: fixture.env },
       );

@@ -196,7 +196,11 @@ function fixture(
       isDraft: false,
       author: { login: "fixture-contributor", __typename: "User" },
       mergeCommit: null as { oid: string } | null,
-      autoMergeRequest: null as { mergeMethod: string } | null,
+      autoMergeRequest: null as {
+        mergeMethod: string;
+        enabledAt?: string;
+        enabledBy?: { id: string };
+      } | null,
       isInMergeQueue: false,
       isMergeQueueEnabled: false,
       mergeable: "MERGEABLE",
@@ -275,6 +279,7 @@ function fixture(
     admin: false,
     audit: false,
     gates: "pass",
+    pendingGate: false,
     ciExit: 0,
     duringChecks: null as null | { head?: string; artifact?: string; bodyPath?: string },
     review: true,
@@ -466,7 +471,7 @@ else if(args[0]==="pr"&&args[1]==="checks") {
   if(s.duringChecks?.bodyPath) fs.writeFileSync(s.duringChecks.bodyPath,"Changed later");
   if(s.duringChecks?.head) s.pr.headRefOid=s.duringChecks.head;
   if(s.duringChecks?.artifact) fs.appendFileSync(process.env.FIXTURE_REPO+"/.worktrees/pr-123/.local/"+s.duringChecks.artifact,"\\n# changed during checks\\n");
-  out([{name:"CI",bucket:s.gates,state:s.gates==="pass"?"SUCCESS":"FAILURE"}]);}
+  out([{name:s.pendingGate?"openclaw/ci-gate":"CI",bucket:s.gates,state:s.gates==="pass"?"SUCCESS":s.gates==="pending"?"PENDING":"FAILURE"}]);}
 else if(args[0]==="pr"&&args[1]==="view") {
   const fields=args[args.indexOf("--json")+1].split(",");
   if(fields.includes("headRefName")&&!fields.includes("headRefOid")) fail("missing live cleanup metadata");
@@ -632,7 +637,9 @@ pr_git() {
 export FIXTURE_LEADER="$$"
 acquire_pr_operation_lock 123
 begin_pr_operation_validation_phase
-if [ -n "\${5:-}" ]; then
+if [ -n "\${7:-}" ]; then
+  merge_adopt_head 123 "$7" "$3"
+elif [ -n "\${5:-}" ]; then
   merge_complete 123 "$5"
 else
   merge_run 123 "\${1:-false}" "\${2:-}" "\${3:-}" "\${4:-}" "\${6:-}"
@@ -669,6 +676,7 @@ fi
     bodyPath = "",
     completionOid = "",
     legacyDirectory = "",
+    adoptionOid = "",
   ) => {
     const result = spawnSync(
       nodeExecutable,
@@ -682,6 +690,7 @@ fi
         bodyPath,
         completionOid,
         legacyDirectory,
+        adoptionOid,
       ],
       {
         cwd,
@@ -791,6 +800,8 @@ fi
     save,
     run,
     complete: (oid: string) => run(false, repo, "squash", "", "", "", oid),
+    adopt: (oid: string, nextHead: string) =>
+      run(false, repo, "squash", "", nextHead, "", "", "", oid),
     recover,
     advance,
     record,
@@ -3267,6 +3278,136 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     expect(done.status, done.output).toBe(0);
     expect(f.state().mutations).toBe(1);
   });
+  it.each([
+    "none",
+    "stale outcome",
+    "stale review",
+    "stale review metadata",
+    "stale prep",
+    "missing auto",
+    "different method",
+    "queue",
+    "failed gate",
+    "changed artifact",
+    "merged during verification",
+    "changed auto authority",
+  ])("adopts a reviewed auto head without dispatch: %s", (fault) => {
+    const f = fixture();
+    f.save({ ...f.state(), mode: "pending", pr: { ...f.state().pr, mergeStateStatus: "BEHIND" } });
+    const first = f.run(true);
+    expect(first.status, first.output).toBe(0);
+    const previousOid = f.git(["rev-parse", outcomeRef]);
+    const previous = f.record();
+    const captures = f.captures();
+    const previousReview = ["review.json", "pr-meta.json"].map(
+      (name) => [name, readFileSync(join(f.worktree, ".local", name), "utf8")] as const,
+    );
+    const replacement = f.replacePreparedHead();
+    writeFileSync(
+      join(f.worktree, ".local/gates.env"),
+      `PR_NUMBER=123\nGATES_MODE=github_pending\nHOSTED_GATES_TARGET_HEAD_SHA=${replacement}\n`,
+    );
+    const auto = {
+      mergeMethod: "SQUASH",
+      enabledAt: "2026-09-21T05:10:11Z",
+      enabledBy: { id: "operator-id" },
+    };
+    const next = f.state();
+    next.pendingGate = true;
+    next.gates = fault === "failed gate" ? "fail" : "pending";
+    next.pr.autoMergeRequest = fault === "missing auto" ? null : auto;
+    if (fault === "different method") {
+      next.pr.autoMergeRequest = { ...auto, mergeMethod: "MERGE" };
+    }
+    if (fault === "queue") {
+      next.pr.isInMergeQueue = true;
+    }
+    if (fault === "stale review") {
+      next.ready = false;
+    }
+    if (fault === "stale review metadata") {
+      for (const [name, contents] of previousReview) {
+        writeFileSync(join(f.worktree, ".local", name), contents);
+      }
+    }
+    if (fault === "stale prep") {
+      writeFileSync(
+        join(f.worktree, ".local/prep-context.env"),
+        `PR_NUMBER=123\nPR_HEAD_SHA_BEFORE=${f.head}\n`,
+      );
+    }
+    if (fault === "changed artifact") {
+      next.duringChecks = { artifact: "prep.md" };
+    }
+    if (fault === "merged during verification") {
+      next.observations = [
+        {},
+        { pr: { state: "MERGED", mergeCommit: { oid: replacement }, autoMergeRequest: null } },
+      ];
+    }
+    if (fault === "changed auto authority") {
+      next.observations = [
+        {},
+        { pr: { autoMergeRequest: { ...auto, enabledAt: "2026-09-21T06:00:00Z" } } },
+      ];
+    }
+    f.save(next);
+    if (fault === "none") {
+      const strict = f.run(true);
+      expect(strict.status, strict.output).toBe(1);
+      expect(strict.output).toContain("PR identity/head/base drift");
+      expect(f.git(["rev-parse", outcomeRef])).toBe(previousOid);
+      f.recover();
+    }
+    const result = f.adopt(fault === "stale outcome" ? f.base : previousOid, replacement);
+    expect(result.status, result.output).toBe(fault === "none" ? 0 : 1);
+    expect(f.state().mutations).toBe(1);
+    expect(f.state().posts).toBe(0);
+    expect(f.captures()).toEqual(captures);
+    if (fault !== "none") {
+      expect(f.git(["rev-parse", outcomeRef])).toBe(previousOid);
+      f.recover();
+      return;
+    }
+    expect(f.record()).toMatchObject({
+      head: replacement,
+      attempt: previous.attempt,
+      accepted: true,
+      adoption: {
+        outcome: previousOid,
+        head: f.head,
+        actor: "fixture-operator",
+        autoMergeRequest: auto,
+      },
+    });
+    expect(f.git(["show", `${previousOid}:outcome.json`])).toBe(JSON.stringify(previous));
+    f.git(["merge-base", "--is-ancestor", previousOid, outcomeRef]);
+    expect(f.git(["rev-parse", `${outcomeRef}:adoption-proof/review.json`])).toBe(
+      f.record().adoption.artifacts["review.json"],
+    );
+    const pending = f.run(true);
+    expect(pending.status, pending.output).toBe(0);
+    expect(pending.output).toContain("AUTO/QUEUE PENDING");
+    expect(f.state().mutations).toBe(1);
+    const landed = f.advance("reviewed replacement\n", "stable\n");
+    f.save({
+      ...f.state(),
+      pr: {
+        ...f.state().pr,
+        state: "MERGED",
+        mergeCommit: { oid: landed },
+        autoMergeRequest: null,
+      },
+    });
+    const reconciled = f.run(true);
+    expect(reconciled.status, reconciled.output).toBe(0);
+    expect(f.record()).toMatchObject({ phase: "merged", head: replacement, landed });
+    expect(f.git(["rev-parse", `${outcomeRef}:adoption-proof/review.json`])).toBe(
+      f.record().adoption.artifacts["review.json"],
+    );
+    expect(f.state().mutations).toBe(1);
+  });
+
   it.each([false, true])(
     "never cancels/rearms/falls back after ambiguous queue/auto=%s",
     (auto) => {

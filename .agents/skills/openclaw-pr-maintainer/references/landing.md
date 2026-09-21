@@ -85,7 +85,10 @@ watcher, poll `merge-run`, or repeatedly read checks. On a completion/failure
 notification or a later explicit status request, reconcile through `merge-run`
 and use the existing closeout below. GitHub's head precondition applies when
 the request is submitted; a collaborator push can leave auto-merge enabled.
-Treat a changed head as new review work, never as the original approved head.
+Treat a changed head as new review work, never as the original approved head. After fresh exact-head review and GitHub preparation, use
+`scripts/pr merge-adopt-head <pr> <retained-outcome-oid> <new-head-sha>`
+to retain that proof under a still-enabled auto request without sending another
+merge request. The command refuses queue requests or a changed remote outcome.
 
 When completed hosted evidence is specifically needed, use
 `OPENCLAW_TESTBOX=1 scripts/pr prepare-run <pr>` after CI is green, then ordinary

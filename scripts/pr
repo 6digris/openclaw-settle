@@ -70,7 +70,7 @@ pr_subcommand_classification() {
     ls | ci-dispatch)
       printf 'advisory\n'
       ;;
-    gc | lock-recover | review-init | review-checkout-main | review-checkout-pr | review-claim | review-guard | review-artifacts-init | review-validate-artifacts | review-tests | prepare-init | prepare-validate-commit | prepare-gates | prepare-push | prepare-sync-head | prepare-run | merge-verify | merge-run | merge-recover | merge-complete)
+    gc | lock-recover | review-init | review-checkout-main | review-checkout-pr | review-claim | review-guard | review-artifacts-init | review-validate-artifacts | review-tests | prepare-init | prepare-validate-commit | prepare-gates | prepare-push | prepare-sync-head | prepare-run | merge-verify | merge-run | merge-recover | merge-adopt-head | merge-complete)
       printf 'landing\n'
       ;;
     *) return 1 ;;
@@ -401,7 +401,7 @@ readonly canonical_repo_root
 
 is_main_only_pr_command() {
   case "$1" in
-    prepare-init | prepare-validate-commit | prepare-gates | prepare-push | prepare-sync-head | prepare-run | merge-verify | merge-run | merge-recover) return 0 ;;
+    prepare-init | prepare-validate-commit | prepare-gates | prepare-push | prepare-sync-head | prepare-run | merge-verify | merge-run | merge-recover | merge-adopt-head) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -480,6 +480,8 @@ Usage:
     Defaults to the retained head; replacement requires an explicitly approved full lowercase 40-character SHA,
     freshly authored exact-head review/preparation and completed CI proof. Never rebases automatically.
     Keeps prior evidence and reruns admission; requires the same method and no auto/queue/admin route.
+  scripts/pr merge-adopt-head <PR> <OUTCOME_OID> <HEAD_SHA>
+    Adopt freshly reviewed/prepared work under a still-enabled auto request; never dispatch a merge.
   scripts/pr merge-complete <PR> <OUTCOME_OID> --confirmed-operator-completion
     Finish a verified merge receipt after cleanup; never dispatches a merge or deletes resources.
     Posts a first completion comment only from merged; uncertain comment attempts are lookup-only.
@@ -572,6 +574,10 @@ main() {
       ;;
     review-tests)
       [ "$#" -ge 2 ] || { usage; exit 2; }
+      ;;
+    merge-adopt-head)
+      [ "$#" -eq 3 ] && is_canonical_pr_number "$1" &&
+        [[ "$2" =~ ^[0-9a-f]{40}$ ]] && [[ "$3" =~ ^[0-9a-f]{40}$ ]] || { usage; exit 2; }
       ;;
     merge-complete)
       [ "$#" -eq 3 ] && is_canonical_pr_number "$1" &&
@@ -747,6 +753,9 @@ main() {
       ;;
     merge-run | merge-recover)
       merge_run "$merge_pr" "$auto_merge" "$recovery_oid" "$replacement_head" "$body_path" "$legacy_directory"
+      ;;
+    merge-adopt-head)
+      merge_adopt_head "$1" "$2" "$3"
       ;;
     merge-complete)
       merge_complete "$1" "$2"

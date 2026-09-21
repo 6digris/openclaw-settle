@@ -170,6 +170,16 @@ merge_outcome_load_local() {
         (.prId | type == "string" and length > 0) and (.head | oid) and (.main | oid) and
         (if has("localHead") then (.localHead | oid) else true end) and
         (.attempt | attempt) and recovery and
+        (if has("adoption") then . as $record | .adoption |
+          keys == ["actor","artifacts","autoMergeRequest","head","outcome"] and
+          (.outcome | oid) and (.head | oid) and .head != $record.head and
+          (.actor | type == "string" and length > 0) and
+          (.artifacts | keys == ["gates.env","pr-meta.env","pr-meta.json","prep-context.env","prep.env","prep.md","review.json"] and all(.[]; oid)) and
+          (.autoMergeRequest.mergeMethod == ($record.method | ascii_upcase)) and
+          (.autoMergeRequest.enabledAt | type == "string" and length > 0) and
+          (.autoMergeRequest.enabledBy.id | type == "string" and length > 0) and
+          $record.route == "auto" and $record.accepted == true
+         else true end) and
         (if has("legacyRefusal") then (has("recovery") | not) and (.legacyRefusal |
           keys == ["actor","files","head","kind","preparedBase"] and
           .kind == "gh-2.98-pre-dispatch-refusal" and (.actor | type == "string" and length > 0) and
@@ -207,6 +217,24 @@ merge_outcome_load_local() {
       local_tree=$(GIT_NO_LAZY_FETCH=1 pr_git rev-parse "$local_head^{tree}") || return 1
       head_tree=$(GIT_NO_LAZY_FETCH=1 pr_git rev-parse "$head^{tree}") || return 1
       [ "$local_tree" = "$head_tree" ] || { merge_outcome_stop "local and hosted prepared trees differ"; return 1; }
+    fi
+    if printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -e 'has("adoption")' >/dev/null; then
+      retained=$(printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -r .adoption.outcome)
+      if ! GIT_NO_LAZY_FETCH=1 pr_git merge-base --is-ancestor "$retained" "$MERGE_OUTCOME_OID" ||
+        ! GIT_NO_LAZY_FETCH=1 pr_git show "$retained:outcome.json" | jq -e --argjson next "$MERGE_OUTCOME_RECORD" '
+          .phase == "intent" and .accepted == true and .route == "auto" and
+          .repo == $next.repo and .pr == $next.pr and .prId == $next.prId and
+          .base == $next.base and .method == $next.method and .attempt == $next.attempt and
+          .head == $next.adoption.head
+        ' >/dev/null; then
+        merge_outcome_stop "invalid or unretained auto head adoption provenance"; return 1
+      fi
+      local adoption_name adoption_blob
+      while IFS=$'\t' read -r adoption_name adoption_blob; do
+        [ "$(GIT_NO_LAZY_FETCH=1 pr_git rev-parse "$MERGE_OUTCOME_OID:adoption-proof/$adoption_name")" = "$adoption_blob" ] || {
+          merge_outcome_stop "auto head adoption proof is not retained"; return 1;
+        }
+      done < <(printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -r '.adoption.artifacts | to_entries[] | [.key,.value] | @tsv')
     fi
     if printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -e 'has("recovery")' >/dev/null; then
       retained=$(printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -r .recovery.outcome)
@@ -247,8 +275,21 @@ merge_outcome_write() {
       [ "$blob" != "$(printf '%s\n' "$record" | jq -r --arg name "${capture##*/}" '.legacyRefusal.files[$name]')" ]; then
       merge_outcome_stop "legacy evidence changed before retention"; return 1
     fi
+    if printf '%s\n' "$record" | jq -e 'has("adoption")' >/dev/null &&
+      [ "$blob" != "$(printf '%s\n' "$record" | jq -r --arg name "${capture##*/}" '.adoption.artifacts[$name]')" ]; then
+      merge_outcome_stop "head adoption proof changed before retention"; return 1
+    fi
     capture_entries+="$(printf '100644 blob %s\t%s' "$blob" "${capture##*/}")"$'\n'
   done
+  if printf '%s\n' "$record" | jq -e 'has("adoption")' >/dev/null; then
+    local adoption_tree
+    if [ -n "$capture_entries" ]; then
+      adoption_tree=$(printf '%s' "$capture_entries" | pr_git mktree) || return 1
+    else
+      adoption_tree=$(GIT_NO_LAZY_FETCH=1 pr_git rev-parse "$MERGE_OUTCOME_OID:adoption-proof") || return 1
+    fi
+    entries+=$'\n'"$(printf '040000 tree %s\tadoption-proof' "$adoption_tree")"
+  fi
   if printf '%s\n' "$record" | jq -e 'has("legacyRefusal")' >/dev/null; then
     if [ -n "$MERGE_OUTCOME_OID" ]; then
       legacy_tree=$(GIT_NO_LAZY_FETCH=1 pr_git rev-parse "$MERGE_OUTCOME_OID:legacy-refusal") || return 1
@@ -256,7 +297,7 @@ merge_outcome_write() {
       legacy_tree=$(printf '%s' "$capture_entries" | pr_git mktree) || return 1
     fi
     entries+=$'\n'"$(printf '040000 tree %s\tlegacy-refusal' "$legacy_tree")"
-  elif [ -n "$capture_entries" ]; then
+  elif [ -n "$capture_entries" ] && ! printf '%s\n' "$record" | jq -e 'has("adoption")' >/dev/null; then
     entries+=$'\n'"${capture_entries%$'\n'}"
   fi
   tree=$(printf '%s\n' "$entries" | pr_git mktree) || return 1
@@ -287,7 +328,7 @@ merge_outcome_read_remote() {
   else
     response=$(pr_gh_quota_read api graphql --hostname "$MERGE_REPO_HOST" -H 'Cache-Control: max-age=0' \
     -f owner="${MERGE_REPO_NAME%/*}" -f name="${MERGE_REPO_NAME#*/}" -F number="$1" \
-    -f 'query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){id databaseId url nameWithOwner ref(qualifiedName:"refs/heads/main"){target{oid}} pullRequest(number:$number){id number url state headRefOid baseRefName isDraft mergeCommit{oid} autoMergeRequest{mergeMethod} isInMergeQueue isMergeQueueEnabled mergeable mergeStateStatus}}}') || return 1
+    -f 'query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){id databaseId url nameWithOwner ref(qualifiedName:"refs/heads/main"){target{oid}} pullRequest(number:$number){id number url state headRefOid baseRefName isDraft mergeCommit{oid} autoMergeRequest{mergeMethod enabledAt enabledBy{id}} isInMergeQueue isMergeQueueEnabled mergeable mergeStateStatus}}}') || return 1
     if pr_gh_quota_exhausted "$response"; then
       response=$(merge_rest observe "$1") || return 1
     fi
