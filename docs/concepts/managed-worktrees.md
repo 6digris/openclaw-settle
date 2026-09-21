@@ -37,13 +37,74 @@ By default, OpenClaw stores managed checkouts under `<openclaw-state-dir>/worktr
 
 Use an absolute path on the Gateway host, `~` for the Gateway user's home directory, or a path beginning with `~/` for a folder inside it. Relative paths are rejected. The Gateway user must be able to create and write to the directory.
 
-This setting applies to all managed worktrees, including session, manual, and Workboard worktrees; there is no per-agent override. It changes checkout storage only. The shared state database, snapshots of provisioned ignored files, allocation limits, and cleanup lifecycle remain associated with the same OpenClaw state directory.
+This setting applies to all managed worktrees, including session, manual, and Workboard worktrees; there is no per-agent override. New private sandbox projections use `<worktreeRoot>/.projections/<worktree-id>/workspace`, separate from the canonical checkout namespace. Without an explicit root, projections keep their default `<openclaw-state-dir>/worktree-projections` location. The shared state database, snapshots of provisioned ignored files, allocation limits, and cleanup lifecycle remain associated with the same OpenClaw state directory.
 
 Changing `worktreeRoot` affects new allocations. Existing registered worktrees keep their recorded paths for reuse and cleanup, and removed worktrees restore to their original paths. OpenClaw does not move existing checkouts or snapshots when this setting changes. Keep their original storage available until those worktrees are no longer needed.
 
 Outside the default state-owned worktree directory, cleanup acts only on registered worktrees and acceleration templates. It leaves unrelated, unregistered folders in your custom location alone.
 
 See [Configuration reference](/gateway/config-runtime#worktreeroot) for the option's default and scope.
+
+## Relocate an existing worktree
+
+Relocation is an operator maintenance operation. Stop outside shells, editors,
+builds, and concurrent session, project, or configuration binding writers first.
+Native leases and locks on known sessions cannot prove that those writers have
+stopped. Retain a verified full backup covering the registry, source Git
+repository, checkout, and private projection before moving host storage.
+
+Inspect recorded ownership without retiring missing paths:
+
+```bash
+openclaw worktrees inventory
+openclaw worktrees preview-move <id> --destination-root /mnt/workspaces
+```
+
+The destination root must already exist on the same filesystem, belong to the
+Gateway account, and be protected from writes by other users. The initial
+implementation supports Linux and macOS; macOS destinations must have no extended
+ACL. Windows ACL admission, cross-filesystem transfers, submodules, nested
+repositories, and canonical repository-owner relocation are subsequent phases.
+Inventory retains and identifies those owners; it does not claim they were moved.
+Path-dependent dependency links and configured agent/project source roots also
+block this move. OpenClaw never reinstalls dependencies or rewrites their links.
+
+A successful preview returns an `observation`. Supply that exact value and one
+UUID operation ID when admitting the move:
+
+```bash
+openclaw worktrees move <id> --destination-root /mnt/workspaces \
+  --operation-id <uuid> --expected-observation <observation> \
+  --controlled-maintenance
+openclaw worktrees verify <uuid>
+```
+
+These commands print JSON. The move preserves the worktree ID, name, branch,
+index, dirty files, untracked files, and ignored contents. Its destination is
+`<destination-root>/<repo-fingerprint>/<name>`. An existing private projection
+moves to the separate `.projections` namespace after accepted changes settle and
+its owned runtimes retire. Session paths and the registry must agree before the
+receipt becomes `verified`. Existing destinations are refused. Git's native move
+is not an atomic no-overwrite primitive; controlled maintenance is required.
+
+The durable SQLite intent blocks run admission, removal, path retirement, and
+backup while the outcome is unresolved. A stale process lease does not clear it.
+After a lost reply, inspect and reuse the same operation ID and arguments. A
+verified receipt is replayed without another move. A successor can reconcile
+metadata only after the original executor recorded completed filesystem work,
+its process is proven stale, and the exact Git links and directory identities
+still match. Otherwise the outcome remains `recovery_required`; retain both
+paths, Git metadata, and the receipt for operator recovery. Do not mint another
+operation, create a path alias, run broad Git repair, or delete the intent.
+
+Full native backups include registered external checkouts, private projections,
+and their source repositories. `--no-include-workspace` omits those resources and
+is not a complete relocation recovery set. External dependency symlinks remain
+links; independently owned dependency stores need their own recovery policy.
+Native restore stages the archive without activating its recorded absolute
+paths. Place recovered resources at their recorded locations under maintenance
+before reopening the Gateway. Do not downgrade while a relocation is pending:
+older builds do not enforce its additive intent table.
 
 ## Filesystem acceleration
 
@@ -282,6 +343,10 @@ A branch at a shallow history boundary can still be snapshotted and restored. If
 
 ```bash
 openclaw worktrees list [--json]
+openclaw worktrees inventory
+openclaw worktrees preview-move <id> --destination-root <path>
+openclaw worktrees move <id> --destination-root <path> --operation-id <uuid> --expected-observation <sha256> --controlled-maintenance
+openclaw worktrees verify <uuid>
 openclaw worktrees create <repo-root> [--name <name>] [--base-ref <ref>] [--source-profile <name>]... [--json]
 openclaw worktrees remove <id> [--force | --if-lossless] [--json]
 openclaw worktrees restore <id> [--json]
@@ -296,16 +361,28 @@ Leave **Base branch** empty to fetch and use the remote default branch. Branch s
 
 ## Gateway methods
 
-| Method               | Purpose                                                                 |
-| -------------------- | ----------------------------------------------------------------------- |
-| `worktrees.list`     | List active and restorable worktree records.                            |
-| `worktrees.branches` | List local and remote branches of a repository for base-ref pickers.    |
-| `worktrees.create`   | Create or reuse a named managed worktree.                               |
-| `worktrees.remove`   | Snapshot and remove a worktree. Forced removals report `snapshotError`. |
-| `worktrees.restore`  | Restore a removed worktree from its snapshot.                           |
-| `worktrees.gc`       | Run idle, orphan, and retention cleanup now.                            |
+| Method                   | Purpose                                                                        |
+| ------------------------ | ------------------------------------------------------------------------------ |
+| `worktrees.list`         | List active and restorable worktree records.                                   |
+| `worktrees.inventory`    | Inspect recorded owners, projections, and relocation receipts without cleanup. |
+| `worktrees.move.preview` | Inspect a name-preserving same-filesystem relocation.                          |
+| `worktrees.move`         | Admit one previewed maintenance move or reconcile that same operation.         |
+| `worktrees.move.verify`  | Inspect the recorded outcome without filesystem repair.                        |
+| `worktrees.branches`     | List local and remote branches of a repository for base-ref pickers.           |
+| `worktrees.create`       | Create or reuse a named managed worktree.                                      |
+| `worktrees.remove`       | Snapshot and remove a worktree. Forced removals report `snapshotError`.        |
+| `worktrees.restore`      | Restore a removed worktree from its snapshot.                                  |
+| `worktrees.gc`           | Run idle, orphan, and retention cleanup now.                                   |
 
 `worktrees.list` requires `operator.read`. `worktrees.create` and `worktrees.branches` require `operator.write` for configured agent workspaces and registered projects; arbitrary host paths still require `operator.admin`. All creation disables repository Git hooks; write-scoped creation also skips `.openclaw/worktree-setup.sh`. Removing, restoring, and garbage-collecting worktrees remain admin-only. Branch listing reads existing refs only and never fetches, and remote-only branches come back remote-qualified (`origin/feature-a`) so every returned name resolves as a base ref. New Session can also request a typed repository status from this method; a plain directory or unavailable checkout returns no branches instead of forcing the UI to infer Git capability from an error string.
+
+Inventory and all relocation methods require current `operator.admin` authority.
+Inventory accepts an optional exact `owner: { ownerKind, ownerId? }` filter; it
+filters stored ownership and does not grant access. Trusted plugins use the
+existing `api.runtime.gateway.request(method, params)` seam with the same method
+authorization and caller-currentness checks. Plugin identity does not itself
+authorize a workspace move. Use the existing `sessions.create` worktree fields
+for session allocation; no separate plugin worktree registry is needed.
 
 ## Workboard workspaces
 

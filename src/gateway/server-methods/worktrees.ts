@@ -6,6 +6,10 @@ import {
   validateWorktreesCreateParams,
   validateWorktreesGcParams,
   validateWorktreesListParams,
+  validateWorktreesInventoryParams,
+  validateWorktreesMovePreviewParams,
+  validateWorktreesMoveParams,
+  validateWorktreesMoveVerifyParams,
   validateWorktreesRemoveParams,
   validateWorktreesRestoreParams,
 } from "../../../packages/gateway-protocol/src/index.js";
@@ -18,16 +22,40 @@ import {
 import type { ManagedWorktreeService } from "../../agents/worktrees/service.js";
 import { resolveRecordedProjectRoot } from "../../projects/project-registry.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
+import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { resolveWorkspacePathContainment } from "./workspace-path-containment.js";
 
 type WorktreeService = Pick<
   ManagedWorktreeService,
-  "create" | "gc" | "list" | "listRepositoryBranches" | "remove" | "restore"
+  | "create"
+  | "gc"
+  | "list"
+  | "listRepositoryBranches"
+  | "remove"
+  | "restore"
+  | "inventory"
+  | "previewMove"
+  | "move"
+  | "verifyMove"
 >;
 
 function invalidParams(respond: Parameters<GatewayRequestHandlers[string]>[0]["respond"]): void {
   respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "invalid worktrees parameters"));
+}
+
+function workspaceAdminGuard(options: Parameters<GatewayRequestHandlers[string]>[0]): () => void {
+  const authority = readGatewayRequestMutationAuthority(options);
+  const guard = () => {
+    authority.assertCurrent();
+    if (!options.client?.connect.scopes?.includes(ADMIN_SCOPE)) {
+      throw new Error(
+        "Workspace inventory and relocation require current operator.admin authority",
+      );
+    }
+  };
+  guard();
+  return guard;
 }
 
 async function resolveAuthorizedRepoRoot(
@@ -61,6 +89,49 @@ async function resolveAuthorizedRepoRoot(
 
 export function createWorktreesHandlers(service: WorktreeService): GatewayRequestHandlers {
   return {
+    "worktrees.inventory": async (options) => {
+      const { params, respond } = options;
+      if (!validateWorktreesInventoryParams(params)) {
+        return invalidParams(respond);
+      }
+      const assertCurrent = workspaceAdminGuard(options);
+      const result = await service.inventory(params.owner);
+      assertCurrent();
+      respond(true, result, undefined);
+    },
+    "worktrees.move.preview": async (options) => {
+      const { params, respond } = options;
+      if (!validateWorktreesMovePreviewParams(params)) {
+        return invalidParams(respond);
+      }
+      const assertCurrent = workspaceAdminGuard(options);
+      const result = await service.previewMove(params);
+      assertCurrent();
+      respond(true, result, undefined);
+    },
+    "worktrees.move": async (options) => {
+      const { params, respond } = options;
+      if (!validateWorktreesMoveParams(params)) {
+        return invalidParams(respond);
+      }
+      const assertCurrent = workspaceAdminGuard(options);
+      const result = await service.move(params, {
+        commitGuard: assertCurrent,
+        signal: options.signal,
+      });
+      assertCurrent();
+      respond(true, result, undefined);
+    },
+    "worktrees.move.verify": async (options) => {
+      const { params, respond } = options;
+      if (!validateWorktreesMoveVerifyParams(params)) {
+        return invalidParams(respond);
+      }
+      const assertCurrent = workspaceAdminGuard(options);
+      const result = await service.verifyMove(params.operationId);
+      assertCurrent();
+      respond(true, result, undefined);
+    },
     "worktrees.list": async ({ params, respond }) => {
       if (!validateWorktreesListParams(params)) {
         invalidParams(respond);

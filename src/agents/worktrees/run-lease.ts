@@ -15,6 +15,7 @@ import {
   listRegistryWorktrees,
   releaseWorktreeRunLeaseRow,
 } from "./registry.js";
+import { readWorktreeMoveReceipts } from "./relocation-store.js";
 import type { RunLeaseOwnerChecks } from "./run-lease-owner.js";
 import type { ManagedWorktreeRecord } from "./types.js";
 
@@ -159,6 +160,7 @@ export async function resolveWorktreeIdForPath(params: {
     return boundId;
   }
   const records = listRegistryWorktrees(env).filter((record) => record.removedAt === undefined);
+  const relocations = await readWorktreeMoveReceipts(env);
   if (records.length === 0) {
     return undefined;
   }
@@ -177,6 +179,28 @@ export async function resolveWorktreeIdForPath(params: {
       const base = bases.get(record.id);
       if (base && (real === base || real.startsWith(`${base}${path.sep}`))) {
         return record.id;
+      }
+    }
+    for (const relocation of relocations) {
+      const protectedPaths = [
+        relocation.plan.source.path,
+        relocation.plan.projection?.source.path,
+        ...(relocation.phase !== "verified"
+          ? [relocation.plan.destination, relocation.plan.projection?.destination]
+          : []),
+      ];
+      if (
+        protectedPaths.some(
+          (root) => root && (real === root || real.startsWith(`${root}${path.sep}`)),
+        )
+      ) {
+        if (relocation.phase === "verified") {
+          throw new Error(
+            "Workspace moved; resolve its current registered path before starting a run",
+          );
+        }
+        // A moved-but-uncommitted checkout must never fall through as unmanaged.
+        return relocation.worktreeId;
       }
     }
   }
@@ -240,12 +264,21 @@ function ensureExitCleanupRegistered(): void {
 
 export async function acquireWorktreeRunLease(
   id: string,
-  opts: { env?: NodeJS.ProcessEnv; exclusive?: true } = {},
+  opts: {
+    env?: NodeJS.ProcessEnv;
+    exclusive?: true;
+    candidatePaths?: Array<string | undefined>;
+  } = {},
 ): Promise<WorktreeRunLease> {
   const env = opts.env ?? process.env;
   ensureExitCleanupRegistered();
   // Retry any cleanup a prior run could not finish before starting a new one.
   await drainPendingLeaseCleanups();
+  const candidatePaths = await Promise.all(
+    (opts.candidatePaths ?? [])
+      .filter((value): value is string => Boolean(value))
+      .map(realpathOrSelf),
+  );
   const token = randomUUID();
   const pid = process.pid;
   const startTime = resolveSelfStartTime(pid);
@@ -257,6 +290,7 @@ export async function acquireWorktreeRunLease(
     now: Date.now(),
     checks: ownerChecks,
     ...(opts.exclusive ? { exclusive: true } : {}),
+    candidatePaths,
   });
   const cleanup: LeaseCleanup = {
     env,

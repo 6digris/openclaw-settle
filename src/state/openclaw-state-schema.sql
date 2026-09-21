@@ -1860,6 +1860,23 @@ CREATE TABLE IF NOT EXISTS worktree_provisioned_file_chunks (
   PRIMARY KEY (worktree_id, path, chunk_index)
 ) STRICT;
 
+-- An unresolved filesystem effect must outlive PID leases and cannot cascade away.
+-- Completed operation IDs remain replay receipts for the owning worktree lifecycle.
+CREATE TABLE IF NOT EXISTS worktree_relocations (
+  operation_id TEXT NOT NULL PRIMARY KEY,
+  worktree_id TEXT NOT NULL,
+  executor TEXT NOT NULL,
+  executor_pid INTEGER NOT NULL,
+  executor_start_time INTEGER,
+  filesystem_settled INTEGER NOT NULL DEFAULT 0 CHECK (filesystem_settled IN (0, 1)),
+  phase TEXT NOT NULL CHECK (phase IN ('admitted', 'moving', 'moved', 'verified', 'recovery_required')),
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  plan_json TEXT NOT NULL CHECK (json_valid(plan_json) AND length(plan_json) <= 1048576),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  reason TEXT CHECK (reason IS NULL OR length(reason) <= 500)
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS worktree_templates (
   cache_key TEXT NOT NULL PRIMARY KEY,
   id TEXT NOT NULL UNIQUE,

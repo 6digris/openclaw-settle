@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { listAgentIds, resolveAgentDir } from "../agents/agent-scope-config.js";
+import { readManagedWorktreeBackupInventory } from "../agents/worktrees/relocation-store.js";
 import {
   createConfigIO,
   resolveConfigPath,
@@ -92,6 +93,7 @@ type SkippedBackupAsset = {
 
 type BackupPlan = {
   configCapture?: BackupConfigCapture;
+  worktreeInventoryRevision?: string;
   stateDir: string;
   configPath: string;
   oauthDir: string;
@@ -637,6 +639,10 @@ async function resolveBackupPlanFromState(params: {
     configPath,
     oauthDir,
   }).workspaceDirs;
+  // Recorded locations outlive allocation-policy changes. Include their Git owner
+  // and private projections so an external worktree root remains recoverable.
+  const worktreeInventory = await readManagedWorktreeBackupInventory();
+  discoveredWorkspaceDirs.push(...worktreeInventory.roots);
   const agentRoots = await resolveBackupAgentRoots(discoverySnapshot.config);
   const pluginInventory = resolveActivatedPluginBackupInventory({
     config: discoverySnapshot.config,
@@ -652,7 +658,7 @@ async function resolveBackupPlanFromState(params: {
       discoveredWorkspaceDirs.push(resolveUserPath(sharedWorkspaceBase));
     }
   }
-  return await resolveBackupPlanFromPaths({
+  const plan = await resolveBackupPlanFromPaths({
     stateDir,
     configPath,
     oauthDir,
@@ -665,4 +671,7 @@ async function resolveBackupPlanFromState(params: {
     skillDiscoveryLimits: resolveSkillDiscoveryLimits(discoverySnapshot.config),
     nowMs: params.nowMs,
   });
+  // Carry the revision that selected these roots, rather than reopening the source
+  // before discovery validation or capturing a newer revision after planning.
+  return { ...plan, worktreeInventoryRevision: worktreeInventory.revision };
 }

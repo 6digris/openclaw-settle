@@ -84,6 +84,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "heartbeat-outcome-store.worker",
     distWorkerPath: "infra/heartbeat-outcome-store.worker.js",
   },
+  worktreeRelocationSessions: {
+    currentModuleUrl,
+    sourceWorkerName: "../agents/worktrees/relocation-sessions.worker",
+    distWorkerPath: "agents/worktrees/relocation-sessions.worker.js",
+  },
   sqliteStore: {
     currentModuleUrl,
     sourceWorkerName: "sqlite-store.worker",

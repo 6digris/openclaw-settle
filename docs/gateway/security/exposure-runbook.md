@@ -46,6 +46,13 @@ Record these before changing bind, proxy, Tailscale, or channel policy:
 - External credentials available to those agents.
 - Backup location for `~/.openclaw/openclaw.json` and credentials.
 
+Verify a restorable state backup and account for registered external workspace
+roots, projections, and repository owners. Follow
+[managed worktree](/concepts/managed-worktrees) maintenance and recovery
+requirements before relocating files; changing a root setting does not move
+existing workspaces. Preserve workspace recovery records and verify the restored
+state before reopening access.
+
 If more than one person can message the bot, treat this as shared delegated
 tool authority, not per-user host isolation.
 

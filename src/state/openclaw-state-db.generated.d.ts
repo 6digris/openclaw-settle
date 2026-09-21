@@ -1730,6 +1730,21 @@ export interface WorktreeProvisionedFileChunks {
   worktree_id: string;
 }
 
+export interface WorktreeRelocations {
+  created_at: number;
+  executor: string;
+  executor_pid: number;
+  executor_start_time: number | null;
+  filesystem_settled: Generated<number>;
+  operation_id: string;
+  phase: string;
+  plan_json: string;
+  reason: string | null;
+  revision: number;
+  updated_at: number;
+  worktree_id: string;
+}
+
 export interface WorktreeTemplates {
   backend: string;
   cache_key: string;
@@ -1891,6 +1906,7 @@ export interface DB {
   workspace_path_aliases: WorkspacePathAliases;
   workspace_setup_state: WorkspaceSetupState;
   worktree_provisioned_file_chunks: WorktreeProvisionedFileChunks;
+  worktree_relocations: WorktreeRelocations;
   worktree_templates: WorktreeTemplates;
   worktrees: Worktrees;
 }

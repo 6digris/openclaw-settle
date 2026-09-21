@@ -25081,6 +25081,56 @@ public struct WorktreeBranch: Codable, Sendable {
     }
 }
 
+public struct WorktreeMoveReceipt: Codable, Sendable {
+    public let operationid: String
+    public let worktreeid: String
+    public let phase: String
+    public let revision: Int
+    public let source: String
+    public let destination: String
+    public let projection: [String: AnyCodable]?
+    public let createdat: Int
+    public let updatedat: Int
+    public let reason: String?
+
+    public init(
+        operationid: String,
+        worktreeid: String,
+        phase: String,
+        revision: Int,
+        source: String,
+        destination: String,
+        projection: [String: AnyCodable]? = nil,
+        createdat: Int,
+        updatedat: Int,
+        reason: String? = nil)
+    {
+        self.operationid = operationid
+        self.worktreeid = worktreeid
+        self.phase = phase
+        self.revision = revision
+        self.source = source
+        self.destination = destination
+        self.projection = projection
+        self.createdat = createdat
+        self.updatedat = updatedat
+        self.reason = reason
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case operationid = "operationId"
+        case worktreeid = "worktreeId"
+        case phase
+        case revision
+        case source
+        case destination
+        case projection
+        case createdat = "createdAt"
+        case updatedat = "updatedAt"
+        case reason
+    }
+}
+
 public struct WorktreeRecord: Codable, Sendable {
     public let id: String
     public let name: String
@@ -25241,6 +25291,38 @@ public struct WorktreesGcResult: Codable, Sendable {
     }
 }
 
+public struct WorktreesInventoryParams: Codable, Sendable {
+    public let owner: [String: AnyCodable]?
+
+    public init(
+        owner: [String: AnyCodable]? = nil)
+    {
+        self.owner = owner
+    }
+}
+
+public struct WorktreesInventoryResult: Codable, Sendable {
+    public let worktrees: [WorktreeRecord]
+    public let relocations: [WorktreeMoveReceipt]
+    public let projections: [[String: AnyCodable]]
+    public let repositories: [[String: AnyCodable]]
+    public let unsupported: [String]
+
+    public init(
+        worktrees: [WorktreeRecord],
+        relocations: [WorktreeMoveReceipt],
+        projections: [[String: AnyCodable]],
+        repositories: [[String: AnyCodable]],
+        unsupported: [String])
+    {
+        self.worktrees = worktrees
+        self.relocations = relocations
+        self.projections = projections
+        self.repositories = repositories
+        self.unsupported = unsupported
+    }
+}
+
 public struct WorktreesListParams: Codable, Sendable {}
 
 public struct WorktreesListResult: Codable, Sendable {
@@ -25250,6 +25332,114 @@ public struct WorktreesListResult: Codable, Sendable {
         worktrees: [WorktreeRecord])
     {
         self.worktrees = worktrees
+    }
+}
+
+public struct WorktreesMoveParams: Codable, Sendable {
+    public let id: String
+    public let destinationroot: String
+    public let operationid: String
+    public let expectedobservation: String
+    public let controlledmaintenance: Bool
+
+    public init(
+        id: String,
+        destinationroot: String,
+        operationid: String,
+        expectedobservation: String,
+        controlledmaintenance: Bool)
+    {
+        self.id = id
+        self.destinationroot = destinationroot
+        self.operationid = operationid
+        self.expectedobservation = expectedobservation
+        self.controlledmaintenance = controlledmaintenance
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case destinationroot = "destinationRoot"
+        case operationid = "operationId"
+        case expectedobservation = "expectedObservation"
+        case controlledmaintenance = "controlledMaintenance"
+    }
+}
+
+public struct WorktreesMovePreviewParams: Codable, Sendable {
+    public let id: String
+    public let destinationroot: String
+
+    public init(
+        id: String,
+        destinationroot: String)
+    {
+        self.id = id
+        self.destinationroot = destinationroot
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case destinationroot = "destinationRoot"
+    }
+}
+
+public struct WorktreesMovePreviewResult: Codable, Sendable {
+    public let worktreeid: String
+    public let destination: String?
+    public let observation: String?
+    public let blockers: [String]
+    public let maintenancerequired: Bool
+
+    public init(
+        worktreeid: String,
+        destination: String? = nil,
+        observation: String? = nil,
+        blockers: [String],
+        maintenancerequired: Bool)
+    {
+        self.worktreeid = worktreeid
+        self.destination = destination
+        self.observation = observation
+        self.blockers = blockers
+        self.maintenancerequired = maintenancerequired
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case worktreeid = "worktreeId"
+        case destination
+        case observation
+        case blockers
+        case maintenancerequired = "maintenanceRequired"
+    }
+}
+
+public struct WorktreesMoveVerifyParams: Codable, Sendable {
+    public let operationid: String
+
+    public init(
+        operationid: String)
+    {
+        self.operationid = operationid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case operationid = "operationId"
+    }
+}
+
+public struct WorktreesMoveVerifyResult: Codable, Sendable {
+    public let receipt: WorktreeMoveReceipt
+    public let verified: Bool
+    public let problems: [String]
+
+    public init(
+        receipt: WorktreeMoveReceipt,
+        verified: Bool,
+        problems: [String])
+    {
+        self.receipt = receipt
+        self.verified = verified
+        self.problems = problems
     }
 }
 

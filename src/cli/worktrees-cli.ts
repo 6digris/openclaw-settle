@@ -26,6 +26,80 @@ export function registerWorktreesCli(program: Command): void {
     .description("Create, inspect, restore, and clean up managed worktrees");
 
   worktrees
+    .command("inventory")
+    .description("Inspect recorded workspaces and unresolved relocation without cleanup")
+    .action(async () => {
+      const { managedWorktrees } = await import("../agents/worktrees/service.js");
+      printJson(await managedWorktrees.inventory());
+    });
+
+  worktrees
+    .command("preview-move")
+    .description("Inspect a same-filesystem, name-preserving workspace relocation")
+    .argument("<id>")
+    .requiredOption("--destination-root <path>")
+    .action(async (id: string, options: { destinationRoot: string }) => {
+      const { managedWorktrees } = await import("../agents/worktrees/service.js");
+      printJson(
+        await managedWorktrees.previewMove({ id, destinationRoot: options.destinationRoot }),
+      );
+    });
+
+  worktrees
+    .command("move")
+    .description("Move one previewed workspace during operator-controlled maintenance")
+    .argument("<id>")
+    .requiredOption("--destination-root <path>")
+    .requiredOption(
+      "--operation-id <uuid>",
+      "Stable relocation operation ID; reuse after a lost response",
+    )
+    .requiredOption("--expected-observation <sha256>", "Exact preview observation")
+    .requiredOption(
+      "--controlled-maintenance",
+      "Confirm outside writers have stopped; native leases alone do not prove this",
+    )
+    .action(
+      async (
+        id: string,
+        options: {
+          destinationRoot: string;
+          operationId: string;
+          expectedObservation: string;
+          controlledMaintenance: boolean;
+        },
+      ) => {
+        const controlledMaintenance: unknown = options.controlledMaintenance;
+        if (controlledMaintenance !== true) {
+          throw new Error("Controlled maintenance is required");
+        }
+        const { managedWorktrees } = await import("../agents/worktrees/service.js");
+        const receipt = await managedWorktrees.move({
+          id,
+          ...options,
+          controlledMaintenance: true,
+        });
+        printJson(receipt);
+        if (receipt.phase !== "verified") {
+          process.exitCode = 1;
+        }
+      },
+    );
+
+  worktrees
+    .command("verify")
+    .description("Inspect an existing relocation; never replay or repair an uncertain effect")
+    .argument("<operationId>")
+    .action(async (operationId: string) => {
+      const { managedWorktrees } = await import("../agents/worktrees/service.js");
+      const result = await managedWorktrees.verifyMove(operationId);
+      printJson(result);
+      if (!result.verified) {
+        process.exitCode = 1;
+      }
+    });
+
+  worktrees
     .command("list")
     .description("List active and restorable managed worktrees")
     .option("--json", "Output JSON", false)

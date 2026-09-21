@@ -31,6 +31,7 @@ tasks.list tasks.get tasks.cancel taskSuggestions.list
 taskSuggestions.create taskSuggestions.accept taskSuggestions.dismiss environments.list
 environments.status worktrees.list worktrees.branches fs.listDir worktrees.create
 worktrees.remove worktrees.restore worktrees.gc agents.list agents.create agents.update
+worktrees.inventory worktrees.move.preview worktrees.move worktrees.move.verify
 agents.delete agents.files.list agents.files.get agents.files.set sessions.files.list
 sessions.files.get sessions.files.set sessions.files.reveal artifacts.list artifacts.get
 artifacts.download skills.status skills.library.list skills.library.read skills.library.save

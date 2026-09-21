@@ -101,6 +101,44 @@ afterEach(async () => {
 });
 
 describe("local sandbox workspace reconciliation", () => {
+  it.skipIf(process.platform === "win32")(
+    "rejects an external projection namespace alias before creating an outside directory",
+    async () => {
+      const worktreeRoot = path.join(await fs.realpath(root), "external-workspaces");
+      const outside = path.join(await fs.realpath(root), "outside-projections");
+      await fs.mkdir(worktreeRoot, { mode: 0o700 });
+      await fs.mkdir(outside, { mode: 0o700 });
+      await fs.symlink(outside, path.join(worktreeRoot, ".projections"));
+      await expect(
+        withLocalWorkspaceProjection({ ...owner, worktreeRoot }, (state) => state.prepare()),
+      ).rejects.toThrow("directory changed");
+      expect(await fs.readdir(outside)).toEqual([]);
+      expect(await fs.readFile(path.join(owner.worktree.path, "source.txt"), "utf8")).toBe(
+        "original\n",
+      );
+    },
+  );
+
+  it("places new private projections under worktreeRoot and retains their recorded location after a config change", async () => {
+    const configured = {
+      ...owner,
+      worktreeRoot: path.join(await fs.realpath(root), "external-workspaces"),
+    };
+    const projection = await withLocalWorkspaceProjection(configured, (state) => state.prepare());
+    expect(projection).toBe(
+      path.join(configured.worktreeRoot, ".projections", owner.worktree.id, "workspace"),
+    );
+    expect(
+      await withLocalWorkspaceProjection(
+        { ...configured, worktreeRoot: path.join(root, "different-root") },
+        (state) => state.prepare(),
+      ),
+    ).toBe(projection);
+    await expect(fs.lstat(path.join(root, "different-root"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it.runIf(process.env.OPENCLAW_TEST_LOCAL_PROJECTION_PODMAN === "1")(
     "edits and runs Git in a real required Podman sandbox across turns",
     async () => {

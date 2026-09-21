@@ -8,4 +8,5 @@ export type LocalWorkspaceOwner = {
   worktree: ManagedWorktreeRecord;
   assertCurrent: () => void;
   env?: NodeJS.ProcessEnv;
+  worktreeRoot?: string;
 };

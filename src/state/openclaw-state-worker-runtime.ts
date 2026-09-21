@@ -11,6 +11,10 @@ import {
 import { executeNativeHookRelayMutation } from "../agents/harness/native-hook-relay-store.worker.js";
 import { writeSubagentRunValuesInDatabase } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import { listRegistryWorktreesInDatabase } from "../agents/worktrees/registry-read.kernel.js";
+import {
+  isWorktreeRelocationCommand,
+  executeWorktreeRelocationCommand,
+} from "../agents/worktrees/relocation-dispatch.worker.js";
 import { listAuditEventsInDatabase } from "../audit/audit-event-read.kernel.js";
 import { executeAuditWriterCommand } from "../audit/audit-event-writer.worker.js";
 import { readClawInstallSchemaVersionRows } from "../claws/provenance-runtime-read.kernel.js";
@@ -154,6 +158,9 @@ export function executeSharedStateCommand(
       path: context.databasePath,
       env: getSqliteWorkerStateContext().environment,
     });
+  }
+  if (isWorktreeRelocationCommand(command)) {
+    return executeWorktreeRelocationCommand(command, context, open);
   }
   if (command.type === "agentDatabases.releaseExitedLease") {
     return executeAgentDatabaseCleanupCommand(

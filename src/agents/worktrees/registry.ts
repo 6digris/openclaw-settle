@@ -16,6 +16,7 @@ import {
   rowToRecord,
   WORKTREE_RECORD_COLUMNS,
 } from "./registry-read.kernel.js";
+import { assertNoWorktreeRelocation, assertWorktreeRunPathsCurrent } from "./relocation.kernel.js";
 import {
   collectLiveRunLeases,
   WORKTREE_REMOVING_LEASE_KEY,
@@ -397,6 +398,7 @@ export function updateRegistryWorktree(
   }
   runOpenClawStateWriteTransaction(
     ({ db }) => {
+      assertNoWorktreeRelocation(db, id);
       let update = kyselyFor(db).updateTable("worktrees").set(values).where("id", "=", id);
       // Busy/retained/failed outcomes are authoritative only for the lifecycle the
       // writer observed: the live condition blocks post-finalization overwrites, and
@@ -417,6 +419,7 @@ export function updateRegistryWorktree(
 export function deleteRegistryWorktree(env: NodeJS.ProcessEnv, id: string): void {
   runOpenClawStateWriteTransaction(
     ({ db }) => {
+      assertNoWorktreeRelocation(db, id);
       executeSqliteQuerySync(
         db,
         kyselyProvisionedFor(db)
@@ -439,6 +442,7 @@ export function retireMissingRegistryWorktree(
 ): ManagedWorktreeRecord | undefined {
   return runOpenClawStateWriteTransaction(
     ({ db }) => {
+      assertNoWorktreeRelocation(db, observed.id);
       // A path probe cannot retire a restored lifecycle or a rebound repository.
       const retired = executeSqliteQuerySync(
         db,
@@ -494,11 +498,13 @@ export function admitWorktreeRunLeaseRow(
     now: number;
     checks?: RunLeaseOwnerChecks;
     exclusive?: true;
+    candidatePaths?: readonly string[];
   },
 ): void {
   runOpenClawStateWriteTransaction(
     (database) => {
       const db = database.db;
+      assertNoWorktreeRelocation(db, params.worktreeId);
       const k = kyselyLeaseFor(db);
       const scope = worktreeRunLeaseScope(params.worktreeId);
       const record = executeSqliteQuerySync(
@@ -512,6 +518,12 @@ export function admitWorktreeRunLeaseRow(
       if (!record || record.removed_at != null) {
         throw new Error(`managed worktree was removed: ${worktreePath}`);
       }
+      assertWorktreeRunPathsCurrent(
+        db,
+        params.worktreeId,
+        record.path,
+        params.candidatePaths ?? [],
+      );
       const { removingToken, liveCount, exclusive } = collectLiveRunLeases(
         db,
         k,
@@ -562,6 +574,7 @@ export function claimWorktreeRemovalRow(
   runOpenClawStateWriteTransaction(
     (database) => {
       const db = database.db;
+      assertNoWorktreeRelocation(db, params.worktreeId);
       const k = kyselyLeaseFor(db);
       const scope = worktreeRunLeaseScope(params.worktreeId);
       const record = executeSqliteQuerySync(

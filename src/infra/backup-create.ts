@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { resolveDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
+import { readManagedWorktreeBackupInventory } from "../agents/worktrees/relocation-store.js";
 import {
   sealBackupResourceInventory,
   describeCapturedBackupSqliteSnapshots,
@@ -689,6 +690,14 @@ export async function createBackupArchive(
       );
     }
     try {
+      if (
+        plan.worktreeInventoryRevision !== undefined &&
+        (await readManagedWorktreeBackupInventory()).revision !== plan.worktreeInventoryRevision
+      ) {
+        throw new Error(
+          "Managed workspace locations changed during backup; archive was not published. Retry after relocation verification.",
+        );
+      }
       await publishPreparedBackupArchive({
         plan: publication,
         prepared: completedArchive,

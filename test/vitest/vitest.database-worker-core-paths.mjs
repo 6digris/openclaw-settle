@@ -47,6 +47,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/auto-reply/reply/agent-runner-required-maintenance.pending-input.test.ts",
   "src/agents/worktrees/empty-source.test.ts",
   "src/agents/worktrees/registry-read.test.ts",
+  "src/agents/worktrees/relocation.test.ts",
   "src/agents/worktrees/service-branches.test.ts",
   "src/agents/worktrees/service.acceleration.test.ts",
   "src/agents/worktrees/service.capacity.test.ts",

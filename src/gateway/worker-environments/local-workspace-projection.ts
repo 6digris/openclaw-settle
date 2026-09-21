@@ -1,18 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { withWorktreeGitConfig } from "../../agents/worktrees/checkout-git-config.js";
+import { admitWorktreeDirectoryPath } from "../../agents/worktrees/directory-admission.js";
 import { requireGit } from "../../agents/worktrees/git.js";
 import {
   getRegistryWorktree,
   findLiveRegistryWorktreeByPath,
 } from "../../agents/worktrees/registry.js";
+import { assertWorktreeMoveAvailable } from "../../agents/worktrees/relocation-store.js";
 import type { ManagedWorktreeRecord } from "../../agents/worktrees/types.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
-import { resolveStateDir } from "../../config/state-dir.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { withOpenClawStateLease } from "../../state/openclaw-state-lease.js";
@@ -21,6 +21,7 @@ import {
   admitLocalWorkspaceSourcePaths,
   selectLocalWorkspaceCanonicalPaths,
 } from "./local-workspace-inventory.js";
+import { projectionPath, assertOwnedDirectory } from "./local-workspace-projection-paths.js";
 import { localWorkspaceStore, type LocalWorkspaceProjection } from "./local-workspace-store.js";
 import type { LocalWorkspaceOwner } from "./local-workspace-types.js";
 import { AcceptedWorkspacePublicationIndeterminateError } from "./workspace-accepted-publication.js";
@@ -63,6 +64,7 @@ export async function withSettledLocalWorkspace<T>(
     retireRuntime?: boolean;
     restoreSnapshot?: boolean;
     finishRestore?: boolean;
+    relocationOperationId?: string;
   },
   operation: (custody?: LocalWorkspaceCustody) => Promise<T>,
 ): Promise<T> {
@@ -93,34 +95,38 @@ export async function withSettledLocalWorkspace<T>(
       }
     },
   };
-  return await withLocalWorkspaceProjection(owner, async (state, quiescence) => {
-    if (params.finishRestore) {
-      await state.finishRestore();
-    } else if (params.restoreSnapshot) {
-      await state.restoreSnapshot();
-    } else if (state.current().baseline_ref) {
-      await state.synchronize("canonical");
-      // Archive one accepted namespace, including canonical edits and deletions.
-      if (params.retireRuntime) {
-        await state.synchronize("projection");
+  return await withLocalWorkspaceProjection(
+    owner,
+    async (state, quiescence) => {
+      if (params.finishRestore) {
+        await state.finishRestore();
+      } else if (params.restoreSnapshot) {
+        await state.restoreSnapshot();
+      } else if (state.current().baseline_ref) {
+        await state.synchronize("canonical");
+        // Archive one accepted namespace, including canonical edits and deletions.
+        if (params.retireRuntime) {
+          await state.synchronize("projection");
+        }
       }
-    }
-    if (params.retireRuntime) {
-      await quiescence?.retire();
-    }
-    owner.assertCurrent();
-    return await operation(
-      state.current().baseline_ref
-        ? {
-            prepareArchive: state.prepareArchive,
-            canonicalPaths: state.canonicalPaths,
-            assertCurrent: () => {
-              state.current();
-            },
-          }
-        : undefined,
-    );
-  });
+      if (params.retireRuntime) {
+        await quiescence?.retire();
+      }
+      owner.assertCurrent();
+      return await operation(
+        state.current().baseline_ref
+          ? {
+              prepareArchive: state.prepareArchive,
+              canonicalPaths: state.canonicalPaths,
+              assertCurrent: () => {
+                state.current();
+              },
+            }
+          : undefined,
+      );
+    },
+    { relocationOperationId: params.relocationOperationId },
+  );
 }
 
 export async function withSettledLocalWorkspacePath<T>(
@@ -151,29 +157,6 @@ function assertBinding(row: LocalWorkspaceProjection, owner: LocalWorkspaceOwner
   }
 }
 
-function projectionPath(owner: LocalWorkspaceOwner) {
-  if (!/^[a-f0-9-]{36}$/u.test(owner.worktree.id)) {
-    throw new Error("Invalid managed worktree identity");
-  }
-  return path.join(
-    realpathSync(resolveStateDir(owner.env)),
-    "worktree-projections",
-    owner.worktree.id,
-    "workspace",
-  );
-}
-
-async function assertOwnedDirectory(directory: string) {
-  const stat = await fs.lstat(directory);
-  if (
-    !stat.isDirectory() ||
-    stat.isSymbolicLink() ||
-    (await fs.realpath(directory)) !== directory
-  ) {
-    throw new Error("Local sandbox workspace directory changed; preserved for recovery");
-  }
-}
-
 /** Every operation owns the same renewable, cross-process reconciliation lease. */
 export async function withLocalWorkspaceProjection<T>(
   owner: LocalWorkspaceOwner,
@@ -185,7 +168,7 @@ export async function withLocalWorkspaceProjection<T>(
       >
     >,
   ) => Promise<T>,
-  options: { provision?: boolean } = {},
+  options: { provision?: boolean; relocationOperationId?: string } = {},
 ) {
   return await withOpenClawStateLease(
     {
@@ -198,6 +181,11 @@ export async function withLocalWorkspaceProjection<T>(
       operationLabel: "workspace.local-reconciliation",
     },
     async (lease) => {
+      await assertWorktreeMoveAvailable(
+        owner.env ?? process.env,
+        owner.worktree.id,
+        options.relocationOperationId,
+      );
       const assertCurrent = () => {
         lease.assertOwned();
         owner.assertCurrent();
@@ -257,7 +245,11 @@ function projectionOperations(owner: LocalWorkspaceOwner, signal: AbortSignal) {
     }
     assertBinding(row, owner);
     if (
-      row.projection_path !== projectionPath(owner) ||
+      path.basename(row.projection_path) !== "workspace" ||
+      path.basename(path.dirname(row.projection_path)) !== owner.worktree.id ||
+      ![".projections", "worktree-projections"].includes(
+        path.basename(path.dirname(path.dirname(row.projection_path))),
+      ) ||
       store.revision(row.worktree_id) !== row.revision
     ) {
       throw new Error("Local workspace binding changed");
@@ -469,6 +461,8 @@ function projectionOperations(owner: LocalWorkspaceOwner, signal: AbortSignal) {
         assertCurrent: owner.assertCurrent,
       });
       owner.assertCurrent();
+      const selectedProjectionPath = await projectionPath(owner);
+      owner.assertCurrent();
       row = store.create(
         {
           worktree_id: owner.worktree.id,
@@ -476,7 +470,7 @@ function projectionOperations(owner: LocalWorkspaceOwner, signal: AbortSignal) {
           session_key: owner.sessionKey,
           session_id: owner.sessionId,
           lifecycle_revision: owner.lifecycleRevision,
-          projection_path: projectionPath(owner),
+          projection_path: selectedProjectionPath,
           base_commit: baseCommit,
           source_paths_json: sourcePaths,
           baseline_json: null,
@@ -494,8 +488,12 @@ function projectionOperations(owner: LocalWorkspaceOwner, signal: AbortSignal) {
     const selected = current();
     if (!selected.baseline_ref) {
       const parent = path.dirname(selected.projection_path);
-      await fs.mkdir(parent, { recursive: true, mode: 0o700 });
-      await assertOwnedDirectory(parent);
+      await admitWorktreeDirectoryPath({
+        root: path.dirname(path.dirname(parent)),
+        parent,
+        create: true,
+        assertDirectory: assertOwnedDirectory,
+      });
       current();
       // No runtime can use an uncommitted initial projection. Only this durable
       // reservation owns interrupted preparation; never recreate a ready checkout.
@@ -711,5 +709,6 @@ export function resolveLocalWorkspaceOwner(params: {
     worktree,
     assertCurrent,
     env,
+    worktreeRoot: params.cfg.worktreeRoot,
   };
 }

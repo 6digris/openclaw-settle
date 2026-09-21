@@ -1,6 +1,7 @@
 import type { AuthProfileRowRead, UserModelAuthProfile } from "../agents/auth-profiles/types.js";
 import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
 import type { SubagentRegistryWrite } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
+import type { WorktreeRelocationOperations } from "../agents/worktrees/relocation.types.js";
 import type { ManagedWorktreeRecord } from "../agents/worktrees/types.js";
 import type { AuditEventListQuery, AuditEventListPage } from "../audit/audit-event-types.js";
 import type { AuditWriterOperations } from "../audit/audit-event-writer.types.js";
@@ -75,6 +76,7 @@ import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
 export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   ExecAuthorizationWorkerOperations &
+  WorktreeRelocationOperations &
   AuditWriterOperations &
   NativeHookRelayStoreWorkerOperations &
   TelemetryWorkerOperations &

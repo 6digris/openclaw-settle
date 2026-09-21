@@ -71,6 +71,7 @@ import {
   finalizeWorktreeRemoval,
   hasLiveWorktreeRunLease,
 } from "./run-lease.js";
+import { enforceWorktreeCleanupLimits } from "./service-cleanup-policy.js";
 import { reconcileListedWorktrees } from "./service-list.js";
 import {
   canResetFailedWorktreeAdd,
@@ -705,6 +706,57 @@ export class ManagedWorktreeService {
     return await reconcileListedWorktrees(this.env, listRegistryWorktrees(this.env), this.now);
   }
 
+  /** Inventory never retires a missing path or substitutes current allocation policy. */
+  async inventory(owner?: { ownerKind: ManagedWorktreeOwnerKind; ownerId?: string }) {
+    const { readManagedWorktreeInventory, projectWorktreeMoveReceipt } =
+      await import("./relocation-store.js");
+    const inventory = await readManagedWorktreeInventory(this.env);
+    const records = inventory.worktrees.filter(
+      (record) =>
+        !owner || (record.ownerKind === owner.ownerKind && record.ownerId === owner.ownerId),
+    );
+    const ids = new Set(records.map((record) => record.id));
+    return {
+      worktrees: records,
+      relocations: inventory.relocations
+        .filter((row) => ids.has(row.worktreeId))
+        .map(projectWorktreeMoveReceipt),
+      projections: inventory.projections.filter((row) => ids.has(row.worktreeId)),
+      repositories: [...new Set(records.map((record) => record.repoRoot))]
+        .toSorted()
+        .map((repoRoot) => ({ path: repoRoot, relocation: "subsequent-phase" as const })),
+      unsupported: ["canonical-repository-owner", "submodules", "cross-filesystem"],
+    };
+  }
+
+  async previewMove(params: { id: string; destinationRoot: string }) {
+    const { previewWorktreeMove } = await import("./relocation.js");
+    return await previewWorktreeMove(
+      this.env,
+      this.getConfig?.() ?? {},
+      params.id,
+      params.destinationRoot,
+    );
+  }
+
+  async move(
+    params: import("./relocation.types.js").WorktreeMoveParams,
+    guard?: WorktreeMutationGuard,
+  ) {
+    const { moveWorktree } = await import("./relocation.js");
+    const { projectWorktreeMoveReceipt } = await import("./relocation-store.js");
+    return projectWorktreeMoveReceipt(
+      await moveWorktree(this.env, this.getConfig?.() ?? {}, params, guard),
+    );
+  }
+
+  async verifyMove(operationId: string) {
+    const { verifyWorktreeMove } = await import("./relocation.js");
+    const { projectWorktreeMoveReceipt } = await import("./relocation-store.js");
+    const proof = await verifyWorktreeMove(this.env, operationId);
+    return { ...proof, receipt: projectWorktreeMoveReceipt(proof.receipt) };
+  }
+
   /** Returns persisted worktree facts without probing paths or mutating lifecycle state. */
   listRegistryRecords = (): Promise<ManagedWorktreeRecord[]> => readRegistryWorktrees(this.env);
 
@@ -764,28 +816,36 @@ export class ManagedWorktreeService {
   }
 
   async acquire(id: string): Promise<ManagedWorktreeRecord> {
-    const record = this.requireLiveRecord(id);
-    await lockWorktreeForProcess(record);
-    const lastActiveAt = this.now();
-    updateRegistryWorktree(this.env, id, { lastActiveAt });
-    return { ...record, lastActiveAt };
+    return await this.withAllocationLease({}, async () => {
+      const { assertWorktreeMoveAvailable } = await import("./relocation-store.js");
+      await assertWorktreeMoveAvailable(this.env, id);
+      const record = this.requireLiveRecord(id);
+      await lockWorktreeForProcess(record);
+      const lastActiveAt = this.now();
+      updateRegistryWorktree(this.env, id, { lastActiveAt });
+      return { ...record, lastActiveAt };
+    });
   }
 
   async release(id: string): Promise<void> {
-    const record = getRegistryWorktree(this.env, id);
-    if (!record || record.removedAt !== undefined || !(await worktreePathExists(record.path))) {
-      return;
-    }
-    const state = await lockState(record);
-    if (state.kind === "live" && state.pid !== process.pid) {
-      return;
-    }
-    if (state.kind === "foreign") {
-      return;
-    }
-    if (state.kind !== "none") {
-      await unlockWorktree(record);
-    }
+    await this.withAllocationLease({}, async () => {
+      const { assertWorktreeMoveAvailable } = await import("./relocation-store.js");
+      await assertWorktreeMoveAvailable(this.env, id);
+      const record = getRegistryWorktree(this.env, id);
+      if (!record || record.removedAt !== undefined || !(await worktreePathExists(record.path))) {
+        return;
+      }
+      const state = await lockState(record);
+      if (state.kind === "live" && state.pid !== process.pid) {
+        return;
+      }
+      if (state.kind === "foreign") {
+        return;
+      }
+      if (state.kind !== "none") {
+        await unlockWorktree(record);
+      }
+    });
   }
 
   async remove(params: RemoveWorktreeParams): Promise<RemoveManagedWorktreeResult> {
@@ -1354,6 +1414,14 @@ export class ManagedWorktreeService {
   }
 
   async gc(params: ManagedWorktreeGcParams = {}): Promise<ManagedWorktreeGcResult> {
+    const { readWorktreeMoveReceipts } = await import("./relocation-store.js");
+    if (
+      (await readWorktreeMoveReceipts(this.env)).some((receipt) => receipt.phase !== "verified")
+    ) {
+      throw new Error(
+        "Workspace relocation is unresolved; cleanup retains all paths until verification",
+      );
+    }
     const now = this.now();
     const isLocked = createWorktreeLockPrefilter();
     let removed: string[] = [];
@@ -1401,7 +1469,20 @@ export class ManagedWorktreeService {
     } catch (error) {
       log.warn(`worktree template cleanup deferred: ${String(error)}`);
     }
-    removed = removed.concat(await this.enforceCleanupLimits(params, isLocked));
+    removed = removed.concat(
+      await enforceWorktreeCleanupLimits({
+        limits: params.limits ?? resolveWorktreeCleanupLimits(),
+        listWorktrees: () => listRegistryWorktrees(this.env),
+        isProtected: (record) =>
+          this.isProtectedFromAutoRemoval(record, isLocked, params.shouldProtectOwner),
+        remove: (record) =>
+          this.remove({
+            id: record.id,
+            reason: "limit-gc",
+            commitGuard: () => this.assertOwnerAllowsCleanup(record, params),
+          }),
+      }),
+    );
     let orphansDeleted = 0;
     let snapshotsPruned = 0;
     const expired = listRegistryWorktrees(this.env).filter(
@@ -1501,103 +1582,6 @@ export class ManagedWorktreeService {
     }
     const nested = await this.inspectCheckout(record, "nested-repository");
     return nested.retainedReason !== undefined;
-  }
-
-  /**
-   * Enforces optional count/size retention across all live managed worktrees.
-   * Manual worktrees count toward the totals but are never limit-evicted, so a
-   * limit can stay exceeded when only protected worktrees remain.
-   */
-  private async enforceCleanupLimits(
-    params: ManagedWorktreeGcParams,
-    isLocked: ReturnType<typeof createWorktreeLockPrefilter>,
-  ): Promise<string[]> {
-    const limits = params.limits ?? resolveWorktreeCleanupLimits();
-    if (limits.maxCount === undefined && limits.maxTotalSizeBytes === undefined) {
-      return [];
-    }
-    const live = listRegistryWorktrees(this.env).filter((record) => record.removedAt === undefined);
-    const sizes = new Map<string, number>();
-    let totalBytes = 0;
-    if (limits.maxTotalSizeBytes !== undefined) {
-      for (const record of live) {
-        try {
-          const bytes = await directorySizeBytes(record.path);
-          sizes.set(record.id, bytes);
-          totalBytes += bytes;
-        } catch (error) {
-          // Unmeasurable trees stay out of the size total, making it a lower
-          // bound: measured worktrees stay capped while no worktree is ever
-          // evicted off a bogus zero-byte reading. Aborting enforcement here
-          // instead would let one unreadable directory disable the whole cap;
-          // the count limit still bounds unmeasurable worktrees.
-          log.warn(`worktree size measurement failed for ${record.id}: ${String(error)}`);
-        }
-      }
-    }
-    let liveCount = live.length;
-    const overLimit = () =>
-      (limits.maxCount !== undefined && liveCount > limits.maxCount) ||
-      (limits.maxTotalSizeBytes !== undefined && totalBytes > limits.maxTotalSizeBytes);
-    if (!overLimit()) {
-      return [];
-    }
-    // Any concurrent removal (manual delete, run-end cleanup, competing gc)
-    // must shrink the accounted pressure before the next destructive step, so
-    // totals are recomputed from the registry per iteration. Sizes reuse the
-    // up-front measurements; worktrees created after them are too fresh to be
-    // eviction candidates in this pass.
-    const refreshTotals = () => {
-      const liveIds = new Set(
-        listRegistryWorktrees(this.env)
-          .filter((record) => record.removedAt === undefined)
-          .map((record) => record.id),
-      );
-      liveCount = liveIds.size;
-      if (limits.maxTotalSizeBytes !== undefined) {
-        totalBytes = 0;
-        for (const [id, bytes] of sizes) {
-          if (liveIds.has(id)) {
-            totalBytes += bytes;
-          }
-        }
-      }
-      return liveIds;
-    };
-    const removed: string[] = [];
-    const candidates = live
-      .filter((record) => record.ownerKind === "workboard" || record.ownerKind === "session")
-      .toSorted((a, b) => a.lastActiveAt - b.lastActiveAt);
-    for (const record of candidates) {
-      const liveIds = refreshTotals();
-      if (!overLimit()) {
-        break;
-      }
-      if (!liveIds.has(record.id)) {
-        continue;
-      }
-      try {
-        if (await this.isProtectedFromAutoRemoval(record, isLocked, params.shouldProtectOwner)) {
-          continue;
-        }
-        await this.remove({
-          id: record.id,
-          reason: "limit-gc",
-          commitGuard: () => this.assertOwnerAllowsCleanup(record, params),
-        });
-      } catch (error) {
-        log.warn(`cleanup limit removal failed for ${record.id}: ${String(error)}`);
-        continue;
-      }
-      removed.push(record.id);
-    }
-    refreshTotals();
-    if (overLimit()) {
-      log.warn(
-        `worktree cleanup limits still exceeded after evicting ${removed.length}; remaining worktrees are protected or manual`,
-      );
-    }
-    return removed;
   }
 
   private assertOwnerAllowsCleanup(

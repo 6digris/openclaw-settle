@@ -368,7 +368,11 @@ export async function prepareAgentCommandExecution(
     sessionEntry: sessionEntryRaw,
     candidatePaths: [resolvedCwd ?? workspaceDir, workspaceDir],
   });
-  const runLease = worktreeId ? await acquireWorktreeRunLease(worktreeId) : undefined;
+  const runLease = worktreeId
+    ? await acquireWorktreeRunLease(worktreeId, {
+        candidatePaths: [resolvedCwd ?? workspaceDir, workspaceDir],
+      })
+    : undefined;
   try {
     const { resolveAcpAgentWorkspaceProvisioningForTurn } =
       await import("../acp-workspace-provisioning.js");
