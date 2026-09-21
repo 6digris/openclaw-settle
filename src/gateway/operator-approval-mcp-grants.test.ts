@@ -22,7 +22,6 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
-import { ExecApprovalManager } from "./exec-approval-manager.js";
 import { createGatewayAuxHandlers } from "./server-aux-handlers.js";
 import { createPluginApprovalHandlers } from "./server-methods/plugin-approval.js";
 import type { GatewayRequestHandlerOptions } from "./server-methods/types.js";
@@ -94,8 +93,8 @@ async function requestGrant(
     isActive?: () => boolean;
     binding?: boolean;
   } = {},
+  aux = gateway(),
 ) {
-  const aux = gateway();
   const authority = claimAgentRunDelegatedAuthority({
     instanceId: "mcp-instance",
     runId: "mcp-run",
@@ -280,16 +279,17 @@ describe("gateway MCP tool grants", () => {
   it("waits for real registration before exposing a grant request", async () => {
     const entered = createDeferredCore();
     const release = createDeferredCore();
-    const register = ExecApprovalManager.prototype.register;
+    const aux = gateway();
+    const register = aux.pluginApprovalManager.register.bind(aux.pluginApprovalManager);
     const registration = vi
-      .spyOn(ExecApprovalManager.prototype, "register")
-      .mockImplementationOnce(async function (this: ExecApprovalManager, ...args) {
+      .spyOn(aux.pluginApprovalManager, "register")
+      .mockImplementationOnce(async (...args) => {
         entered.resolve();
         await release.promise;
-        return register.call(this, ...args);
+        return register(...args);
       });
     let settled = false;
-    const request = requestGrant();
+    const request = requestGrant({}, aux);
     void request.then(
       () => {
         settled = true;
