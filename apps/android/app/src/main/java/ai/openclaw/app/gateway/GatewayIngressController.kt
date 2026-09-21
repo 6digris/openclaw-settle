@@ -110,10 +110,12 @@ internal class GatewayIngressController(
   private class BrowserIntent(
     val id: UUID,
     val application: CloudflareAccessApplication,
-    val registration: Registration,
   ) {
     val canceled = AtomicBoolean(false)
     val participants = mutableSetOf<BrowserParticipant>()
+
+    // Caller withdrawal ends eligibility, not explicit-departure custody of a pending Store task.
+    val registrationOwners = mutableSetOf<Registration>()
 
     @Volatile var task: Deferred<CloudflareAccessSessionStore.Snapshot>? = null
   }
@@ -415,9 +417,11 @@ internal class GatewayIngressController(
 
   fun blocksAutomaticReconnect(stableId: String): Boolean =
     synchronized(lock) {
+      val intent = browserIntent
+      val participant = intent?.let { liveParticipantLocked(it, stableId) }
       registrations[stableId]?.ordinaryAdmission != true &&
         (
-          browserIntent?.registration?.endpoint?.stableId == stableId ||
+          (participant != null && browserIntent === intent) ||
             mutablePresentation.value.attention?.stableId == stableId ||
             leases[stableId]?.active?.get() == false
         )
@@ -492,13 +496,22 @@ internal class GatewayIngressController(
         (candidate === registration || !isRegisteredLocked(candidate))
     // Ordinary admission can rotate this profile's registration without canceling
     // its Store task. Explicit departure must also retire that obsolete generation.
-    if (!departed(intent.registration) && intent.participants.none { departed(it.registration) }) return null
+    if (intent.registrationOwners.none(::departed) && intent.participants.none { departed(it.registration) }) return null
+    intent.registrationOwners.removeAll(::departed)
     intent.participants.removeAll { departed(it.registration) }
     // A profile departure does not own a peer's shared task, including terminal
     // results whose waiters have not resumed. Only the last explicit owner cancels it.
     val participant = liveParticipantLocked(intent)
     if (browserIntent !== intent) return null
     if (participant == null) intent.canceled.set(true)
+    reconcileBrowserPresentationLocked(intent, participant)
+    return intent.takeIf { participant == null }
+  }
+
+  private fun reconcileBrowserPresentationLocked(
+    intent: BrowserIntent,
+    participant: BrowserParticipant?,
+  ) {
     val presentation = mutablePresentation.value
     publishLocked(
       attention =
@@ -509,7 +522,6 @@ internal class GatewayIngressController(
         },
       browserLaunch = presentation.browserLaunch.takeUnless { participant == null && it?.attemptId == intent.id },
     )
-    return intent.takeIf { participant == null }
   }
 
   private fun finishCancellation(
@@ -525,7 +537,7 @@ internal class GatewayIngressController(
             browserIntent = null
             true
           }
-        if (ownsAttempt) store.cancelSignIn(intent.registration.origin)
+        if (ownsAttempt) store.cancelSignIn(intent.application.origin)
       }
     }
   }
@@ -534,8 +546,10 @@ internal class GatewayIngressController(
     val id =
       synchronized(lock) {
         browserIntent
-          ?.takeIf { stableId == null || it.registration.endpoint.stableId == stableId }
-          ?.id
+          ?.takeIf { intent ->
+            stableId == null || intent.registrationOwners.any { it.endpoint.stableId == stableId } ||
+              intent.participants.any { it.registration.endpoint.stableId == stableId }
+          }?.id
       } ?: return
     cancel(id)
   }
@@ -741,12 +755,13 @@ internal class GatewayIngressController(
         val origin = ownedOrigin()
         // An acquired route owns even a failed raw probe. Its new origin need not
         // have a verified grant association yet; that metadata is never admission.
-        if (!ownsPresentationLocked() || registration?.ordinaryAdmission == true || browserIntent != null ||
-          mutablePresentation.value.attention?.let { it.stableId != stableId } == true ||
-          !callerIsCurrent {
+        val intent = browserIntent
+        if (!callerIsCurrent {
             origin?.let { store.requireAdmission(it, admissionCheckpoint) }
             isCurrent()
-          }
+          } || intent?.let(::isLiveIntentLocked) == true || browserIntent !== intent ||
+          !ownsPresentationLocked() || ownedRegistration() !== registration || registration?.ordinaryAdmission == true ||
+          mutablePresentation.value.attention?.let { it.stableId != stableId } == true
         ) {
           return
         }
@@ -788,6 +803,7 @@ internal class GatewayIngressController(
               browserIntent?.takeIf { isLiveIntentLocked(it) && it.application == application }?.let { intent ->
                 intent.task?.takeUnless { it.isCompleted }?.let { task ->
                   intent.participants.add(participant)
+                  intent.registrationOwners.add(registration)
                   joinedIntent = intent
                   intent to task
                 }
@@ -801,8 +817,9 @@ internal class GatewayIngressController(
           val intent =
             synchronized(lock) {
               checkRegistrationLocked(registration, isCurrent)
-              BrowserIntent(UUID.randomUUID(), application, registration).also {
+              BrowserIntent(UUID.randomUUID(), application).also {
                 it.participants.add(participant)
+                it.registrationOwners.add(registration)
                 joinedIntent = it
                 browserIntent = it
               }
@@ -823,6 +840,8 @@ internal class GatewayIngressController(
               }
             }
           intent.task = task
+          // Terminal tasks no longer need detached owners; attached waiters still own queued cancellation.
+          task.invokeOnCompletion { synchronized(lock) { intent.registrationOwners.clear() } }
           if (intent.canceled.get()) task.cancel()
           intent to task
         }
@@ -875,8 +894,14 @@ internal class GatewayIngressController(
         throw error
       }
     } finally {
-      // The Store owns authentication lifetime. Detaching a waiter only removes its browser eligibility.
-      synchronized(lock) { joinedIntent?.participants?.remove(participant) }
+      // Keep Store task custody for explicit Cancel, but project only live browser participants.
+      synchronized(lock) {
+        joinedIntent?.let { intent ->
+          intent.participants.remove(participant)
+          val current = liveParticipantLocked(intent)
+          if (browserIntent === intent) reconcileBrowserPresentationLocked(intent, current)
+        }
+      }
     }
   }
 
@@ -892,7 +917,7 @@ internal class GatewayIngressController(
       }
     }
     intent.task?.cancel()
-    store.cancelSignIn(intent.registration.origin)
+    store.cancelSignIn(intent.application.origin)
   }
 
   fun signOut(stableId: String): Deferred<Unit>? {
@@ -906,7 +931,7 @@ internal class GatewayIngressController(
         val registration = registrations[stableId]
         // Admission can run before or after revocation. Recapture here, retiring
         // only stale work and preserving a fresh browser intent or grant.
-        val intent = browserIntent?.takeIf { it.registration.origin == origin && !isLiveIntentLocked(it) }
+        val intent = browserIntent?.takeIf { it.application.origin == origin && !isLiveIntentLocked(it) }
         val task = intent?.task
         intent?.canceled?.set(true)
         if (intent != null) browserIntent = null
@@ -1044,19 +1069,28 @@ internal class GatewayIngressController(
     stableId: String,
     registration: Registration?,
     attention: GatewayAccessAttention? = mutablePresentation.value.attention,
-  ): Boolean =
-    store.isCurrent(retirement) && browserIntent == null &&
-      registrations[stableId] === registration && registration?.ordinaryAdmission != true &&
+  ): Boolean {
+    val intent = browserIntent
+    val presentation = mutablePresentation.value
+    val live = intent?.let(::isLiveIntentLocked) == true
+    return !live && browserIntent === intent && mutablePresentation.value === presentation &&
+      store.isCurrent(retirement) && registrations[stableId] === registration && registration?.ordinaryAdmission != true &&
       registry.entries.value.any { it.stableId == stableId && it.accessOrigin == retirement.origin.uri.toString() } &&
       attention?.let { it.stableId != stableId } != true
+  }
 
   private fun showRequired(
     registration: Registration,
     isCurrent: () -> Boolean,
   ) {
     synchronized(lock) {
+      val intent = browserIntent
+      val presentation = mutablePresentation.value
+      val live = intent?.let(::isLiveIntentLocked) == true
       checkRegistrationLocked(registration, isCurrent)
-      if (browserIntent == null) publishLocked(attention = requiredAttention(registration))
+      if (!live && browserIntent === intent && mutablePresentation.value === presentation) {
+        publishLocked(attention = requiredAttention(registration))
+      }
     }
   }
 
@@ -1069,14 +1103,18 @@ internal class GatewayIngressController(
 
   private fun isLiveIntentLocked(intent: BrowserIntent): Boolean = liveParticipantLocked(intent) != null
 
-  private fun liveParticipantLocked(intent: BrowserIntent): BrowserParticipant? {
+  private fun liveParticipantLocked(
+    intent: BrowserIntent,
+    stableId: String? = null,
+  ): BrowserParticipant? {
     if (browserIntent !== intent || intent.canceled.get()) return null
     // Caller predicates may reenter the owner; use a snapshot and recheck ownership after each predicate.
     return intent.participants.toList().firstOrNull { participant ->
-      callerIsCurrent {
-        participant.context.ensureActive()
-        participant.isCurrent()
-      } && isRegisteredLocked(participant.registration) && browserIntent === intent &&
+      (stableId == null || participant.registration.endpoint.stableId == stableId) &&
+        callerIsCurrent {
+          participant.context.ensureActive()
+          participant.isCurrent()
+        } && isRegisteredLocked(participant.registration) && browserIntent === intent &&
         !intent.canceled.get() && participant in intent.participants
     }
   }
