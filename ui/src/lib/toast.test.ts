@@ -478,21 +478,21 @@ describe("shared toast", () => {
     const host = await mountHost();
     const onDismiss = vi.fn();
     showToast({
-      title: "Design review",
+      title: html`<span>Alice mentioned you</span>`,
       message: "Please review the spacing.",
-      attribution: html`<span>Alice mentioned you</span>`,
       actionLabel: "View session",
       onAction: vi.fn(),
       durationMs: 5_000,
       onDismiss,
     });
     await host.updateComplete;
-    expect(host.querySelector(".app-toast__title")?.textContent).toBe("Design review");
+    expect(host.querySelector(".app-toast__title")?.textContent).toBe("Alice mentioned you");
+    expect(host.querySelector(".app-toast__title")?.hasAttribute("title")).toBe(false);
     expect(host.querySelector(".app-toast__message")?.textContent?.trim()).toBe(
       "Please review the spacing.",
     );
     const footer = host.querySelector(".app-toast__footer")!;
-    expect(footer.textContent).toContain("Alice mentioned you");
+    expect(footer.textContent?.trim()).toBe("View session");
     expect(footer.contains(host.querySelector(".app-toast__action"))).toBe(true);
     expect(host.querySelector(".app-toast__dismiss svg")).not.toBeNull();
     expect(host.querySelector(".app-toast__dismiss")?.textContent?.trim()).toBe("");

@@ -19,9 +19,7 @@ export type ToastOptions = {
    * instead of spelling out a settings path the toast then makes them find. */
   message: string | TemplateResult;
   /** A heading gives notifications a compact card with a separate action row. */
-  title?: string;
-  /** Secondary context beside the action, below a titled notification's message. */
-  attribution?: TemplateResult;
+  title?: string | TemplateResult;
   /** Retire transient notifications when their owning view or access changes. */
   signal?: AbortSignal;
   /** Positions a compact toast at the top center of the owning surface. */
@@ -290,7 +288,7 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
           }
         }}
       >
-        ${toast.title ? html`<strong class="app-toast__title" title=${toast.title}>${toast.title}</strong>` : nothing}
+        ${toast.title ? html`<strong class="app-toast__title" title=${typeof toast.title === "string" ? toast.title : nothing}>${toast.title}</strong>` : nothing}
         ${
           toast.icon
             ? html`<span class="app-toast__icon" aria-hidden="true">${toast.icon}</span>`
@@ -302,11 +300,8 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
           }</span
         >
         ${
-          toast.title && (toast.attribution || action !== nothing)
-            ? html`<div class="app-toast__footer">
-                ${toast.attribution ? html`<div class="app-toast__attribution">${toast.attribution}</div>` : nothing}
-                ${action}
-              </div>`
+          toast.title && action !== nothing
+            ? html`<div class="app-toast__footer">${action}</div>`
             : action
         }
         <button

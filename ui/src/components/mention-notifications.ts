@@ -47,27 +47,26 @@ class MentionNotifications extends OpenClawLightDomContentsElement {
           const abort = new AbortController();
           this.pending.set(mention.id, { mention, abort });
           showToast({
-            title: mention.sessionTitle,
-            message: html`<span
-              class="mention-toast__excerpt"
-              title=${mention.excerpt ?? ""}
-              dir="auto"
-              >${mention.excerpt ?? t("attention.mentions.noExcerpt")}</span
-            >`,
-            attribution: html`
-              <span class="mention-toast__sender-line">
-                <span class="mention-toast__sender" title=${mention.senderLabel}>
-                  <span class="mention-toast__avatar" aria-hidden="true">
-                    <openclaw-viewer-avatar
-                      .user=${{ id: mention.senderProfileId, identity: { type: "profile", id: mention.senderProfileId }, name: mention.senderLabel, avatarUrl: mention.senderAvatarUrl, watchedSessions: [] }}
-                      .markAsViewer=${false}
-                      variant="footer"
-                    ></openclaw-viewer-avatar>
-                  </span>
-                  <bdi class="mention-toast__name">${mention.senderLabel}</bdi>
-                </span>
-                <span class="mention-toast__reason">${t("attention.mentions.mentionedYou")}</span>
-              </span>
+            icon: html`<span class="mention-toast__avatar">
+              <openclaw-viewer-avatar
+                .user=${{ id: mention.senderProfileId, identity: { type: "profile", id: mention.senderProfileId }, name: mention.senderLabel, avatarUrl: mention.senderAvatarUrl, watchedSessions: [] }}
+                .markAsViewer=${false}
+                variant="footer"
+              ></openclaw-viewer-avatar>
+            </span>`,
+            title: html`<span class="mention-toast__sender-line">
+              <bdi class="mention-toast__name" title=${mention.senderLabel}
+                >${mention.senderLabel}</bdi
+              >
+              <span class="mention-toast__reason">${t("attention.mentions.mentionedYou")}</span>
+            </span>`,
+            message: html`
+              <span class="mention-toast__session" title=${mention.sessionTitle} dir="auto"
+                >${mention.sessionTitle}</span
+              >
+              <span class="mention-toast__excerpt" title=${mention.excerpt ?? ""} dir="auto"
+                >${mention.excerpt ?? t("attention.mentions.noExcerpt")}</span
+              >
             `,
             actionLabel: t("attention.mentions.viewSession"),
             onAction: () => {
