@@ -118,6 +118,10 @@ struct CloudflareAccessClientTests {
         "https://login.example.test/cdn-cgi/access/login/gateway.example.test?opaque=ignored",
         "/cdn-cgi/access/login?opaque=ignored", "../cdn-cgi/access/login",
         "/cdn-cgi/access/login-extra", "/%63dn-cgi/access/login",
+        "/other/../cdn-cgi/access/login", "https://login.example.test/other/../cdn-cgi/access/login",
+        "//login.example.test/other/../cdn-cgi/access/login",
+        "/cdn-cgi/access/login/%2e%2e/ordinary", "/cdn-cgi/access/login%2Fchild", "/cdn-cgi/access/login//child",
+        "../../../cdn-cgi/access/login",
     ], [false, true])
     func `login redirects discover signed metadata at the original gateway URL`(
         location: String,
@@ -163,6 +167,12 @@ struct CloudflareAccessClientTests {
         (302, ""), (302, "/login"), (302, "/cdn-cgi/access/login%ZZ"),
         (302, "/cdn-cgi/access/login\n"), (302, "?next=/cdn-cgi/access/login"),
         (401, "/cdn-cgi/access/login"),
+        (302, "/cdn-cgi/access/login/../ordinary"),
+        (302, "https://login.example.test/cdn-cgi/access/login/../ordinary"),
+        (302, "//login.example.test/cdn-cgi/access/login/../ordinary"),
+        (302, "/cdn-cgi//access/login"),
+        (302, "/other/%2e%2e/cdn-cgi/access/login"), (302, "../../../../ordinary"),
+        (302, "/other//../cdn-cgi/access/login"), (302, "/other/..//cdn-cgi/access/login"),
     ])
     func `non Access redirects and malformed locations remain ordinary`(status: Int, location: String) async throws {
         let origin = try CloudflareAccessTestTokens.application().origin

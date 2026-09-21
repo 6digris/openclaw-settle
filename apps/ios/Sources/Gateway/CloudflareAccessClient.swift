@@ -59,7 +59,7 @@ struct CloudflareAccessClient: Sendable {
            let location = response.value(forHTTPHeaderField: "Location"), !location.isEmpty,
            let target = URLComponents(string: location, encodingInvalidCharacters: false)?
                .url(relativeTo: responseURL)?.absoluteURL,
-               target.path.hasPrefix("/cdn-cgi/access/login")
+               target.standardized.path.hasPrefix("/cdn-cgi/access/login")
         {
             return true
         }
