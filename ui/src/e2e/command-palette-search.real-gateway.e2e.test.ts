@@ -19,6 +19,7 @@ import {
 import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.ts";
 import { createRequireRecord } from "../../../test/helpers/record.js";
 import { COMMUNITY_INVITE_KEY } from "../components/community-invite-state.ts";
+import { composerContentValue } from "../test-helpers/composer-editor.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
@@ -683,7 +684,9 @@ suite.define(() => {
           await expect
             .poll(() => archiveRequests(false).filter((metric) => metric.ok === true).length)
             .toBe(1);
-          await expect.poll(() => composer.textContent()).toBe("Keep this unsent shortcut draft");
+          await expect
+            .poll(() => composerContentValue(composer))
+            .toBe("Keep this unsent shortcut draft");
           expect(
             rpc.filter((metric) =>
               ["sessions.create", "chat.send", "agent"].includes(metric.method),

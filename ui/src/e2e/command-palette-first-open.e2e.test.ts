@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import type { ComposerEditor } from "../components/composer-editor.ts";
+import { composerContentValue } from "../test-helpers/composer-editor.ts";
 import { controlUiSessionUrl, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import {
   createControlUiE2eSuite,
@@ -55,7 +56,7 @@ suite.define(() => {
           .toBe(true);
         await page.keyboard.type("appearance");
         expect(await input.inputValue()).toBe("appearance");
-        expect(await composer.textContent()).toBe(foregroundDraft);
+        expect(await composerContentValue(composer)).toBe(foregroundDraft);
         expect(paletteModule.requests()).toBe(1);
       } finally {
         paletteModule.release();
@@ -137,7 +138,7 @@ suite.define(() => {
               end: element.selectionEnd,
             })),
           ).toEqual({ focused: true, start: typed.length, end: typed.length });
-          expect(await composer.textContent()).toBe(foregroundDraft);
+          expect(await composerContentValue(composer)).toBe(foregroundDraft);
           await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
           await page.keyboard.press("Escape");
           await expect
@@ -157,7 +158,7 @@ suite.define(() => {
               };
             }),
           ).toEqual({ start: 3, end: 12, direction: "backward" });
-          expect(await composer.textContent()).toBe(foregroundDraft);
+          expect(await composerContentValue(composer)).toBe(foregroundDraft);
           expect(page.url()).toBe(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
           expect(
             await page.evaluate(() =>
@@ -278,7 +279,7 @@ suite.define(() => {
         const loaded = page.locator("openclaw-command-palette .cmd-palette__input");
         await loaded.waitFor({ state: "visible" });
         expect(await loaded.inputValue()).toBe("");
-        expect(await composer.textContent()).toBe("Foreground draft");
+        expect(await composerContentValue(composer)).toBe("Foreground draft");
       } finally {
         paletteModule.release();
       }

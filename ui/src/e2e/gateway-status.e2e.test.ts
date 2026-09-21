@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
+import { composerContentValue } from "../test-helpers/composer-editor.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { controlUiSessionUrl, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
@@ -214,7 +215,7 @@ suite.define(() => {
         for (const message of ["First synthetic draft", "Second synthetic draft"]) {
           await composer.fill(message);
           await page.getByRole("button", { name: "Send message", exact: true }).click();
-          await expect.poll(() => composer.textContent()).toBe("");
+          await expect.poll(() => composerContentValue(composer)).toBe("");
         }
         const footer = page.locator(".sidebar-footer-bar");
         await expect.poll(() => page.locator(".chat-queue__item").count()).toBe(2);

@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
+import { composerContentValue } from "../test-helpers/composer-editor.ts";
 import {
   captureUiProof,
   createChatFlowE2eSuite,
@@ -63,9 +64,9 @@ async function transcriptSnapshot(page: Page) {
   return {
     messages: await page.locator(".chat-bubble").allTextContents(),
     queueRows: await page.locator(".chat-queue__item").count(),
-    draft: await page
-      .locator(".agent-chat__composer-combobox openclaw-composer-editor .cm-content")
-      .textContent(),
+    draft: await composerContentValue(
+      page.locator(".agent-chat__composer-combobox openclaw-composer-editor .cm-content"),
+    ),
   };
 }
 

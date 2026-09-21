@@ -1,7 +1,11 @@
 import path from "node:path";
 import { expect as expectBrowser } from "playwright/test";
 import { expect, it } from "vitest";
-import { composerValue, fillComposer } from "../test-helpers/composer-editor.ts";
+import {
+  composerValue,
+  fillComposer,
+  composerContentValue,
+} from "../test-helpers/composer-editor.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { defaultControlUiFeatureMethods } from "../test-helpers/control-ui-e2e.ts";
 import {
@@ -272,8 +276,12 @@ suite.define(() => {
       };
       await arrive(questionMessage, 2);
       await card.getByText(title, { exact: true }).waitFor();
-      expect(await composer.evaluate((element) => element === document.activeElement)).toBe(true);
-      expect(await composer.textContent()).toBe("Continue researching while I decide.");
+      expect(
+        await composer.evaluate(
+          (element) => element === (element.getRootNode() as ShadowRoot).activeElement,
+        ),
+      ).toBe(true);
+      expect(await composerContentValue(composer)).toBe("Continue researching while I decide.");
       const custom = card.getByRole("textbox", { name: `Your own answer for ${title}` });
       await custom.fill("Readers new to the project");
       await card.getByRole("button", { name: "Collapse question", exact: true }).click();
@@ -283,7 +291,11 @@ suite.define(() => {
       await expect.poll(() => expand.textContent()).toContain("2 unanswered questions");
       expect(await expand.textContent()).toContain(title);
       expect(await card.getByRole("textbox").count()).toBe(0);
-      expect(await composer.evaluate((element) => element === document.activeElement)).toBe(true);
+      expect(
+        await composer.evaluate(
+          (element) => element === (element.getRootNode() as ShadowRoot).activeElement,
+        ),
+      ).toBe(true);
 
       const blockingTitle = "Where should I save the completed summary?";
       const createdAtMs = Date.now();
@@ -327,7 +339,7 @@ suite.define(() => {
       expect(await custom.inputValue()).toBe("Readers new to the project");
       await card.getByRole("button", { name: "Skip", exact: true }).click();
       await card.waitFor({ state: "detached" });
-      expect(await composer.textContent()).toBe("Continue researching while I decide.");
+      expect(await composerContentValue(composer)).toBe("Continue researching while I decide.");
       const skipped = page.locator(".chat-thread .chat-question-summary");
       expect(await skipped.filter({ hasText: title }).textContent()).toContain("Skipped");
       expect(await skipped.filter({ hasText: secondTitle }).textContent()).toContain("Skipped");

@@ -24,3 +24,10 @@ export function composerDisabled(locator: Locator): Promise<boolean> {
 export async function composerEnabled(locator: Locator): Promise<boolean> {
   return !(await composerDisabled(locator));
 }
+
+/** Read the raw draft, not placeholder or chip presentation, from the editable shadow surface. */
+export function composerContentValue(locator: Locator): Promise<string> {
+  return locator.evaluate(
+    (element) => ((element.getRootNode() as ShadowRoot).host as ComposerEditor).value,
+  );
+}

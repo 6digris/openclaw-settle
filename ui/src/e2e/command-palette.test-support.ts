@@ -1,6 +1,7 @@
 import type { Locator, Page } from "playwright";
 import { expect } from "vitest";
 import type { ComposerEditor } from "../components/composer-editor.ts";
+import { composerContentValue } from "../test-helpers/composer-editor.ts";
 import type { ControlUiMockGatewayScenario } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiSessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
 import { controlUiSessionUrl } from "./new-session-page.test-support.ts";
@@ -125,7 +126,7 @@ export async function openFromForeground(page: Page, baseUrl: string) {
 
 export async function expectForegroundUnchanged(page: Page, composer: Locator, url: string) {
   expect(page.url()).toBe(url);
-  expect(await composer.textContent()).toBe(foregroundDraft);
+  expect(await composerContentValue(composer)).toBe(foregroundDraft);
   await expect
     .poll(() =>
       composer.evaluate((element) => {

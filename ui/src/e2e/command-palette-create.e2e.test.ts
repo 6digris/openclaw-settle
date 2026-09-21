@@ -2,6 +2,7 @@ import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Locator, Page } from "playwright";
 import { expect, it } from "vitest";
+import { composerContentValue } from "../test-helpers/composer-editor.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import {
   appearanceKey,
@@ -125,7 +126,7 @@ suite.define(() => {
       await capture("after-background-discovery");
       expect(await input.evaluate((element) => element.scrollTop)).toBe(0);
       expect(await input.inputValue()).toBe(prompt);
-      expect(await composer.textContent()).toBe(foregroundDraft);
+      expect(await composerContentValue(composer)).toBe(foregroundDraft);
       expect(page.url()).toBe(url);
       expect(await gateway.getRequests("sessions.create")).toEqual([]);
 
@@ -240,7 +241,7 @@ suite.define(() => {
           await input.press("Enter");
           expect(await input.inputValue()).toBe(prompt);
           expect(page.url()).toBe(url);
-          expect(await composer.textContent()).toBe(foregroundDraft);
+          expect(await composerContentValue(composer)).toBe(foregroundDraft);
           expect(await gateway.getRequests("sessions.create")).toEqual([]);
           expect(await gateway.getRequests("sessions.search")).toHaveLength(requestCount);
           expect(
@@ -391,7 +392,7 @@ suite.define(() => {
               element.selectionEnd,
             ]),
           ).toEqual([5, 11]);
-          expect(await composer.textContent()).toBe(foregroundDraft);
+          expect(await composerContentValue(composer)).toBe(foregroundDraft);
           expect(page.url()).toBe(url);
           expect(await gateway.getRequests("sessions.create")).toEqual([]);
         },
@@ -451,7 +452,7 @@ suite.define(() => {
             await input.waitFor({ state: "hidden" });
           }
           expect(page.url()).toBe(url);
-          expect(await composer.textContent()).toBe(foregroundDraft);
+          expect(await composerContentValue(composer)).toBe(foregroundDraft);
         } finally {
           module.release();
         }
@@ -710,7 +711,7 @@ suite.define(() => {
         await toast.waitFor({ state: "hidden" });
         expect(await input.inputValue()).toBe(prompt);
         expect(page.url()).toBe(url);
-        expect(await composer.textContent()).toBe(foregroundDraft);
+        expect(await composerContentValue(composer)).toBe(foregroundDraft);
         await input.press("ControlOrMeta+Enter");
         expect(await gateway.getRequests("sessions.create")).toHaveLength(1);
         const recovery = palette.getByRole("button", { name: "Open session", exact: true });
@@ -769,7 +770,7 @@ suite.define(() => {
       await expect.poll(() => error.textContent()).toContain("Fixture denied creation");
       expect(await input.inputValue()).toBe(prompt);
       expect(page.url()).toBe(url);
-      expect(await composer.textContent()).toBe(foregroundDraft);
+      expect(await composerContentValue(composer)).toBe(foregroundDraft);
       expect(await gateway.getRequests("sessions.create")).toHaveLength(1);
       await capture("creation-failure-retains-prompt");
       await expect.poll(() => start.isEnabled()).toBe(true);

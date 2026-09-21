@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { CONTROL_UI_BOOTSTRAP_CONFIG_PATH } from "../../../src/gateway/control-ui-bootstrap-contract.js";
+import { composerContentValue } from "../test-helpers/composer-editor.ts";
 import {
   createControlUiMockBootstrapConfig,
   createControlUiMockGatewayInitScript,
@@ -197,7 +198,9 @@ suite.define(() => {
         expect(targetUrl.searchParams.has("nav")).toBe(false);
         expect(sessionTab.url()).toBe(targetUrl.href);
         expect(page.url()).toBe(originalUrl);
-        expect(await composer.textContent()).toBe("Keep this unsent draft in the original tab");
+        expect(await composerContentValue(composer)).toBe(
+          "Keep this unsent draft in the original tab",
+        );
 
         await sessionTab.keyboard.press("ControlOrMeta+B");
         await expect.poll(() => sidebar.isVisible()).toBe(false);

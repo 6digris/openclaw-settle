@@ -1,5 +1,6 @@
 import path from "node:path";
 import { expect, it } from "vitest";
+import { composerContentValue } from "../test-helpers/composer-editor.ts";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
 import { expectRequestCountStable } from "./chat-flow.test-support.ts";
 import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
@@ -88,7 +89,7 @@ suite.define(() => {
         gateway,
         (params) => params.key === target.key && params.archived === false,
       );
-      await expect.poll(() => composer.textContent()).toBe("Preserve this unsent draft");
+      await expect.poll(() => composerContentValue(composer)).toBe("Preserve this unsent draft");
       const archiveRequests = (await gateway.getRequests("sessions.patch")).filter(
         (request) => typeof requireRecord(request.params).archived === "boolean",
       );
@@ -108,7 +109,7 @@ suite.define(() => {
           ),
         )
         .toBe(true);
-      expect(await newComposer.textContent()).toBe("");
+      expect(await composerContentValue(newComposer)).toBe("");
       expect(await gateway.getRequests("sessions.create")).toEqual([]);
       expect(await gateway.getRequests("chat.send")).toEqual([]);
       await captureUiProof(suite, page, "direct-new-session-after.png");
@@ -117,7 +118,7 @@ suite.define(() => {
       await captureUiProof(suite, page, "direct-session-shortcuts-help.png");
       await page.keyboard.press("Escape");
       await page.goBack();
-      await expect.poll(() => composer.textContent()).toBe("Preserve this unsent draft");
+      await expect.poll(() => composerContentValue(composer)).toBe("Preserve this unsent draft");
     } finally {
       await context.close();
     }
