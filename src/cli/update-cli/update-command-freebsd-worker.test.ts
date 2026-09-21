@@ -12,7 +12,8 @@ import {
   nativeFreeBsdRoot,
   withFreeBsdRootFixture,
 } from "../../infra/update-freebsd-root-ownership.test-support.js";
-import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
+import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
+import { createUpdateRun, finishUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import * as childCommands from "../../process/exec.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
@@ -221,6 +222,118 @@ it
       if (selector === "managed environment") {
         expect(await fs.readdir(selected)).toEqual([]);
       }
+    });
+  },
+  60_000,
+);
+
+it.skipIf(!nativeFreeBsdRoot)(
+  "the real finalizer adopts and completes its admitted run after replaying buffered history",
+  async () => {
+    await withFreeBsdRootFixture(async ({ home, env }) => {
+      const root = process.cwd();
+      const workspace = path.join(home, "workspace");
+      await fs.mkdir(workspace, { mode: 0o700 });
+      const config = {
+        gateway: { mode: "local", auth: { mode: "token", token: "fixture-finalizer-token" } },
+        agents: { defaults: { workspace } },
+        plugins: { enabled: false },
+      };
+      await fs.writeFile(env.OPENCLAW_CONFIG_PATH!, JSON.stringify(config), { mode: 0o600 });
+      const admission = await admitFreeBsdUpdateRootOwnership({ roots: [root], env });
+      expect(admission).toBeDefined();
+      const retained = createUpdateRun({ trigger: "cli" }, { env });
+      finishUpdateRun(retained.runId, { status: "succeeded" }, { env });
+      const previous = getUpdateRun(retained.runId, { env });
+      const created = createUpdateRun({ trigger: "cli" }, { env });
+      const configIO = createConfigIO({ env, pluginValidation: "skip" });
+      const configSnapshot = await configIO.readConfigFileSnapshot();
+      expect(configSnapshot.valid).toBe(true);
+      closeOpenClawStateDatabaseForTest();
+      const control = path.join(home, "executor-control");
+      await fs.mkdir(control, { mode: 0o700 });
+      vi.spyOn(temporaryState, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
+      const nativeCommand = childCommands.runUtf8CommandWithTimeout;
+      const receipts: Awaited<ReturnType<typeof nativeCommand>>[] = [];
+      vi.spyOn(childCommands, "runUtf8CommandWithTimeout").mockImplementation(
+        async (argv, options) => {
+          const child = await nativeCommand(argv, options);
+          if (argv.at(-1) !== "--check") {
+            if (typeof options !== "object" || typeof options.input !== "string") {
+              throw new Error("Candidate continuation input is missing.");
+            }
+            expect(JSON.parse(options.input).params.opts.run).not.toHaveProperty(
+              "freebsdRootAdmission",
+            );
+            receipts.push(child);
+          }
+          return child;
+        },
+      );
+      const bufferedStep = {
+        step: "parent buffered receipt",
+        status: "completed" as const,
+        startedAtMs: Date.now(),
+        endedAtMs: Date.now(),
+        detail: "Completed before candidate continuation.",
+      };
+      await withUpdateCommandExecutor(created.runId, async (executor) => {
+        const executorFence = await executor.enter(root);
+        // A successful helper return requires the actual candidate worker's
+        // terminal run identity, delegated authority, and settled child receipt.
+        const completed = await continueMigratedUpdateInFreshProcess(
+          {
+            mutationStarted: true,
+            result: { status: "ok", mode: "npm", root, steps: [], durationMs: 0 },
+            root,
+            installKindChanged: false,
+            configSnapshot,
+            requestedChannel: null,
+            storedChannel: "stable",
+            channel: "stable",
+            downgradeRisk: false,
+            shouldRestart: false,
+            opts: {
+              json: true,
+              restart: false,
+              run: { runId: created.runId, env, executorFence, freebsdRootAdmission: admission },
+            },
+            ownedManagedUpdateEnv: env,
+            controlPlaneUpdateSentinelMeta: null,
+            preUpdatePluginInstallRecords: {},
+            startedAt: Date.now(),
+            packageUpdateNodeRunner: process.execPath,
+            updateStepTimeoutMs: 30_000,
+            rollbackBlockedReason: "state-migrated-no-rollback",
+          },
+          [bufferedStep],
+        );
+        expect(completed).toMatchObject({
+          exitCode: 0,
+          result: { status: "ok", runId: created.runId },
+        });
+        executorFence.assertCurrent();
+      });
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]).toMatchObject({ code: 0, termination: "exit", cleanup: "normal" });
+      const finished = getUpdateRun(created.runId, { env });
+      expect(finished).toMatchObject({
+        runId: created.runId,
+        status: "succeeded",
+        phase: "finished",
+        finishedAtMs: expect.any(Number),
+      });
+      expect(finished?.steps.filter((step) => step.step === bufferedStep.step)).toEqual([
+        bufferedStep,
+      ]);
+      expect(finished?.steps).toContainEqual(
+        expect.objectContaining({ step: "driver:adopted", status: "completed" }),
+      );
+      expect(getUpdateRun(retained.runId, { env })).toEqual(previous);
+      const after = await configIO.readConfigFileSnapshot();
+      expect(after.valid).toBe(true);
+      expect(after.sourceConfig).toMatchObject(config);
+      expect(createManagedHandoffLeaseStore().read(root)).toEqual({ kind: "absent" });
     });
   },
   60_000,
