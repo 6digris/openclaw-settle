@@ -14,6 +14,7 @@ import { validateToolArguments } from "../../packages/llm-core/src/validation.js
 import { execSchema } from "../../src/agents/bash-tools.schemas.js";
 import { writeJsonAtomic } from "../../src/infra/json-files.js";
 import { redactSensitiveText } from "../../src/logging/redact.js";
+import { wrapExternalContent } from "../../src/security/external-content.js";
 import { captureFullEnv } from "../../src/test-utils/env.js";
 import { createOpenClawTestState } from "../../src/test-utils/openclaw-test-state.js";
 import { getFreePort } from "../../src/test-utils/ports.js";
@@ -1073,73 +1074,69 @@ describe("mock OpenAI response markers", () => {
     });
   });
 
-  it("drives the Agent Plugins bundle tool and validates its environment output", async () => {
+  it("discovers the Agent Plugins bundle tool and validates its target receipt", async () => {
     await withMockServer(mockOpenAiPath, {}, async (baseUrl) => {
-      const missingTool = await fetch(`${baseUrl}/v1/responses`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          input: [{ content: "agent plugin bundle qa check", role: "user" }],
-          stream: false,
-        }),
-      });
-      const missingToolBody = await missingTool.json();
-      expect(missingToolBody.output?.[0]?.content?.[0]?.text).toBe(
-        "AGENT_BUNDLE_MCP_FAIL tool-not-declared",
-      );
-
-      const first = await fetch(`${baseUrl}/v1/responses`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          input: [{ content: "agent plugin bundle qa check", role: "user" }],
-          stream: false,
-          tools: [
-            {
-              name: "weather-probe__weather_probe",
-              parameters: { type: "object" },
+      const input: unknown[] = [{ content: "agent plugin bundle qa check", role: "user" }];
+      const controls = ["tool_search", "tool_describe", "tool_call"];
+      const request = async (names = controls) => {
+        const response = await fetch(`${baseUrl}/v1/responses`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input,
+            stream: false,
+            tools: names.map((name) => ({
               type: "function",
-            },
-          ],
-        }),
-      });
-      const firstBody = await first.json();
-      expect(firstBody.output?.[0]).toMatchObject({
-        arguments: "{}",
+              name,
+              parameters: { type: "object" },
+            })),
+          }),
+        });
+        expect(response.status).toBe(200);
+        return (await response.json()).output[0];
+      };
+      const appendResult = (call: { call_id: string }, output: unknown) =>
+        input.push(call, {
+          type: "function_call_output",
+          call_id: call.call_id,
+          output: wrapExternalContent(JSON.stringify(output), { source: "api" }),
+        });
+      expect((await request([])).content[0].text).toBe("AGENT_BUNDLE_MCP_FAIL tool-not-declared");
+      const target = {
+        id: "mcp:weather-probe:weather-probe__weather_probe",
         name: "weather-probe__weather_probe",
-        type: "function_call",
-      });
-
-      const second = await fetch(`${baseUrl}/v1/responses`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          input: [
-            { content: "agent plugin bundle qa check", role: "user" },
+        source: "mcp",
+      };
+      const search = await request();
+      expect(search).toMatchObject({ type: "function_call", name: "tool_search" });
+      expect(JSON.parse(search.arguments)).toEqual({ query: target.name, limit: 1 });
+      appendResult(search, [target]);
+      const description = await request();
+      expect(description).toMatchObject({ type: "function_call", name: "tool_describe" });
+      expect(JSON.parse(description.arguments)).toEqual({ id: target.id });
+      appendResult(description, { ...target, parameters: { type: "object", properties: {} } });
+      const call = await request();
+      expect(call).toMatchObject({ type: "function_call", name: "tool_call" });
+      expect(JSON.parse(call.arguments)).toEqual({ id: target.id, args: {} });
+      appendResult(call, {
+        tool: target,
+        result: {
+          content: [
             {
-              output: "probe ok; PLUGIN_ROOT=/tmp/plugin; PLUGIN_DATA=/tmp/plugin-data",
-              type: "function_call_output",
+              type: "text",
+              text: "probe ok; PLUGIN_ROOT=/tmp/plugin; PLUGIN_DATA=/tmp/plugin-data; PROBE_MODE=live",
             },
           ],
-          stream: false,
-        }),
+          details: { mcpServer: "weather-probe", mcpTool: "weather_probe" },
+        },
       });
-      const secondBody = await second.json();
-      expect(secondBody.output?.[0]?.content?.[0]?.text).toBe("AGENT_BUNDLE_MCP_OK");
-
-      const unexpectedOutput = await fetch(`${baseUrl}/v1/responses`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          input: [
-            { content: "agent plugin bundle qa check", role: "user" },
-            { output: "probe failed", type: "function_call_output" },
-          ],
-          stream: false,
-        }),
-      });
-      const unexpectedOutputBody = await unexpectedOutput.json();
-      expect(unexpectedOutputBody.output?.[0]?.content?.[0]?.text).toBe(
+      expect((await request()).content[0].text).toBe("AGENT_BUNDLE_MCP_OK");
+      input[input.length - 1] = {
+        type: "function_call_output",
+        call_id: call.call_id,
+        output: "probe failed",
+      };
+      expect((await request()).content[0].text).toBe(
         "AGENT_BUNDLE_MCP_FAIL unexpected-tool-output",
       );
     });
