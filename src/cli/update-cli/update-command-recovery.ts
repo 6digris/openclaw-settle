@@ -1,5 +1,4 @@
 import { formatErrorMessage } from "../../infra/errors.js";
-import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import {
   loadUpdateRecovery,
@@ -8,15 +7,16 @@ import {
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
+import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 import { UpdateCommandPendingRecoveryFailure } from "./update-command-result.js";
-
-export class UpdateCommandRecoveryPendingError extends Error {
-  override name = "UpdateCommandRecoveryPendingError";
-}
 
 /** Refuse retained recovery before any package-only effects or diagnostic writes. */
 export function assertUpdateCommandRecovery(opts: UpdateCommandOptions): void {
   opts.run?.executorFence?.assertCurrent();
+  assertUpdateCommandRecoveryState(opts);
+}
+
+export function assertUpdateCommandRecoveryState(opts: UpdateCommandOptions): void {
   if (opts.recovery) {
     throw new UpdateCommandRecoveryPendingError(
       "Full-state checkpoint recovery is deferred; retained state was left unchanged.",
@@ -86,21 +86,4 @@ export function createUpdateCommandFinalizationFence(
     }
   };
   return assertCurrent;
-}
-
-export function createUpdateCommandExecutionAssertions(
-  opts: UpdateCommandOptions,
-  originalRun: UpdateCommandOptions["run"],
-) {
-  const requesterAuthority = originalRun?.requesterAuthority;
-  const assertRequesterCurrent = () => {
-    if (opts.run !== originalRun || requesterAuthority?.isCurrent() === false) {
-      throw new UpdateRequesterRevokedError();
-    }
-  };
-  const assertExecutionCurrent = () => {
-    assertUpdateCommandRecovery(opts);
-    assertRequesterCurrent();
-  };
-  return { requesterAuthority, assertRequesterCurrent, assertExecutionCurrent };
 }

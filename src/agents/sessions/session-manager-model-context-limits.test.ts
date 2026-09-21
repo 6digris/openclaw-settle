@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
+import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { makeUserMessage } from "../../../test/helpers/user-message.js";
 import {
   appendTranscriptEvent,
@@ -111,6 +113,50 @@ it.each(["sync", "async"])("bounds the prepared message tail by event count (%s)
   });
 });
 
+it.each([false, true])(
+  "bounds payload sizing by the event budget with retained compaction=%s",
+  async (compacted) => {
+    await withHistory(
+      `context-sizing-limit-${compacted}`,
+      async ({ scope, source, verifyRead }) => {
+        const first = source.appendMessage(makeUserMessage("first retained request", 0));
+        for (let index = 1; index < 40; index++) {
+          source.appendMessage(makeUserMessage(`retained request ${index}`, index));
+        }
+        const boundary = compacted
+          ? source.appendCompaction("required summary", first, 100)
+          : undefined;
+        source.appendMessage(makeUserMessage("current request", 40));
+        const full = source.buildSessionContext().messages;
+        await verifyRead(() => {
+          const database = openOpenClawAgentDatabase({ agentId: "main", path: scope.storePath });
+          const reads = trackSqliteStatementExecutions(database.db, ["sizes"], (query) =>
+            query.includes("octet_length(") && query.includes('as "bytes"') ? "sizes" : null,
+          );
+          try {
+            const selected = SessionManager.openModelContext(scope, {
+              limits: { maxBytes: 16_384, maxEvents: 3 },
+            });
+            expect(selected.buildSessionContext().messages).toEqual(
+              compacted ? [full[0], ...full.slice(-2)] : full.slice(-3),
+            );
+            if (boundary) {
+              expect(selected.getBranch().find((entry) => entry.id === boundary)).toMatchObject({
+                type: "compaction",
+                summary: "required summary",
+              });
+            }
+            expect(reads.rowCounts.sizes).toBeGreaterThan(0);
+            expect(reads.rowCounts.sizes).toBeLessThanOrEqual(compacted ? 4 : 3);
+          } finally {
+            reads.restore();
+          }
+        });
+      },
+    );
+  },
+);
+
 it("applies the aggregate byte budget before hydrating omitted message bodies", async () => {
   await withHistory("context-byte-limit", async ({ scope, source, verifyRead }) => {
     for (let index = 0; index < 8; index++) {
@@ -148,6 +194,49 @@ it("applies the aggregate byte budget before hydrating omitted message bodies", 
       );
     });
   });
+});
+
+it("avoids text copies of omitted message objects when SQLite supports binary JSON", async () => {
+  const nativeJson = new DatabaseSync(":memory:");
+  const extract = nativeJson.prepare("SELECT json_extract(?, ?) AS value");
+  let supportsBinaryJson = false;
+  try {
+    nativeJson.prepare("SELECT jsonb_extract('{}', '$')").get();
+    supportsBinaryJson = true;
+  } catch {
+    // The supported SQLite 3.44 line exercises the text fallback below.
+  }
+  try {
+    await withHistory("context-navigation-copies", async ({ scope, source, verifyRead }) => {
+      const marker = "omitted-message-object:";
+      source.appendMessage(makeUserMessage(marker + "x".repeat(32_768), 1));
+      source.appendMessage(makeUserMessage("latest request", 2));
+      const expected = source.buildSessionContext().messages.slice(-1);
+      const database = openOpenClawAgentDatabase({ agentId: "main", path: scope.storePath });
+      let messageObjectCopies = 0;
+      // Preserve SQLite extraction while observing whole-message text intermediates.
+      database.db.function("json_extract", { deterministic: true }, (json, jsonPath) => {
+        const value = extract.get(json, jsonPath)?.value ?? null;
+        if (typeof value === "string" && value.startsWith("{") && value.includes(marker)) {
+          messageObjectCopies++;
+        }
+        return value;
+      });
+      await verifyRead(() => {
+        const context = SessionManager.openModelContext(scope, {
+          limits: { maxBytes: 4096, maxEvents: 1 },
+        }).buildSessionContext();
+        expect(context.messages).toEqual(expected);
+        if (supportsBinaryJson) {
+          expect(messageObjectCopies).toBe(0);
+        } else {
+          expect(messageObjectCopies).toBeGreaterThan(0);
+        }
+      });
+    });
+  } finally {
+    nativeJson.close();
+  }
 });
 
 it("budgets projected context without hydrating large private evidence", async () => {
@@ -257,8 +346,8 @@ it.each([
 
 it("keeps small context unchanged and leaves compacted navigation out of the detached view", async () => {
   await withHistory("context-small-and-compacted", async ({ scope, source, verifyRead }) => {
-    source.appendThinkingLevelChange("high");
-    source.appendModelChange("openai", "gpt-4.1");
+    await source.appendThinkingLevelChange("high");
+    await source.appendModelChange("openai", "gpt-4.1");
     for (let index = 0; index < 24; index++) {
       source.appendMessage(makeUserMessage(`old message ${index}`, index));
     }
@@ -280,8 +369,8 @@ it("keeps small context unchanged and leaves compacted navigation out of the det
 
 it("preserves model and thinking metadata when the selecting assistant is omitted", async () => {
   await withHistory("context-state-metadata", async ({ scope, source, verifyRead }) => {
-    source.appendThinkingLevelChange("high");
-    source.appendModelChange("openai", "gpt-4o");
+    await source.appendThinkingLevelChange("high");
+    await source.appendModelChange("openai", "gpt-4o");
     source.appendMessage(
       makeAgentAssistantMessage({ model: "gpt-4.1", content: [{ type: "text", text: "earlier" }] }),
     );
@@ -363,12 +452,17 @@ it("rejects a cut that would give an ambiguous result a new unique owner", async
       await expect(SessionManager.openModelContextAsync(scope, options)).rejects.toThrow(
         /ownership/u,
       );
+      expect(() =>
+        SessionManager.openModelContext(scope, {
+          limits: { ...options.limits, toolResultOverflow: "omit" },
+        }),
+      ).toThrow(/ownership/u);
       expect(SessionManager.openModelContext(scope).buildSessionContext()).toEqual(full);
     });
   });
 });
 
-it.each(["latest message", "compaction boundary", "latest tool pair"])(
+it.each(["latest message", "compaction boundary", "latest tool pair", "latest tool call"])(
   "rejects an oversized %s without returning empty or stale context",
   async (kind) => {
     await withHistory(
@@ -380,6 +474,14 @@ it.each(["latest message", "compaction boundary", "latest tool pair"])(
           source.appendMessage(makeUserMessage(oversized, 1));
         } else if (kind === "compaction boundary") {
           source.appendCompaction(oversized, first, 100);
+        } else if (kind === "latest tool call") {
+          source.appendMessage(
+            makeAgentAssistantMessage({
+              content: [{ type: "toolCall", id: "latest", name: "read", arguments: { oversized } }],
+              stopReason: "toolUse",
+            }),
+          );
+          appendResult(source, "latest");
         } else {
           appendCall(source, "latest");
           appendResult(source, "latest");
@@ -400,6 +502,11 @@ it.each(["latest message", "compaction boundary", "latest tool pair"])(
             expect(() => SessionManager.openModelContext(scope, options)).toThrow(
               /context.*limit|limit.*context/iu,
             );
+            expect(() =>
+              SessionManager.openModelContext(scope, {
+                limits: { ...options.limits, toolResultOverflow: "omit" },
+              }),
+            ).toThrow(/context.*limit|limit.*context/iu);
           } finally {
             spy.mockRestore();
           }
@@ -407,8 +514,110 @@ it.each(["latest message", "compaction boundary", "latest tool pair"])(
           await expect(SessionManager.openModelContextAsync(scope, options)).rejects.toThrow(
             /context.*limit|limit.*context/iu,
           );
+          await expect(
+            SessionManager.openModelContextAsync(scope, {
+              limits: { ...options.limits, toolResultOverflow: "omit" },
+            }),
+          ).rejects.toThrow(/context.*limit|limit.*context/iu);
         });
       },
     );
   },
 );
+
+it.each(["sync", "async"])(
+  "recovers an oversized atomic tool frame only in the opted-in model view (%s)",
+  async (mode) => {
+    await withHistory(`context-tool-overflow-${mode}`, async ({ scope, source, verifyRead }) => {
+      source.appendMessage(makeUserMessage("older request", 0));
+      source.appendMessage(
+        makeUserMessage("newest request: preserve both completed operations", 1),
+      );
+      source.appendMessage(
+        makeAgentAssistantMessage({
+          content: [
+            { type: "toolCall", id: "large", name: "read", arguments: { path: "large.txt" } },
+            { type: "toolCall", id: "small", name: "read", arguments: { path: "small.txt" } },
+          ],
+          stopReason: "toolUse",
+        }),
+      );
+      const oversized = "oversized-tool-body:" + "x".repeat(32_768);
+      appendResult(source, "large", oversized);
+      appendResult(source, "small", "completed operation receipt: synthetic-42");
+      const full = source.buildSessionContext();
+      await verifyRead(async () => {
+        const limits = { maxBytes: 4096, maxEvents: 8 };
+        expect(() => SessionManager.openModelContext(scope, { limits })).toThrow(
+          /without splitting a tool frame/u,
+        );
+        const options = { limits: { ...limits, toolResultOverflow: "omit" as const } };
+        let oversizedPayloadReads = 0;
+        const parse = JSON.parse;
+        const spy = vi.spyOn(JSON, "parse").mockImplementation((text, reviver) => {
+          if (text.includes("oversized-tool-body:")) {
+            oversizedPayloadReads++;
+          }
+          return parse(text, reviver);
+        });
+        let selected: SessionManager;
+        try {
+          selected =
+            mode === "async"
+              ? await SessionManager.openModelContextAsync(scope, options)
+              : SessionManager.openModelContext(scope, options);
+        } finally {
+          spy.mockRestore();
+        }
+        const messages = selected.buildSessionContext().messages;
+        expect(messages.map((message) => message.role)).toEqual([
+          "user",
+          "assistant",
+          "toolResult",
+          "toolResult",
+        ]);
+        expect(messages[0]).toEqual(full.messages[1]);
+        expect(messages[1]).toEqual(full.messages[2]);
+        expect(messages[2]).toMatchObject({
+          role: "toolResult",
+          toolCallId: "large",
+          toolName: "read",
+          isError: false,
+          content: [{ type: "text", text: expect.stringMatching(/omitted.*\d+ bytes/u) }],
+        });
+        expect(messages[3]).toEqual(full.messages[4]);
+        expect(Buffer.byteLength(JSON.stringify(messages))).toBeLessThanOrEqual(limits.maxBytes);
+        expect(oversizedPayloadReads).toBe(0);
+        expect(selected.isPersisted()).toBe(false);
+        expect(SessionManager.openModelContext(scope).buildSessionContext()).toEqual(full);
+      });
+    });
+  },
+);
+
+it("retains a displaced repeated-ID owner when omitting an oversized result body", async () => {
+  await withHistory("context-overflow-displaced", async ({ scope, source, verifyRead }) => {
+    source.appendMessage(makeUserMessage("older request", 0));
+    appendCall(source, "repeat");
+    appendResult(source, "repeat", "first completed occurrence");
+    appendCall(source, "repeat");
+    source.appendMessage(makeUserMessage("newest request while the second call is pending", 1));
+    appendCall(source, "other");
+    appendResult(source, "other", "newer completed receipt");
+    appendResult(source, "repeat", "x".repeat(32_768));
+    const full = source.buildSessionContext().messages;
+    await verifyRead(() => {
+      const selected = SessionManager.openModelContext(scope, {
+        limits: { maxBytes: 4096, maxEvents: 8, toolResultOverflow: "omit" },
+      }).buildSessionContext().messages;
+      expect(selected.slice(0, -1)).toEqual(full.slice(3, -1));
+      expect(selected.at(-1)).toMatchObject({
+        role: "toolResult",
+        toolCallId: "repeat",
+        content: [{ type: "text", text: expect.stringContaining("body omitted") }],
+      });
+      expect(selected[1]).toEqual(full[4]);
+      expect(Buffer.byteLength(JSON.stringify(selected))).toBeLessThanOrEqual(4096);
+    });
+  });
+});

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { OpenAsyncKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
   createPluginStateSyncKeyedStoreForTests,
@@ -19,12 +20,8 @@ import {
   normalizeCompatibilityConfig,
   stateMigrations,
 } from "./doctor-contract-api.js";
-import {
-  base64url,
-  generateIdentity,
-  MemoryAuditStore,
-  type ReviewRequest,
-} from "./protocol/index.js";
+import { base64url, generateIdentity, type ReviewRequest } from "./protocol/index.js";
+import { MemoryAuditStore } from "./protocol/memory-stores.test-support.js";
 import { ReefChannelConfigSchema } from "./src/config-schema.js";
 import {
   REEF_REPLAY_MAX_ENTRIES,
@@ -98,7 +95,7 @@ function createRuntime(env: NodeJS.ProcessEnv) {
       ...options,
       env: options.env ?? env,
     });
-  runtime.state.openKeyedStore = <T>(options: OpenKeyedStoreOptions) =>
+  runtime.state.openKeyedStore = <T>(options: OpenAsyncKeyedStoreOptions) =>
     createPluginStateKeyedStoreForTests<T>("reef", {
       ...options,
       env: options.env ?? env,
@@ -161,29 +158,10 @@ describe("Reef doctor contract", () => {
     );
     expect(resources).toEqual(
       new Map([
-        [
-          "reef-keys-json-to-plugin-state",
-          [{ path: path.join(reefDir, "keys.json"), kind: "file" }],
-        ],
-        [
-          "reef-registration-json-to-plugin-state",
-          [
-            { path: path.join(reefDir, "identity.json"), kind: "file" },
-            { path: path.join(reefDir, "setup-session.json"), kind: "file" },
-          ],
-        ],
-        [
-          "reef-audit-jsonl-to-plugin-state",
-          [{ path: path.join(reefDir, "audit.jsonl"), kind: "file" }],
-        ],
-        [
-          "reef-runtime-files-to-plugin-state",
-          [
-            { path: path.join(reefDir, "replay.jsonl"), kind: "file" },
-            { path: path.join(reefDir, "reviews.json"), kind: "file" },
-            { path: path.join(reefDir, "delivered.json"), kind: "file" },
-          ],
-        ],
+        ["reef-keys-json-to-plugin-state", [{ path: reefDir, kind: "directory" }]],
+        ["reef-registration-json-to-plugin-state", [{ path: reefDir, kind: "directory" }]],
+        ["reef-audit-jsonl-to-plugin-state", [{ path: reefDir, kind: "directory" }]],
+        ["reef-runtime-files-to-plugin-state", [{ path: reefDir, kind: "directory" }]],
         ["reef-config-trust-to-plugin-state", []],
       ]),
     );
@@ -276,40 +254,52 @@ describe("Reef doctor contract", () => {
     expect(result.config.plugins?.entries?.reef).toEqual({ config: { unknownKey: true } });
   });
 
-  it("imports identity keys into SQLite before archiving keys.json", async () => {
-    const legacyDir = path.join(stateDir, ".openclaw", "data", "reef");
-    const filePath = path.join(legacyDir, "keys.json");
-    const keys = reefKeys();
-    fs.mkdirSync(legacyDir, { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(keys));
-    const migration = migrationById("reef-keys-json-to-plugin-state");
-    const context = createDoctorContext(env);
-    const params = {
-      config: {},
-      env,
-      stateDir,
-      oauthDir: path.join(stateDir, "oauth"),
-      context,
-    };
+  it.each([false, true])(
+    "captures identity archives including collision suffixes (existing=%s)",
+    async (existingArchive) => {
+      const legacyDir = path.join(stateDir, ".openclaw", "data", "reef");
+      const filePath = path.join(legacyDir, "keys.json");
+      const keys = reefKeys();
+      fs.mkdirSync(legacyDir, { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify(keys));
+      if (existingArchive) {
+        fs.writeFileSync(`${filePath}.migrated`, "previous archive bytes");
+      }
+      const migration = migrationById("reef-keys-json-to-plugin-state");
+      const context = createDoctorContext(env);
+      const params = {
+        config: {},
+        env,
+        stateDir,
+        oauthDir: path.join(stateDir, "oauth"),
+        context,
+      };
 
-    await expect(migration.detectLegacyState(params)).resolves.toEqual({
-      preview: ["- Reef identity keys -> plugin state (identity)"],
-    });
-    const result = await migration.migrateLegacyState(params);
+      expect(await migration.collectBackupResources?.(params)).toEqual([
+        { path: legacyDir, kind: "directory" },
+      ]);
+      await expect(migration.detectLegacyState(params)).resolves.toEqual({
+        preview: ["- Reef identity keys -> plugin state (identity)"],
+      });
+      const result = await migration.migrateLegacyState(params);
 
-    expect(result.warnings).toEqual([]);
-    expect(result.changes).toEqual([
-      "Migrated Reef identity keys -> plugin state",
-      expect.stringContaining("Archived Reef identity keys legacy source"),
-    ]);
-    const store = context.openPluginStateKeyedStore<ReefKeys>({
-      namespace: REEF_KEYS_NAMESPACE,
-      maxEntries: REEF_KEYS_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-    });
-    await expect(store.lookup(REEF_KEYS_KEY)).resolves.toEqual(keys);
-    expect(fs.existsSync(`${filePath}.migrated`)).toBe(true);
-  });
+      expect(result.warnings).toEqual([]);
+      expect(result.changes).toEqual([
+        "Migrated Reef identity keys -> plugin state",
+        expect.stringContaining("Archived Reef identity keys legacy source"),
+      ]);
+      const store = context.openPluginStateKeyedStore<ReefKeys>({
+        namespace: REEF_KEYS_NAMESPACE,
+        maxEntries: REEF_KEYS_MAX_ENTRIES,
+        overflowPolicy: "reject-new",
+      });
+      await expect(store.lookup(REEF_KEYS_KEY)).resolves.toEqual(keys);
+      expect(fs.existsSync(`${filePath}.migrated${existingArchive ? ".2" : ""}`)).toBe(true);
+      if (existingArchive) {
+        expect(fs.readFileSync(`${filePath}.migrated`, "utf8")).toBe("previous archive bytes");
+      }
+    },
+  );
 
   it("does not import the default home's Reef identity into an isolated state", async () => {
     const homeDir = path.join(stateDir, "home");

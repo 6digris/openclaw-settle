@@ -6,7 +6,6 @@ read_when:
   - You want scheduled, versioned database backups in an operator-owned Git repository
   - You want to preview which paths would be included before reset or uninstall
   - You want to restore from a `.tar.gz` archive previously created by `openclaw backup`
-  - You need to locate the state backup retained by a failed update
 title: "Backup"
 ---
 
@@ -52,108 +51,6 @@ Archive `create`, `verify`, and `restore`, plus SQLite `create`, `list`, `verify
 - Full archives refuse unresolved include graphs, files that change during config capture, and include aliases that cannot be represented safely. Fix missing or unreadable files, use regular-file include paths, or pause concurrent edits and retry. `--no-include-workspace` still includes required config dependencies, even within an excluded workspace.
 - `openclaw backup create --only-config` backs up just the active JSON config file, **not** its `$include` dependencies. It is a root-file export, not a complete modular-config recovery point.
 - Config files are pinned before database capture. SQLite snapshots retain their existing per-database consistency and sanitization; the archive is not one atomic snapshot across config and all databases. Later writes remain live and may not appear in the archive.
-
-## Update recovery sets
-
-Before protected update-time config, plugin, or Doctor mutations, the current updater creates and verifies
-an `update-recovery` set at `<stateDir>.update-captures/<captureId>/`. The update
-run records its manifest path. The sibling root, capture directory, and private
-ancestors use owner-only permissions; capture files use `0600`. Each movable
-capture carries the [private capture marker](#private-update-captures). Ordinary
-backups, Doctor archives, and support exports exclude these sets, including
-when a selected workspace contains or is nested inside one.
-
-This also covers updates whose core is already current but whose config or
-plugins need changes. A true no-op creates no capture and does not stop the
-Gateway. Standalone `openclaw update repair` captures before requested channel
-changes and uses the same set for both Doctor phases and plugin convergence.
-
-This internal backup kind reuses the existing backup inventory and SQLite
-snapshot machinery. It does not change the commands, archive layout, or
-sanitization behavior of `openclaw backup`.
-
-The inventory covers the active config and its `$include` files, shared state,
-configured and registered per-agent databases, Skill Workshop state, and local
-resources declared by plugin Doctor migrations, including memory databases. It
-also retains inventoried workspace and migration-input files. SQLite files use
-the online backup API so committed WAL contents are included. Recovery copies
-are unsanitized: delivery rows, TTL records, original row IDs, and other database
-contents are preserved without snapshot pruning or `VACUUM`. No migration is
-required before capturing an older database.
-
-Each set has one immutable manifest and numbered resource files. The manifest
-records every inventoried file with its size and SHA-256, along with directory,
-symbolic-link, and missing-path entries needed for restoration. The updater
-verifies the manifest and resource identities before migrations proceed and
-again before restoring. A missing or mismatched payload is a hard failure.
-These sets can contain original credentials and private state.
-
-After verifying and restoring the raw resources, OpenClaw clears process
-coordination leases from the restored shared database before writers resume.
-Those leases belong to the source processes and cannot own a restored copy.
-The retained recovery set stays unchanged.
-
-Restoring a declared database directory removes migration-created files inside
-that directory before restoring the captured files. This includes newer
-version manifests used by directory databases such as LanceDB. Files outside
-the declared directory remain untouched; directory replacement or alias changes
-refuse restoration.
-
-Before the protected mutation, capacity admission accounts for the capture,
-verification and restore staging, package staging, migration growth, and a
-reserve. Insufficient or unobservable capacity refuses the mutation while
-preserving live data and earlier sets. Free unrelated space and retry; the
-updater never removes recovery data or disables protection to make room.
-
-Retirement belongs to the capture's own update transaction. The update must
-persist terminal success after validating the running artifact's identity,
-Gateway readiness, and data compatibility, settle every mutating child, and
-have no remaining recovery dependency before retiring its set. The terminal
-outcome is a separate write-once file. There is no count, age, or disk-pressure
-pruning. Pending, failed-restoration, and crash-left captures stay retained;
-process exit does not resolve them. Deliberate backups, manually retained
-captures, and historical recovery evidence are never cleanup targets.
-
-Successful standalone repair does not start the Gateway or establish runtime
-health, so it retains its set for explicit Doctor resolution. A repair failure
-can restore the captured state without a package rollback, after all mutating
-children have settled. It never treats an uncertain child exit as permission to
-restore over a possible writer.
-
-A retained set blocks another protected update over the same state unless
-Doctor's existing reconciliation owner can prove the original update completed
-successfully from its durable verification and runtime identity. Update admission
-then records the outcome and retires that set before proceeding. A missing outcome
-alone never proves success; unfinished and failed recovery remains protected.
-Admission runs before stopping the Gateway, and a later refusal before mutation
-restores the previously running service. Inspect a retained set
-and resolve it explicitly with the same profile and state/config selection:
-
-```bash
-openclaw update status --json
-npx openclaw@latest doctor --fix
-```
-
-Before manual restoration, Doctor reconciles the set with its exact update
-run. A completed update or recorded state restoration makes the set stale;
-Doctor reports it and preserves newer data instead of restoring the old copy.
-Missing or unreadable history, a nonterminal run, or competing sets refuses
-restoration and names the inspection command. Successful explicit Doctor repair
-can resolve and retire an eligible retained set. It never automatically adopts
-an unresolved capture as the recovery point for a new update.
-
-Coverage is limited to the local resources in the manifest. Remote stores and
-plugin resources outside the declared inventory need their own recovery
-procedure. Keep an independent backup for long-term recovery; update captures
-are transaction recovery points, not a disaster-recovery history.
-
-The current updater restores the set together with the previous package and
-verifies the previous managed Gateway before reporting `rolled-back`. A failed
-update retains its set, even after successful rollback. If restore fails,
-preserve the named set, keep the Gateway stopped, and run
-`npx openclaw@latest doctor --fix` from the same installation environment after
-the update processes exit. See [Rollback and recovery](/install/updating/rollback-and-recovery#full-state-recovery-requires-a-backup)
-for older-updater behavior and manual recovery.
 
 ## Restore a full archive
 
@@ -212,8 +109,8 @@ limits. A resolved target's real ancestors receive the same marker checks as
 the selected path. Links to marked directories are omitted; malformed or
 unreadable real markers refuse export. Loops and dangling links have no resolved
 target and remain link entries, unless a real selected ancestor excludes them.
-Ordinary unmarked links keep their original target text without copying target
-contents through the link.
+Ordinary unmarked links keep their original targets without copying target
+contents through the link. Windows target separators are stored as forward slashes.
 
 Explicit content exports, including SQLite snapshots, check the selected archive
 path and actual content source through the same classifier. A support bundle
@@ -438,34 +335,43 @@ sources. A custom agent root becomes a distinct `agent` asset only when no
 existing asset covers it; the manifest still records its agent id and root when
 another asset contains it. Missing paths are reported as skipped.
 
+Legacy audit raw archives, import claims, and scrub journals are excluded as raw
+files; recoverable audit sources receive sanitized backup replacements. Their
+`.quarantined-*` variants remain excluded and are retained locally without being
+imported or rewritten. Sanitized `.migrated` companions and retained SQLite audit
+history remain included in the backup.
+
 During archive creation, OpenClaw excludes known live-mutation paths before `tar` reads them. This avoids races between a file's recorded size and concurrent writes. The filter applies these state-relative rules under each backed-up state directory:
 
-| State-relative scope                         | Skipped entries                                       |
-| -------------------------------------------- | ----------------------------------------------------- |
-| `sessions/**`                                | `.jsonl`, `.log`                                      |
-| `agents/<agentId>/sessions/**`               | `.jsonl`, `.log`                                      |
-| `cron/runs/**`                               | `.jsonl`, `.log`                                      |
-| `logs/**`                                    | `.jsonl`, `.log`                                      |
-| `delivery-queue/**`                          | `.json`, `.delivered`, `.tmp`                         |
-| `session-delivery-queue/**`                  | `.json`, `.delivered`, `.tmp`                         |
-| `browser/<profile>/user-data/`               | `SingletonCookie`, `SingletonLock`, `SingletonSocket` |
-| `sandbox/skills-workspaces/**`               | All entries                                           |
-| Any path under the backed-up state directory | `.sock`, `.pid`, `.tmp`                               |
+| State-relative scope                          | Skipped entries                                       |
+| --------------------------------------------- | ----------------------------------------------------- |
+| `sessions/**`                                 | `.jsonl`, `.log`                                      |
+| `agents/<agentId>/sessions/**`                | `.jsonl`, `.log`                                      |
+| `cron/runs/**`                                | `.jsonl`, `.log`                                      |
+| `logs/**`                                     | `.jsonl`, `.log`                                      |
+| `delivery-queue/**`                           | `.json`, `.delivered`, `.tmp`                         |
+| `session-delivery-queue/**`                   | `.json`, `.delivered`, `.tmp`                         |
+| `browser/<profile>/user-data/`                | `SingletonCookie`, `SingletonLock`, `SingletonSocket` |
+| `sandbox/skills-workspaces/**`                | All entries                                           |
+| Any archived root, including agent workspaces | `.sock`, `.pid`, `.tmp`, and `.tmp.*`                 |
 
-The active config file remains included even when its name or location matches a rule above. This exception keeps only the selected config file; neighboring files under excluded directories stay out of the archive.
+Explicitly selected asset roots stay included even when their names match a transient filename rule. The active config file remains included even when its name or location matches a rule above. This exception keeps only the selected config file; neighboring files under excluded directories stay out of the archive.
 
-These rules do not filter workspace files outside the state directory. They also omit completed transcript and log files that match the table, so retain those records separately when needed. The JSON result's `skippedVolatileCount` reports intentionally omitted volatile entries; regenerable agent temporary roots are listed separately in `skipped` and are not included in that count.
+Transient filename rules apply across all selected roots, including every agent workspace. State-specific log, queue, and browser rules remain scoped to state. They also omit completed transcript and log files that match the table, so retain those records separately when needed. The JSON result's `skippedVolatileCount` reports intentionally omitted volatile entries, each listed in `skipped` with reason `volatile`; regenerable agent temporary roots are listed separately and are not included in that count.
+
+If an entry disappears during traversal or before it can be opened, the archive continues with the surviving entries. Each omitted path appears in the result's `skipped` list with reason `vanished`, and in the result's `warnings` and text summary. Required source roots and staged captures must still exist; permission and I/O errors still fail the archive. Changes that could redirect a read outside the selected roots also fail. Files are opened before their archive headers are written, so a vanished file cannot leave a partial entry.
 
 Chromium singleton entries coordinate one running browser on one host and are recreated when that profile starts; the rest of the profile's `user-data/` remains in the archive. Sandbox skills workspaces are generated copies of current skill sources and are materialized again when OpenClaw prepares the next sandbox context after restore; adjacent sandbox registry and other durable state remain included.
 
-Managed SQLite snapshots cover the shared OpenClaw database, per-agent databases
+Managed SQLite snapshots cover the shared OpenClaw database, the quarantine and
+integrity-verification store, per-agent databases
 recorded in the captured durable agent registry, and SQLite files under activated plugins'
 declared `backupResources` with `disposition: "include"`. A file's location under
 the state directory or an agent directory alone does not make it managed.
 
 Managed databases are captured with SQLite's online backup API and compacted
 offline with `VACUUM`. Committed write-ahead log (WAL) changes are included,
-deleted-page remnants are removed, and sidecars are omitted. Canonical OpenClaw
+deleted-page remnants are removed, and sidecars are omitted. Shared and agent
 databases also receive their existing transient-state sanitization and must match
 their expected role and agent owner. Unsafe aliasing or an owner mismatch fails
 closed. A declared plugin database that requires unavailable SQLite capabilities
@@ -498,7 +404,7 @@ The state directory's `plugin-skills/` root is a generated, OpenClaw-owned symli
 
 Agent-scoped temporary trees under `agents/<agentId>/agent/**/{tmp,.tmp}/` are also omitted and reported as regenerable. This includes temporary files directly below an agent directory and temporary trees inside agent runtime homes; durable sibling directories remain included. An explicitly configured config file, credentials directory, or workspace nested below an omitted temporary root remains included.
 
-Symbolic links are archived as link entries with their original target text, including absolute and dangling targets. Creation never follows a link to copy its target. Targets outside the state directory, including separately backed-up config, credentials, or workspace targets, are recorded in the manifest and JSON result's `externalSymbolicLinks` list and reported in the text summary. Restore recreates the links after extracting the file content; it never writes through a restored link. Verification rejects archive entries nested beneath a symbolic link.
+Symbolic links are archived as link entries, including absolute and dangling targets. Windows target separators are stored as forward slashes to match tar's reader; POSIX target text, including literal backslashes, is preserved. Creation never follows a link to copy its target. Targets outside the state directory, including separately backed-up config, credentials, or workspace targets, are recorded in the manifest and JSON result's `externalSymbolicLinks` list and reported in the text summary. Restore recreates the links after extracting the file content; it never writes through a restored link. Verification rejects archive entries nested beneath a symbolic link.
 
 Absolute links retain their original location after restore, including links to separately backed-up config or credentials. They are no longer rewritten to relative targets. Review these links before activating a restored tree on another host or at another path. Older releases, including v2026.9.4, reject archives with absolute or escaping link targets; use the current release to restore those archives. Existing archives remain readable.
 
@@ -538,6 +444,24 @@ OpenClaw does not enforce a built-in maximum backup size or per-file size limit.
 If final-directory durability confirmation fails after publication, the command reports failure but preserves the complete final entry rather than risk deleting a concurrent replacement.
 
 Large workspaces are usually the main driver of archive size. Use `--no-include-workspace` for a smaller/faster backup, or `--only-config` for the smallest archive.
+
+Archive creation holds a SQLite lifetime transaction for its temporary
+`openclaw-backup-*` scratch directory. The next backup run removes abandoned
+scratch only after acquiring exclusive custody; a running backup keeps its
+scratch even when it is old. Cleanup failures preserve the published archive
+and appear as warnings with the scratch path in both text and JSON output.
+Scratch observed by the scan that disappears before cleanup is recorded as
+already reclaimed, without a warning or a claim that this pass removed it.
+
+`openclaw doctor` reports scratch in the active temporary directory and recorded
+archive destination directories. `openclaw doctor --fix` removes recognized
+scratch whose lifetime transaction has ended. Unknown contents, symbolic links,
+and legacy directories without a lifetime token are preserved with guidance for
+inspection. Older releases do not create these tokens, so stop older backup
+processes before manually removing their reported scratch directories.
+Published archives and package rollback backups are outside this cleanup.
+Retired scratch is renamed to `openclaw-backup-retired-*` before deletion so a
+later pass can finish partial cleanup even after the lifetime token is gone.
 
 ## Related
 

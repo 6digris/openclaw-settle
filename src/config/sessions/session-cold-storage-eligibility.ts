@@ -1,11 +1,16 @@
 import type { DatabaseSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { getNodeSqliteKysely, iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
+import {
+  getNodeSqliteKysely,
+  iterateSqliteQuerySync,
+  sqliteStringSet,
+} from "../../infra/kysely-sync.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import {
   hasSessionPendingInputsSchema,
   hasPendingInputConsumptionColumn,
 } from "../../state/openclaw-agent-pending-inputs-schema.js";
+import { readLegacyCompactionHistory } from "./legacy-compaction-history.js";
 import { sessionEntryMetadataJson } from "./session-accessor.sqlite-status.js";
 import { parseSqliteSessionEntryRecord } from "./session-entry-json.js";
 import { projectCanonicalSessionEntryShape } from "./store-entry-shape.js";
@@ -62,36 +67,34 @@ export function readSessionColdStorageProtection(
         protectedIds.add(id);
       }
     }
-    for (const checkpoint of entry.compactionCheckpoints ?? []) {
-      protectedIds.add(checkpoint.sessionId);
-      protectedIds.add(checkpoint.preCompaction.sessionId);
-      protectedIds.add(checkpoint.postCompaction.sessionId);
+    for (const checkpoint of readLegacyCompactionHistory(entry)) {
+      if (checkpoint.sessionId) {
+        protectedIds.add(checkpoint.sessionId);
+      }
+      if (checkpoint.preCompaction.sessionId) {
+        protectedIds.add(checkpoint.preCompaction.sessionId);
+      }
+      if (checkpoint.postCompaction.sessionId) {
+        protectedIds.add(checkpoint.postCompaction.sessionId);
+      }
     }
   }
   for (const row of iterateSqliteQuerySync(
     database.db,
     db
       .selectFrom("session_windows")
-      .select(["session_id", "session_key", "updated_at", "transcript_updated_at", "status"])
-      // Recovery or unreadable nodes protect all their generations. Otherwise, leave
-      // old idle windows in SQLite instead of hydrating them just to reject them.
-      .$if(busyKeys.size === 0, (query) =>
-        query.where((eb) =>
-          eb.or([
-            eb("status", "=", "running"),
-            eb("updated_at", ">=", beforeMs),
-            eb(eb.fn.coalesce("transcript_updated_at", eb.val(0)), ">=", beforeMs),
-          ]),
-        ),
+      .select("session_id")
+      // Recovery and unreadable nodes protect every window owned by their exact key.
+      .where((eb) =>
+        eb.or([
+          ...(busyKeys.size > 0 ? [eb("session_key", "in", sqliteStringSet([...busyKeys]))] : []),
+          eb("status", "=", "running"),
+          eb("updated_at", ">=", beforeMs),
+          eb(eb.fn.coalesce("transcript_updated_at", eb.val(0)), ">=", beforeMs),
+        ]),
       ),
   )) {
-    if (
-      busyKeys.has(row.session_key) ||
-      row.status === "running" ||
-      Math.max(row.updated_at, row.transcript_updated_at ?? 0) >= beforeMs
-    ) {
-      protectedIds.add(row.session_id);
-    }
+    protectedIds.add(row.session_id);
   }
   if (hasSessionPendingInputsSchema(database.db)) {
     for (const row of iterateSqliteQuerySync(

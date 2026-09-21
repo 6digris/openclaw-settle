@@ -32,6 +32,7 @@ import {
   resolveNpmInstallSpecsForUpdateChannel,
 } from "./install-channel-specs.js";
 import type { InstallSafetyOverrides } from "./install-security-scan.types.js";
+import type { OperatorManagedPluginUpdate } from "./installed-plugin-package-ownership.js";
 import { checkMinHostVersion } from "./min-host-version.js";
 import * as officialInstallRecords from "./official-external-install-records.js";
 import {
@@ -39,6 +40,7 @@ import {
   resolveOfficialExternalPluginInstall,
 } from "./official-external-plugin-catalog.js";
 import { satisfiesPluginApiRange, resolvePackagePluginApiRange } from "./package-compat.js";
+
 /** Logger surface used by plugin update flows. */
 export type PluginUpdateLogger = {
   info?: (message: string) => void;
@@ -68,6 +70,12 @@ type BasePluginUpdateOutcome = {
 };
 
 export type PluginUpdateOutcome =
+  | (BasePluginUpdateOutcome &
+      Omit<OperatorManagedPluginUpdate, "kind" | "pluginIds"> & {
+        status: "skipped";
+        code: "plugin-operator-managed";
+        guidance: string[];
+      })
   | (BasePluginUpdateOutcome & {
       status: "skipped";
       code?: ClawHubTrustErrorCode;
@@ -103,6 +111,8 @@ export type UpdateInstalledPluginsParams = {
   disableOnFailure?: boolean;
   retainOnUnavailable?: boolean;
   timeoutMs?: number;
+  /** Null removes the forward-work deadline while metadata remains bounded. */
+  workTimeoutMs?: number | null;
   dryRun?: boolean;
   updateChannel?: UpdateChannel;
   officialPluginUpdateChannel?: UpdateChannel;
@@ -110,10 +120,11 @@ export type UpdateInstalledPluginsParams = {
   versionBoundPluginIds?: ReadonlySet<string>;
   onInstallPolicyWarning?: InstallSafetyOverrides["onInstallPolicyWarning"];
   specOverrides?: Record<string, string>;
+  /** Prepared package targets that preserve the recorded update selector. */
+  npmInstallSpecOverrides?: Record<string, string>;
   onIntegrityDrift?: (params: PluginUpdateIntegrityDriftParams) => boolean | Promise<boolean>;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
-  beforePersistentEffect?: () => void;
-  preparePersistentEffect?: () => void | Promise<void>;
+  beforePersistentEffect?: () => void | Promise<void>;
   packagePluginIds?: Readonly<Record<string, readonly string[]>>;
 };
 
@@ -519,13 +530,14 @@ function resolveUnpinnedOfficialReleaseSpec(params: {
   return order !== null && order <= 0 ? official.raw : undefined;
 }
 
-/** Shares recorded target and catalog replacement precedence with update admission. */
+/** Apply selector and release-pin policy before automatic cohort targets. */
 export function resolveNpmUpdateTarget(params: {
   record: PluginInstallRecord;
   trustedOfficialInstall?: ReturnType<
     typeof officialInstallRecords.resolveTrustedSourceLinkedOfficialNpmInstall
   >;
   specOverride?: string;
+  installSpecOverride?: string;
   syncOfficialPluginInstalls?: boolean;
   updateChannel?: UpdateChannel;
   coreVersion?: string;
@@ -539,7 +551,7 @@ export function resolveNpmUpdateTarget(params: {
     resolveUnpinnedOfficialReleaseSpec({
       spec: params.record.spec,
       officialSpec: official?.npmSpec,
-      coreVersion: params.coreVersion,
+      coreVersion: resolveExactNpmSpecVersion(params.installSpecOverride) ?? params.coreVersion,
     });
   const spec =
     specOverride ??
@@ -550,6 +562,10 @@ export function resolveNpmUpdateTarget(params: {
     target: spec
       ? {
           spec,
+          installSpecOverride:
+            !params.specOverride && resolveDefaultNpmSpec(spec)
+              ? params.installSpecOverride
+              : undefined,
           updateChannel: params.updateChannel,
           officialPackageName: resolveNpmSpecPackageName(official?.npmSpec),
           coreVersion: params.coreVersion,

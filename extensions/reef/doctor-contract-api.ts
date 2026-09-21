@@ -152,7 +152,9 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
     id: "reef-keys-json-to-plugin-state",
     label: "Reef identity keys",
     collectBackupResources(params) {
-      return [{ path: path.join(resolveLegacyReefStateDir(params), "keys.json"), kind: "file" }];
+      // Archive collision suffixes are allocated during migration. Capture the owned
+      // directory so rollback restores prior archives and removes newly created ones.
+      return [{ path: resolveLegacyReefStateDir(params), kind: "directory" }];
     },
     async detectLegacyState(params) {
       const stateDir = resolveLegacyReefStateDir(params);
@@ -308,10 +310,7 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
     id: "reef-registration-json-to-plugin-state",
     label: "Reef registration state",
     collectBackupResources(params) {
-      return REEF_LEGACY_REGISTRATION_SOURCES.map(({ filename }) => ({
-        path: path.join(resolveLegacyReefStateDir(params), filename),
-        kind: "file" as const,
-      }));
+      return [{ path: resolveLegacyReefStateDir(params), kind: "directory" }];
     },
     async detectLegacyState(params) {
       const stateDir = resolveLegacyReefStateDir(params);

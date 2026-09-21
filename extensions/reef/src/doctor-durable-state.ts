@@ -296,7 +296,7 @@ export const reefAuditStateMigration: PluginDoctorStateMigration = {
   id: "reef-audit-jsonl-to-plugin-state",
   label: "Reef audit trail",
   collectBackupResources(params) {
-    return [{ path: path.join(resolveLegacyReefStateDir(params), "audit.jsonl"), kind: "file" }];
+    return [{ path: resolveLegacyReefStateDir(params), kind: "directory" }];
   },
   async detectLegacyState(params) {
     const filePath = path.join(resolveLegacyReefStateDir(params), "audit.jsonl");
@@ -470,10 +470,7 @@ export const reefRuntimeStateMigration: PluginDoctorStateMigration = {
   id: "reef-runtime-files-to-plugin-state",
   label: "Reef durable runtime state",
   collectBackupResources(params) {
-    return ["replay.jsonl", "reviews.json", "delivered.json"].map((filename) => ({
-      path: path.join(resolveLegacyReefStateDir(params), filename),
-      kind: "file" as const,
-    }));
+    return [{ path: resolveLegacyReefStateDir(params), kind: "directory" }];
   },
   async detectLegacyState(params) {
     const stateDir = resolveLegacyReefStateDir(params);

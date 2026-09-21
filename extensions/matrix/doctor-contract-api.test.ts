@@ -107,6 +107,17 @@ describe("matrix doctor contract state migrations", () => {
     vi.restoreAllMocks();
   });
 
+  it.each(["EACCES", "EPERM", "EIO"])("refuses unreadable capture inventory (%s)", async (code) => {
+    const stateDir = tempDirs.make("openclaw-matrix-unreadable-inventory-");
+    const failure = Object.assign(new Error("inventory access failed"), { code });
+    vi.spyOn(fsPromises, "readdir").mockRejectedValueOnce(failure);
+    const collect = migrationById(
+      "matrix-storage-meta-json-to-plugin-state",
+    ).collectBackupResources;
+    if (!collect) throw new Error("Migration must declare its backup inventory");
+    await expect(collect(createMigrationParams(stateDir))).rejects.toBe(failure);
+  });
+
   it("inventories every migration's local sources and account database without opening stores", async () => {
     const stateDir = tempDirs.make("openclaw-matrix-inventory-");
     const storageRoot = path.join(
@@ -202,7 +213,7 @@ describe("matrix doctor contract state migrations", () => {
       warnings: [],
     });
 
-    const store = new SqliteBackedMatrixSyncStore(storageRootDir);
+    const store = await SqliteBackedMatrixSyncStore.create(storageRootDir);
     expect(store.hasSavedSync()).toBe(true);
     expect(store.hasSavedSyncFromCleanShutdown()).toBe(true);
     await expect(store.getSavedSyncToken()).resolves.toBe("legacy-token");
@@ -426,7 +437,7 @@ describe("matrix doctor contract state migrations", () => {
     expect(archivePath).toMatch(/crypto-idb-snapshot\.json\.migrated-\d{4}-/u);
     expect(JSON.parse(fs.readFileSync(archivePath ?? "", "utf8"))).toEqual(snapshot);
 
-    expect(scoreMatrixCryptoStateInStore(storageRootDir)).toBe(5);
+    expect(await scoreMatrixCryptoStateInStore(storageRootDir)).toBe(5);
     expect(JSON.parse((await readMatrixIdbSnapshotJson(storageRootDir)) ?? "null")).toEqual(
       snapshot,
     );

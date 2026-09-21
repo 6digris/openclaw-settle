@@ -96,9 +96,12 @@ export async function restorePreparedUpdateRecoveryBackup(
       const current = await statOrMissing(entry.sourcePath);
       if (current?.isDirectory()) {
         // Only a migration-owned directory declaration grants recursive removal.
-        if (entry.directory) {
-          await mutate(() => fs.rm(entry.sourcePath, { recursive: true }));
+        if (!entry.directory) {
+          throw new Error(
+            `Update recovery cannot replace unexpected directory: ${entry.sourcePath}`,
+          );
         }
+        await mutate(() => fs.rm(entry.sourcePath, { recursive: true }));
       } else if (current) {
         await captureUpdateRecoveryConfigRestore(
           manifest,

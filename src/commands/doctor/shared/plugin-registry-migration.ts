@@ -1,6 +1,7 @@
 // Doctor migration from legacy shipped plugin install config into persisted install registry.
 import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
+import type { ReadConfigFileSnapshotForWriteResult } from "../../../config/io.js";
 import { ConfigMutationConflictError } from "../../../config/mutation-conflict.js";
 import { inspectShippedPluginInstallConfigRecords } from "../../../config/plugin-install-config-migration.js";
 import {
@@ -9,7 +10,14 @@ import {
 } from "../../../config/plugin-install-record-map.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
-import { inspectPersistedInstalledPluginIndexInstallRecordsSync } from "../../../plugins/installed-plugin-index-record-state.js";
+import {
+  assertDeferredPluginMigrationsCurrent,
+  type DeferredPluginMigration,
+} from "../../../infra/deferred-plugin-migrations.js";
+import {
+  inspectPersistedInstalledPluginIndexInstallRecordsSync,
+  readPersistedInstalledPluginIndexRowSync,
+} from "../../../plugins/installed-plugin-index-record-state.js";
 import {
   loadInstalledPluginIndexInstallRecords,
   loadInstalledPluginIndexInstallRecordsSync,
@@ -32,6 +40,7 @@ import {
   resolveTrustedOfficialClawHubPackageName,
   resolveTrustedSourceLinkedOfficialClawHubInstall,
 } from "../../../plugins/official-external-install-records.js";
+import { createPluginCache, withPluginCache } from "../../../plugins/plugin-cache.js";
 
 /** Backfill shipped ClawHub authority only from a catalog-bound legacy install record. */
 export function migrateOfficialPluginInstallProvenance(
@@ -120,7 +129,7 @@ function mergeShippedPluginInstallRecords(
 /** Preview the same install-record merge that the importer repeats under its lease. */
 export function readShippedPluginInstallConfigImportRecords(
   snapshot: ConfigFileSnapshot,
-  options: { env?: NodeJS.ProcessEnv } = {},
+  options: InstalledPluginIndexStoreOptions = {},
 ): Record<string, PluginInstallRecord> | undefined {
   const source = inspectShippedPluginInstallConfigRecords(snapshot.sourceConfig);
   if (source.status === "missing") {
@@ -135,6 +144,121 @@ export function readShippedPluginInstallConfigImportRecords(
     source.records,
   );
 }
+
+/** In-memory admission inventory, not a receipt authorizing removal of source records. */
+type PreparedShippedPluginInstallConfigImport = {
+  source: Pick<ConfigFileSnapshot, "path" | "hash" | "sourceConfig">;
+  databasePath: string;
+  installRecords: Record<string, PluginInstallRecord>;
+  /** Exact canonical row includes its revision; absence is distinct from an empty index. */
+  persistedIndexValue: string | undefined;
+  includeFileHashesForWrite: Record<string, string> | undefined;
+  includeFileTargetsForWrite: Record<string, string> | undefined;
+  assertConfigPathForWrite: (() => void) | undefined;
+};
+
+async function readPluginImportSourceForWrite(): Promise<ReadConfigFileSnapshotForWriteResult> {
+  const { createConfigIO } = await import("../../../config/config.js");
+  const { createManagedRuntimeEnvBase } = await import("../../../config/io.read-helpers.js");
+  const { hasManagedRuntimeConfigWriteOwner } = await import("../../../config/runtime-snapshot.js");
+  // "skip" can still collect executable legacy diagnostics on invalid config. Core-only cannot.
+  const options = { pluginValidation: "core-only" as const, observe: false };
+  const processIo = createConfigIO(options);
+  const io = hasManagedRuntimeConfigWriteOwner(processIo.configPath)
+    ? createConfigIO({ ...options, env: createManagedRuntimeEnvBase() })
+    : processIo;
+  const current = await io.readConfigFileSnapshotForWrite();
+  current.writeOptions.assertConfigPathForWrite?.();
+  return current;
+}
+
+function readImportIndexValue(databasePath: string): string | undefined {
+  return readPersistedInstalledPluginIndexRowSync({
+    filePath: databasePath,
+    artifactPreservingReadOnly: true,
+  })?.value_json;
+}
+
+function assertPreparedImportCurrent(
+  staged: PreparedShippedPluginInstallConfigImport,
+  current: ReadConfigFileSnapshotForWriteResult,
+): void {
+  staged.assertConfigPathForWrite?.();
+  current.writeOptions.assertConfigPathForWrite?.();
+  if (
+    staged.databasePath !== resolveInstalledPluginIndexStorePath() ||
+    !isDeepStrictEqual(staged.source, {
+      path: current.snapshot.path,
+      hash: current.snapshot.hash,
+      sourceConfig: current.snapshot.sourceConfig,
+    }) ||
+    !isDeepStrictEqual(
+      staged.includeFileHashesForWrite,
+      current.writeOptions.includeFileHashesForWrite,
+    ) ||
+    !isDeepStrictEqual(
+      staged.includeFileTargetsForWrite,
+      current.writeOptions.includeFileTargetsForWrite,
+    )
+  ) {
+    throw new ConfigMutationConflictError("config changed after plugin install preparation");
+  }
+  if (readImportIndexValue(staged.databasePath) !== staged.persistedIndexValue) {
+    throw new ConfigMutationConflictError("plugin index revision changed after preparation");
+  }
+}
+
+/** Stage merged source inventory without publishing it or loading executable plugin contracts. */
+export async function prepareShippedPluginInstallConfigImport(
+  snapshot: ConfigFileSnapshot,
+): Promise<PreparedShippedPluginInstallConfigImport | undefined> {
+  const source = inspectShippedPluginInstallConfigRecords(snapshot.sourceConfig);
+  if (source.status === "missing") {
+    return undefined;
+  }
+  if (source.status === "invalid") {
+    throw new InvalidPluginInstallRecordStateError(INVALID_CONFIG_INSTALL_RECORD_MESSAGE);
+  }
+  // Capture include ownership without executing the payload being admitted or observing writes.
+  const current = await readPluginImportSourceForWrite();
+  const databasePath = resolveInstalledPluginIndexStorePath();
+  const persistedIndexValue = readImportIndexValue(databasePath);
+  const installRecords = withPluginCache(createPluginCache(), () =>
+    readShippedPluginInstallConfigImportRecords(snapshot, {
+      filePath: databasePath,
+      artifactPreservingReadOnly: true,
+    }),
+  );
+  const staged: PreparedShippedPluginInstallConfigImport = {
+    source: structuredClone({
+      path: snapshot.path,
+      hash: snapshot.hash,
+      sourceConfig: snapshot.sourceConfig,
+    }),
+    databasePath,
+    installRecords: copyPluginInstallRecordMap(structuredClone(installRecords)),
+    persistedIndexValue,
+    includeFileHashesForWrite: structuredClone(current.writeOptions.includeFileHashesForWrite),
+    includeFileTargetsForWrite: structuredClone(current.writeOptions.includeFileTargetsForWrite),
+    assertConfigPathForWrite: current.writeOptions.assertConfigPathForWrite,
+  };
+  assertPreparedImportCurrent(staged, current);
+  return staged;
+}
+
+type ShippedPluginInstallConfigImportOptions =
+  | {
+      prepared: PreparedShippedPluginInstallConfigImport;
+      /** Persisted debt generation admitted by the caller, not staged convergence output. */
+      expectedPending: readonly DeferredPluginMigration[];
+      /** Full plugin-aware validation after required-owner convergence; throw to refuse. */
+      validateRecords: (records: Record<string, PluginInstallRecord>) => void | Promise<void>;
+    }
+  | {
+      prepared?: undefined;
+      expectedPending?: undefined;
+      validateRecords?: (records: Record<string, PluginInstallRecord>) => void | Promise<void>;
+    };
 
 export type ShippedPluginInstallConfigImport = {
   source: Pick<ConfigFileSnapshot, "path" | "hash" | "sourceConfig">;
@@ -156,6 +280,7 @@ export function assertShippedPluginInstallConfigImportCurrent(
   }
   if (
     !imported ||
+    typeof imported.pluginInventoryChanged !== "boolean" ||
     imported.databasePath !== resolveInstalledPluginIndexStorePath() ||
     !isDeepStrictEqual(imported.source, {
       path: snapshot.path,
@@ -167,13 +292,37 @@ export function assertShippedPluginInstallConfigImportCurrent(
   }
 }
 
-/** Preserve retired source records before Doctor can restore or rewrite their config. */
+/**
+ * Publish retired source records before Doctor can restore or rewrite their config.
+ * Automatic admission must stage inventory first and pass it back only after convergence.
+ * Its validator must perform full plugin-aware validation, not the core-only repair preview.
+ */
 export async function importShippedPluginInstallConfigForDoctor(
   snapshot: ConfigFileSnapshot,
-  options: {
-    validateRecords?: (records: Record<string, PluginInstallRecord>) => void;
-  } = {},
+  options: ShippedPluginInstallConfigImportOptions = {},
 ): Promise<ShippedPluginInstallConfigImport | undefined> {
+  const staged = options.prepared;
+  if (staged && !Array.isArray(options.expectedPending)) {
+    throw new ConfigMutationConflictError(
+      "plugin migration admission requires its debt generation",
+    );
+  }
+  // A validator must not be able to replace the generation after asynchronous admission.
+  const expectedPending = staged ? structuredClone(options.expectedPending) : undefined;
+  const assertDebtCurrent = expectedPending
+    ? () => assertDeferredPluginMigrationsCurrent({ expectedPending })
+    : undefined;
+  if (
+    staged &&
+    (!isDeepStrictEqual(staged.source, {
+      path: snapshot.path,
+      hash: snapshot.hash,
+      sourceConfig: snapshot.sourceConfig,
+    }) ||
+      staged.databasePath !== resolveInstalledPluginIndexStorePath())
+  ) {
+    throw new ConfigMutationConflictError("config changed after plugin install preparation");
+  }
   const source = inspectShippedPluginInstallConfigRecords(snapshot.sourceConfig);
   if (source.status === "missing") {
     return undefined;
@@ -193,16 +342,28 @@ export async function importShippedPluginInstallConfigForDoctor(
     databasePath,
     pluginInventoryChanged,
   });
-  if (Object.keys(source.records).length === 0) {
+  if (!staged && Object.keys(source.records).length === 0) {
     return receipt(resolveInstalledPluginIndexStorePath(), false);
   }
   const { commitPluginInstallRecordsOnly } =
     await import("../../../plugins/install-record-commit.js");
   const { withPluginLifecycleLease } = await import("../../../plugins/plugin-lifecycle-lease.js");
   // Installers take the plugin lease before the config lock; retain that order here.
-  return await withPluginLifecycleLease({}, async (lease) =>
+  // Nested index writers inherit this authority and invoke it synchronously from
+  // assertOwnedInTransaction under the canonical write's coordinator/transaction.
+  // An async validation precheck cannot cover the later publication boundary.
+  return await withPluginLifecycleLease({ assertCurrent: assertDebtCurrent }, async (lease) =>
     withConfigMutationExclusive(async () => {
-      const prepared = await readConfigFileSnapshotForWrite();
+      lease.assertOwned();
+      if (staged && staged.databasePath !== lease.databasePath) {
+        throw new ConfigMutationConflictError("plugin index changed after preparation");
+      }
+      const readCurrentSource = () =>
+        staged ? readPluginImportSourceForWrite() : readConfigFileSnapshotForWrite();
+      const prepared = await readCurrentSource();
+      if (staged) {
+        assertPreparedImportCurrent(staged, prepared);
+      }
       if (
         prepared.snapshot.path !== snapshot.path ||
         prepared.snapshot.hash !== snapshot.hash ||
@@ -210,15 +371,43 @@ export async function importShippedPluginInstallConfigForDoctor(
       ) {
         throw new ConfigMutationConflictError("config changed before plugin install migration");
       }
-      const storeOptions = { filePath: lease.databasePath };
-      const previousInstallRecords = await loadInstalledPluginIndexInstallRecords(storeOptions);
-      const persisted = readPersistedInstalledPluginIndexInstallRecords(storeOptions);
-      const nextInstallRecords = mergeShippedPluginInstallRecords(
-        previousInstallRecords,
-        persisted,
-        source.records,
+      const storeOptions = { filePath: lease.databasePath, artifactPreservingReadOnly: true };
+      const readInventory = async () => {
+        const previousInstallRecords = await loadInstalledPluginIndexInstallRecords(storeOptions);
+        const persisted = readPersistedInstalledPluginIndexInstallRecords(storeOptions);
+        const nextInstallRecords = mergeShippedPluginInstallRecords(
+          previousInstallRecords,
+          persisted,
+          source.records,
+        );
+        return { previousInstallRecords, persisted, nextInstallRecords };
+      };
+      const { previousInstallRecords, persisted, nextInstallRecords } = staged
+        ? await withPluginCache(createPluginCache(), readInventory)
+        : await readInventory();
+      if (
+        staged &&
+        !isDeepStrictEqual(nextInstallRecords, copyPluginInstallRecordMap(staged.installRecords))
+      ) {
+        throw new ConfigMutationConflictError("plugin inventory changed after preparation");
+      }
+      // Await refusal before the first canonical write. Do not let validation mutate the merge.
+      await options.validateRecords?.(
+        copyPluginInstallRecordMap(structuredClone(nextInstallRecords)),
       );
-      options.validateRecords?.(nextInstallRecords);
+      lease.assertOwned();
+      if (staged) {
+        // Validation/convergence may await: identical merged records do not fence deletions or ABA.
+        const current = await readCurrentSource();
+        const refreshed = withPluginCache(createPluginCache(), () =>
+          readShippedPluginInstallConfigImportRecords(current.snapshot, storeOptions),
+        );
+        lease.assertOwned();
+        assertPreparedImportCurrent(staged, current);
+        if (!isDeepStrictEqual(refreshed, nextInstallRecords)) {
+          throw new ConfigMutationConflictError("plugin inventory changed during validation");
+        }
+      }
       if (isDeepStrictEqual(nextInstallRecords, persisted)) {
         return receipt(lease.databasePath, false);
       }
@@ -228,7 +417,7 @@ export async function importShippedPluginInstallConfigForDoctor(
         nextConfig: withoutPluginInstallRecords(snapshot.sourceConfig),
         verifyConfigFresh: async () => {
           prepared.writeOptions.assertConfigPathForWrite?.();
-          const current = await readConfigFileSnapshotForWrite();
+          const current = await readCurrentSource();
           // Includes can change without changing the root hash; retain the whole write ownership.
           if (
             current.snapshot.path !== prepared.snapshot.path ||

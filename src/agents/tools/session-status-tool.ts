@@ -45,11 +45,11 @@ import {
 } from "../../tasks/task-status.js";
 import {
   deliveryContextFromSession,
-  normalizeDeliveryContext,
   sessionDeliveryChannel,
   sessionDeliveryOrigin,
   type DeliveryContext,
-} from "../../utils/delivery-context.shared.js";
+} from "../../utils/delivery-context.read.js";
+import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import {
   isDeliverableMessageChannel,
   normalizeMessageChannel,
@@ -493,7 +493,6 @@ async function resolveModelOverride(params: {
     agentId: params.agentId,
   });
   const currentProvider = params.sessionEntry?.providerOverride?.trim() || configDefault.provider;
-  const currentModel = params.sessionEntry?.modelOverride?.trim() || configDefault.model;
 
   const aliasIndex = buildModelAliasIndex({
     cfg: params.cfg,
@@ -532,7 +531,7 @@ async function resolveModelOverride(params: {
     cfg: params.cfg,
     catalog,
     defaultProvider: currentProvider,
-    defaultModel: currentModel,
+    defaultModel: configDefault,
     agentId: params.agentId,
     allowManifestNormalization: true,
     allowPluginNormalization: true,

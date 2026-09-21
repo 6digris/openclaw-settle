@@ -10,12 +10,13 @@ import {
 import { withConfigMutationLock } from "../../config/mutate.js";
 import { resolveStateDir } from "../../config/paths.js";
 import type { ConfigFileSnapshot } from "../../config/types.openclaw.js";
+import {
+  restoreGatewayServiceDefinitionBackup,
+  verifyGatewayServiceDefinitionBackup,
+} from "../../daemon/service-definition-backup.js";
+import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import {
-  createPackageIntegrityReader,
-  type PackageIntegrityFingerprint,
-} from "../../infra/package-update-integrity.js";
 import type { PackageUpdateTransaction } from "../../infra/package-update-steps.js";
 import { replaceFileAtomic } from "../../infra/replace-file.js";
 import {
@@ -25,22 +26,11 @@ import {
   type UpdateStateSchemaVersion,
 } from "../../infra/update-candidate-state.js";
 import { NativePackageRollbackError } from "../../infra/update-native-package-stage.js";
-import type { UpdateRecoveryBackupRef } from "../../infra/update-recovery-backup-contract.js";
-import {
-  verifyUpdateRecoveryBackup,
-  writeUpdateRecoveryBackupOutcome,
-} from "../../infra/update-recovery-backup.js";
-import {
-  assertUpdateRecoveryConfigUnchanged,
-  withUpdateRecoveryConfigValidation,
-} from "../../infra/update-recovery-config-writes.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
-import {
-  assertUpdateRecoveryAdmission,
-  assertUpdateRecoveryBackupAdmission,
-} from "../../infra/update-run-recovery-admission.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
-import { defaultRuntime } from "../../runtime.js";
+import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
+import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import type { UpdateCommandOptions } from "./shared.js";
@@ -49,14 +39,17 @@ import {
   type UpdateConfigSnapshot,
 } from "./update-command-config-snapshot.js";
 import { readPackageUpdateIdentity } from "./update-command-package.js";
-import { restoreUpdateRecoveryState } from "./update-command-rollback-state.js";
-import { runUpdatedInstallGatewayCommand } from "./update-command-service-command.js";
+import type {
+  UpdateServiceDefinitionRecovery,
+  OriginalManagedServiceRuntime,
+} from "./update-command-service-context-types.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import {
   createWindowsTaskAutoStartGuard,
   revalidateManagedGatewayServiceAfterUpdate,
 } from "./update-command-service-maintenance.js";
 import { assertGatewayServiceManagementAllowedForUpdate } from "./update-command-service-plan.js";
+import { compensateOriginalManagedService } from "./update-command-service-recovery.js";
 import {
   maybeRestartService,
   maybeResumeWindowsTaskAutoStartAfterPackageUpdate,
@@ -64,19 +57,19 @@ import {
   resolveUpdatedGatewayRestartPort,
   type PreManagedServiceStop,
 } from "./update-command-service.js";
-/** Restore the verified state set before restarting the retained package. */
+
+/** Restores the previous generation only while schemas and activation-owned config stay intact. */
 export async function rollbackFailedUpdate(params: {
   result: UpdateRunResult;
   previousRoot: string;
   packageTransaction?: PackageUpdateTransaction;
-  unchangedCore?: { root: string; fingerprint: PackageIntegrityFingerprint };
-  allowGatewayRestart?: boolean;
-  updateRecoveryBackup?: UpdateRecoveryBackupRef;
   rollbackBlockedReason?: "state-migrated-no-rollback" | "rollback-state-unverified";
   schemaVersions?: UpdateStateSchemaVersion[];
   candidateSchemaVersions?: OpenClawSchemaVersions;
   previousSchemaVersions?: OpenClawSchemaVersions;
   previousVerified?: boolean;
+  originalManagedServiceRuntime?: OriginalManagedServiceRuntime;
+  allowGatewayRestart?: boolean;
   configSnapshot: ConfigFileSnapshot;
   activationConfig?: UpdateConfigSnapshot;
   opts: UpdateCommandOptions;
@@ -84,13 +77,14 @@ export async function rollbackFailedUpdate(params: {
   timeoutMs: number;
   nodeRunner?: string;
   invocationCwd?: string;
+  definitionRecovery: UpdateServiceDefinitionRecovery;
 }): Promise<{
   result: UpdateRunResult;
   rolledBack: boolean;
   stoppedForRollback?: PreManagedServiceStop;
   verifiedAtMs?: number;
   pendingRecoveryReason?: string;
-  stateRestored?: boolean;
+  originalServiceRecovery?: "healthy" | "failed";
 }> {
   const { preManagedServiceStop: before, packageTransaction, opts } = params;
   const run = opts.run;
@@ -101,81 +95,22 @@ export async function rollbackFailedUpdate(params: {
     }
     executor?.assertCurrent();
   };
-  let result = params.result;
-  let stateRestored = false;
-  let recoveryManifest: Awaited<ReturnType<typeof verifyUpdateRecoveryBackup>> | undefined;
-  let stoppedForRollback: PreManagedServiceStop | undefined;
-  const failed = async (reason: string, detail = reason) => {
-    const failure: UpdateRunResult = {
-      ...result,
-      status: "error",
-      reason:
-        result.recovery?.serviceRestartSafe === true && result.recovery.packageRollbackVerified
-          ? (params.result.reason ?? reason)
-          : reason,
-    };
-    if (!params.updateRecoveryBackup || stateRestored) {
-      return { result: failure, rolledBack: false, stoppedForRollback, stateRestored };
-    }
-    let recoveryDetail = `${detail} Retained update-recovery set: ${params.updateRecoveryBackup.manifestPath}. Keep the Gateway stopped and run \`npx openclaw@latest doctor --fix\`.`;
-    try {
-      assertCurrent();
-      // Until state is restored, the backup outcome is the safe durable report;
-      // the previous runtime cannot write a forward-migrated run ledger.
-      await writeUpdateRecoveryBackupOutcome(
-        params.updateRecoveryBackup,
-        { status: "restore-failed", error: recoveryDetail },
-        { assertOwned: assertCurrent },
-      );
-    } catch (error) {
-      recoveryDetail += ` Backup failure outcome could not be recorded: ${formatErrorMessage(error)}.`;
-    }
-    failure.recovery = { serviceRestartSafe: false, reason: "runtime-verification-failed" };
-    failure.steps = [
-      ...failure.steps,
-      {
-        name: "state rollback",
-        command: "npx openclaw@latest doctor --fix",
-        cwd: params.previousRoot,
-        durationMs: 0,
-        exitCode: 1,
-        stderrTail: recoveryDetail,
-      },
-    ];
-    return {
-      result: failure,
-      rolledBack: false,
-      stoppedForRollback,
-      stateRestored: false,
-      pendingRecoveryReason: recoveryDetail,
-    };
-  };
   const env = before?.serviceEnv ?? opts.run?.env ?? process.env;
-  const assertAdmission = (
-    admissionEnv: NodeJS.ProcessEnv,
-    targetPath = resolveOpenClawStateSqlitePath(admissionEnv),
-  ) =>
-    params.updateRecoveryBackup
-      ? assertUpdateRecoveryBackupAdmission({ env: admissionEnv, path: targetPath }, assertCurrent)
-      : assertUpdateRecoveryAdmission({ env: admissionEnv, path: targetPath });
   if (!opts.recovery) {
     try {
       assertCurrent();
       // A lost live context (including the same run ID) is not permission to
       // fall back to legacy rollback, even when publication removed the main DB.
       const targetPath = resolveOpenClawStateSqlitePath(env);
-      await assertAdmission(env, targetPath);
+      await assertUpdateRecoveryAdmission({ env, path: targetPath });
       assertCurrent();
       // Service authority and diagnostic history can select distinct state
       // roots. Neither may contain pending recovery before legacy mutation.
       if (opts.run && resolveOpenClawStateSqlitePath(opts.run.env) !== targetPath) {
-        await assertAdmission(opts.run.env);
+        await assertUpdateRecoveryAdmission({ env: opts.run.env });
         assertCurrent();
       }
     } catch (error) {
-      if (params.updateRecoveryBackup) {
-        return failed("rollback-state-unverified", formatErrorMessage(error));
-      }
       return {
         result: {
           ...params.result,
@@ -201,6 +136,12 @@ export async function rollbackFailedUpdate(params: {
         "Full-state checkpoint recovery is deferred; the retained record and artifacts were left unchanged.",
     };
   }
+  // A's original service is independent of B's package transaction. Keep the
+  // existing admission and explicit recovery refusals above this selection.
+  if (params.originalManagedServiceRuntime) {
+    return compensateOriginalManagedService(params, assertCurrent);
+  }
+  let result = params.result;
   const config =
     params.configSnapshot.sourceConfigBeforeMigrations ?? params.configSnapshot.sourceConfig;
   const configSnapshot = params.activationConfig ?? {
@@ -210,8 +151,21 @@ export async function rollbackFailedUpdate(params: {
   };
   const recoveryEnv = { ...env, [ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS_ENV]: "1" };
   const port = before?.stopped
-    ? await resolveUpdatedGatewayRestartPort({ config, serviceEnv: env })
+    ? (before.servicePort ?? (await resolveUpdatedGatewayRestartPort({ config, serviceEnv: env })))
     : undefined;
+  const failed = (reason: string) => ({
+    result: {
+      ...result,
+      status: "error" as const,
+      rollbackOutcome: result.rollbackOutcome ?? { status: "not-attempted" as const, reason },
+      reason:
+        result.recovery?.serviceRestartSafe === true && result.recovery.packageRollbackVerified
+          ? (params.result.reason ?? reason)
+          : reason,
+    },
+    rolledBack: false,
+    stoppedForRollback,
+  });
   const stateUnchanged = async () => {
     assertCurrent();
     const baseline = params.schemaVersions;
@@ -248,7 +202,7 @@ export async function rollbackFailedUpdate(params: {
       const supported = params.previousSchemaVersions?.[kind];
       if (supported === undefined || version > supported) {
         throw new Error(
-          `Automatic rollback refused: newly created ${kind} database ${entry.path} uses schema ${version}; retained previous package support is ${supported ?? "unknown"}. Keep the candidate installed.`,
+          `Automatic rollback refused: newly created ${kind} database ${entry.path} uses schema ${version}; retained previous package support is ${supported ?? "unknown"}. Keep the update installed.`,
         );
       }
     }
@@ -256,15 +210,10 @@ export async function rollbackFailedUpdate(params: {
     assertCurrent();
     return true;
   };
+  let stoppedForRollback: PreManagedServiceStop | undefined;
   let failureReason = "rollback-state-unverified";
   const assertConfigUnchanged = async () => {
     assertCurrent();
-    if (params.updateRecoveryBackup) {
-      await assertUpdateRecoveryConfigUnchanged(params.updateRecoveryBackup, {
-        assertOwned: assertCurrent,
-      });
-      return;
-    }
     let unchanged =
       params.activationConfig?.doctorOwned !== false &&
       (await readUpdateConfigSnapshot(configSnapshot.path)).hash === configSnapshot.hash;
@@ -291,7 +240,7 @@ export async function rollbackFailedUpdate(params: {
         steps: [
           ...result.steps,
           {
-            name: "config rollback",
+            name: "config-rollback",
             command: "restore pre-update config",
             cwd: params.previousRoot,
             durationMs: 0,
@@ -311,8 +260,6 @@ export async function rollbackFailedUpdate(params: {
     const stopped = await withOwnedManagedUpdateEnv(recoveryEnv, () =>
       maybeStopManagedServiceBeforeMutableUpdate({
         updateRun: opts.run,
-        deferLedgerWrites: Boolean(params.updateRecoveryBackup),
-        restoreWindowsTaskOnFailure: false,
         updateInstallKind: "package",
         root: result.root ?? params.previousRoot,
         shouldRestart: true,
@@ -336,54 +283,71 @@ export async function rollbackFailedUpdate(params: {
       stopped.serviceMutationAllowed === false ||
       (stopped.running && !stopped.stopped)
     ) {
-      throw new Error(stopped.blockMessage ?? "Candidate service could not be stopped safely.");
+      throw new Error(stopped.blockMessage ?? "Update service could not be stopped safely.");
     }
     return stopped;
   };
   try {
     assertCurrent();
-    if (params.updateRecoveryBackup) {
-      const manifest = await verifyUpdateRecoveryBackup(params.updateRecoveryBackup);
-      recoveryManifest = manifest;
-      assertCurrent();
-      if (manifest.runId !== run?.runId || manifest.installRoot !== params.previousRoot) {
-        throw new Error("Update recovery backup does not belong to this run and installation.");
-      }
-      await assertConfigUnchanged();
-    } else if (params.rollbackBlockedReason) {
-      result.steps.push({
-        name: "state rollback",
-        command: "npx openclaw@latest doctor --fix",
-        cwd: params.previousRoot,
-        durationMs: 0,
-        exitCode: 1,
-        stderrTail:
-          "Automatic rollback refused: no verified update-recovery set is available. Run `npx openclaw@latest doctor --fix` to recover with a compatible runtime.",
-      });
+    if (params.rollbackBlockedReason) {
       return failed(params.rollbackBlockedReason);
     }
-    if (!params.updateRecoveryBackup && !params.schemaVersions) {
+    if (params.definitionRecovery.unverified) {
+      return failed("service-definition-rollback-unverified");
+    }
+    if (!params.schemaVersions) {
       return failed("rollback-state-unverified");
     }
-    if (!params.updateRecoveryBackup && !(await stateUnchanged())) {
+    if (!(await stateUnchanged())) {
       return failed("state-migrated-no-rollback");
     }
     await packageTransaction?.assertRollbackSafe?.();
     assertCurrent();
-    const stopped = before?.stopped ? await stop() : undefined;
-    const restore = async () => {
-      // Recheck after stop so a final startup migration cannot race the first read.
-      failureReason = "rollback-state-unverified";
-      if (params.updateRecoveryBackup) {
-        await verifyUpdateRecoveryBackup(params.updateRecoveryBackup);
-        await assertConfigUnchanged();
-      }
-      if (!params.updateRecoveryBackup && !(await stateUnchanged())) {
-        return failed("state-migrated-no-rollback");
-      }
-      failureReason = "source-rollback-failed";
-      if (packageTransaction) {
+    const definitionBackup = params.definitionRecovery.backup;
+    const restoreGeneration = async (assertNativeCurrent: () => void) => {
+      const assertRestorationCurrent = () => {
         assertCurrent();
+        assertNativeCurrent();
+      };
+      if (definitionBackup) {
+        failureReason = "service-definition-rollback-unverified";
+      }
+      const command = definitionBackup
+        ? await resolveGatewayService().readCommand(recoveryEnv, { requireEffective: true })
+        : undefined;
+      if (definitionBackup && !command) {
+        throw new Error("Service definition cannot be inspected for backup restoration.");
+      }
+      const definition =
+        definitionBackup && command
+          ? {
+              env: recoveryEnv,
+              command,
+              receipt: definitionBackup,
+              assertCurrent: assertRestorationCurrent,
+            }
+          : undefined;
+      if (definition) {
+        await verifyGatewayServiceDefinitionBackup(definition);
+      }
+      assertRestorationCurrent();
+      const stopped = before?.stopped ? await stop() : undefined;
+      const restore = async () => {
+        // Recheck after stop so a final startup migration cannot race the first read.
+        failureReason = "rollback-state-unverified";
+        if (!(await stateUnchanged())) {
+          return failed("state-migrated-no-rollback");
+        }
+        failureReason = "source-rollback-failed";
+        if (!packageTransaction) {
+          throw new Error("The retained package transaction is unavailable.");
+        }
+        assertRestorationCurrent();
+        result.rollbackOutcome = {
+          status: "failed",
+          reason: "Previous generation restoration did not complete",
+        };
+        // Package cleanup retains this executor after the native lock closes.
         const { activePackageRoot, ...restored } = await packageTransaction.rollback(assertCurrent);
         // Restoration changes the active runtime before any later reporting or
         // restart can fail. Carry that identity through every recovery outcome.
@@ -393,7 +357,7 @@ export async function rollbackFailedUpdate(params: {
           after: undefined,
           steps: [...result.steps, restored],
         };
-        assertCurrent();
+        assertRestorationCurrent();
         if (restored.exitCode === 0) {
           // The transaction verified the previous package. Do not gate its restart
           // on an extra diagnostic read whose result would be discarded.
@@ -405,9 +369,9 @@ export async function rollbackFailedUpdate(params: {
           };
         } else if (activePackageRoot) {
           result.after = await readPackageUpdateIdentity(activePackageRoot);
-          assertCurrent();
+          assertRestorationCurrent();
         }
-        if (opts.run && !params.updateRecoveryBackup) {
+        if (opts.run) {
           recordUpdateRunStep(
             opts.run.runId,
             {
@@ -420,149 +384,109 @@ export async function rollbackFailedUpdate(params: {
           );
         }
         if (restored.exitCode !== 0) {
-          return failed(
-            restored.reason ?? "source-rollback-failed",
-            restored.stderrTail ?? restored.reason ?? "source-rollback-failed",
-          );
+          return failed(restored.reason ?? "source-rollback-failed");
         }
-      } else {
-        const baseline = params.unchangedCore;
-        if (
-          !params.updateRecoveryBackup ||
-          !baseline ||
-          baseline.root !== params.previousRoot ||
-          result.root !== params.previousRoot
-        ) {
-          throw new Error("The retained package transaction is unavailable.");
-        }
-        const fingerprint = await createPackageIntegrityReader().tree(
-          await fs.realpath(params.previousRoot),
-        );
-        assertCurrent();
-        if (!isDeepStrictEqual(fingerprint, baseline.fingerprint)) {
-          throw new Error("Core package changed; state-only rollback was refused.");
-        }
-        result = {
-          ...result,
-          after: result.before,
-          recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-          steps: [
-            ...result.steps,
-            {
-              name: "package rollback",
-              command: "verify unchanged core",
-              cwd: params.previousRoot,
-              durationMs: 0,
-              exitCode: 0,
-              stdoutTail: "Core package is unchanged; only captured state requires restoration.",
-            },
-          ],
-        };
-      }
-      failureReason = "rollback-state-unverified";
-      if (params.updateRecoveryBackup) {
-        const restoredState = await restoreUpdateRecoveryState(params.updateRecoveryBackup, {
-          assertOwned: assertCurrent,
-        });
-        assertCurrent();
-        stateRestored = true;
-        for (const warning of restoredState.warnings) {
-          defaultRuntime.error(`Warning: ${warning}`);
-          result.steps.push({
-            name: "backup outcome warning",
-            command: "openclaw update",
-            cwd: params.previousRoot,
-            durationMs: 0,
-            exitCode: 0,
-            stderrTail: warning,
-          });
-        }
-        const detail = `Restored verified update-recovery set: ${params.updateRecoveryBackup.manifestPath}`;
-        result.steps.push({
-          name: "state rollback",
-          command: "restore update-recovery backup",
-          cwd: params.previousRoot,
-          durationMs: 0,
-          exitCode: 0,
-          stdoutTail: detail,
-        });
-        if (run) {
-          recordUpdateRunStep(
-            run.runId,
-            { step: "state rollback", status: "completed", endedAtMs: Date.now(), detail },
-            { env: run.env },
-          );
-          recordUpdateRunStep(
-            run.runId,
-            {
-              step: "package rollback",
-              status: packageTransaction ? "completed" : "skipped",
-              endedAtMs: Date.now(),
-            },
-            { env: run.env },
-          );
-        }
-      } else if (configSnapshot.hash === hashConfigRaw(configSnapshot.raw)) {
-        await assertConfigUnchanged();
-      } else {
-        await assertConfigUnchanged();
-        if (configSnapshot.raw === null) {
-          await fs.rm(configSnapshot.path, { force: true });
+        failureReason = "rollback-state-unverified";
+        if (configSnapshot.hash === hashConfigRaw(configSnapshot.raw)) {
+          await assertConfigUnchanged();
         } else {
-          await replaceFileAtomic({
-            filePath: configSnapshot.path,
-            content: configSnapshot.raw,
-            mode: 0o600,
-            preserveExistingMode: false,
-            beforeRename: assertConfigUnchanged,
-          });
+          await assertConfigUnchanged();
+          assertRestorationCurrent();
+          if (configSnapshot.raw === null) {
+            await fs.rm(configSnapshot.path, { force: true });
+          } else {
+            await replaceFileAtomic({
+              filePath: configSnapshot.path,
+              content: configSnapshot.raw,
+              mode: 0o600,
+              preserveExistingMode: false,
+              beforeRename: async () => {
+                await assertConfigUnchanged();
+                assertRestorationCurrent();
+              },
+            });
+          }
         }
+        assertRestorationCurrent();
+        return undefined;
+      };
+      // Unchanged config needs only the legacy read checks, including read-only
+      // installs. Doctor-owned replacement must exclude config writers before
+      // package rollback and retain that owner until config restoration settles.
+      const refused =
+        configSnapshot.hash === hashConfigRaw(configSnapshot.raw)
+          ? await restore()
+          : await withOwnedManagedUpdateEnv(env, () =>
+              withConfigMutationLock({ lockPath: configSnapshot.path }, restore),
+            );
+      assertRestorationCurrent();
+      if (refused) {
+        return { refused, stopped };
       }
-      assertCurrent();
-      return undefined;
-    };
-    // Unchanged config needs only the legacy read checks, including read-only
-    // installs. Doctor-owned replacement must exclude config writers before
-    // package rollback and retain that owner until config restoration settles.
-    const restoreWithLocks = async () => {
-      if (params.updateRecoveryBackup) {
-        if (!recoveryManifest) {
-          throw new Error("Verified update recovery manifest is unavailable.");
-        }
-        return await withUpdateRecoveryConfigValidation(
-          params.updateRecoveryBackup,
-          recoveryManifest,
-          { assertOwned: assertCurrent },
-          restore,
-        );
+      if (definition) {
+        failureReason = "service-definition-rollback-unverified";
+        await restoreGatewayServiceDefinitionBackup(definition);
+        assertRestorationCurrent();
       }
-      return await withConfigMutationLock({ lockPath: configSnapshot.path }, restore);
+      return { stopped };
     };
-    const refused =
-      !params.updateRecoveryBackup && configSnapshot.hash === hashConfigRaw(configSnapshot.raw)
-        ? await restore()
-        : await withOwnedManagedUpdateEnv(env, restoreWithLocks);
-    assertCurrent();
-    if (refused) {
-      return refused;
+    const restoration = definitionBackup
+      ? await withGatewayServiceOperationLock(recoveryEnv, restoreGeneration)
+      : await restoreGeneration(assertCurrent);
+    if (restoration.refused) {
+      return restoration.refused;
     }
+    result.rollbackOutcome = {
+      status: "succeeded",
+      reason: "Previous package and configuration restored",
+    };
+    const { stopped } = restoration;
     // A no-service or --no-restart update owns file restoration only. Preserve
     // its original failure without claiming or changing a Gateway generation.
-    if (!stopped || port === undefined || params.allowGatewayRestart === false) {
-      return { result, rolledBack: false, stateRestored };
+    if (!stopped || port === undefined) {
+      return { result, rolledBack: false };
     }
-    if ((!params.previousVerified && !params.unchangedCore) || !result.before?.version) {
+    const originalVerdict = before?.serviceUpdateVerdict;
+    const restoresDifferentService =
+      originalVerdict?.kind === "owned" && originalVerdict.requiresInstallRootRefresh;
+    const serviceRoot = restoresDifferentService ? originalVerdict.root : params.previousRoot;
+    const serviceIdentity = restoresDifferentService ? before?.serviceIdentity : result.before;
+    if (!params.previousVerified || !serviceIdentity?.version) {
       // Restoring retained bytes is safe after the schema fence. Starting the
       // previous runtime additionally requires its pre-activation verification.
       return failed("previous-version-unverified");
     }
+    if (
+      restoresDifferentService &&
+      !isDeepStrictEqual(await readPackageUpdateIdentity(serviceRoot), serviceIdentity)
+    ) {
+      return failed("previous-version-unverified");
+    }
+    assertCurrent();
+    // A receipt can restore service A while the package transaction restores CLI B.
+    // Pin A's original command instead of granting the candidate stop snapshot its identity.
+    const restoredService = restoresDifferentService
+      ? {
+          ...stopped,
+          serviceUpdateVerdict: {
+            ...originalVerdict,
+            refreshDefinition: false,
+            requiresInstallRootRefresh: false,
+          },
+          serviceEnv: before?.serviceEnv,
+          serviceNodeRunner: before?.serviceNodeRunner,
+          servicePort: before?.servicePort,
+          serviceIdentity: before?.serviceIdentity,
+          serviceManagerUid: before?.serviceManagerUid,
+        }
+      : stopped;
     failureReason = "service-revalidation-failed";
     await maybeResumeWindowsTaskAutoStartAfterPackageUpdate(
       stopped,
       true,
       createWindowsTaskAutoStartGuard({
-        root: params.previousRoot,
-        before: stopped,
+        root: serviceRoot,
+        before: restoredService,
         timeoutMs: params.timeoutMs,
       }),
       assertCurrent,
@@ -570,57 +494,30 @@ export async function rollbackFailedUpdate(params: {
     assertCurrent();
     // A failed candidate does not authorize its restart. The previous package's
     // pre-activation verification authorizes restarting this schema-neutral restoration.
-    let verdict = stopped.serviceUpdateVerdict ?? before?.serviceUpdateVerdict;
     const nodeRunner = before?.serviceNodeRunner ?? params.nodeRunner;
-    if (verdict?.kind === "owned" && verdict.refreshDefinition) {
-      try {
-        await runUpdatedInstallGatewayCommand(
-          {
-            result,
-            opts,
-            invocationEnv: env,
-            serviceInstallEnv: before?.serviceDefinitionEnv,
-            nodeRunner,
-            timeoutMs: params.timeoutMs,
-            invocationCwd: params.invocationCwd,
-            assertCurrent,
-          },
-          "install",
-        );
-      } catch (error) {
-        if (!stateRestored) {
-          throw error;
-        }
-        const warning = `Service definition refresh failed after state restoration: ${formatErrorMessage(error)}`;
-        defaultRuntime.error(`Warning: ${warning}`);
-        result.steps.push({
-          name: "service definition warning",
-          command: "openclaw gateway install",
-          cwd: params.previousRoot,
-          durationMs: 0,
-          exitCode: 0,
-          stderrTail: warning,
-        });
-      }
-      const state = await readGatewayServiceState(resolveGatewayService(), {
-        env: recoveryEnv,
-        requireEffective: true,
-        requireLoadedCommand: true,
-        validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
-        timeoutMs: params.timeoutMs,
-      });
-      assertCurrent();
-      verdict = await revalidateManagedGatewayServiceAfterUpdate({
-        state,
-        root: params.previousRoot,
-        preManagedServiceStop: stopped,
-      });
+    const state = await readGatewayServiceState(resolveGatewayService(), {
+      env: recoveryEnv,
+      requireEffective: true,
+      requireLoadedCommand: true,
+      validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
+      timeoutMs: params.timeoutMs,
+    });
+    let verdict = await revalidateManagedGatewayServiceAfterUpdate({
+      state,
+      root: serviceRoot,
+      preManagedServiceStop: restoredService,
+    });
+    if (verdict.kind === "owned") {
+      verdict = { ...verdict, refreshDefinition: false, requiresInstallRootRefresh: false };
     }
+    assertCurrent();
+    stoppedForRollback = { ...restoredService, serviceUpdateVerdict: verdict };
     result.recovery = {
       serviceRestartSafe: true,
       packageRollbackVerified: true,
-      version: result.before.version,
-      ...(result.before.buildId ? { buildId: result.before.buildId } : {}),
+      version: serviceIdentity.version,
+      reason: "gateway-verification-incomplete",
+      ...(serviceIdentity.buildId ? { buildId: serviceIdentity.buildId } : {}),
     };
     assertCurrent();
     if (opts.run) {
@@ -635,12 +532,17 @@ export async function rollbackFailedUpdate(params: {
       );
     }
     failureReason = "restart-unhealthy";
+    let verificationFailure: string | undefined;
     let verifiedAtMs: number | undefined;
     const restartOutcome = await maybeRestartService({
       shouldRestart: true,
       result,
       opts,
       refreshServiceEnv: false,
+      expectedGatewayIdentity: {
+        version: serviceIdentity.version,
+        ...(serviceIdentity.buildId ? { buildId: serviceIdentity.buildId } : {}),
+      },
       serviceUpdateVerdict: verdict,
       serviceManagerUid: before?.serviceManagerUid,
       serviceEnv: recoveryEnv,
@@ -655,24 +557,43 @@ export async function rollbackFailedUpdate(params: {
       onVerified: (at) => {
         verifiedAtMs = at;
       },
+      onVerificationFailure: (reason) => {
+        verificationFailure = reason;
+      },
     });
     assertCurrent();
     const healthy = restartOutcome === "ok";
     return {
       result: {
         ...result,
-        recovery: healthy ? { ...result.recovery, service: "healthy" } : result.recovery,
+        recovery: {
+          ...result.recovery,
+          service: healthy
+            ? "healthy"
+            : restartOutcome === "readiness-pending" || verificationFailure === "timeout"
+              ? undefined
+              : verificationFailure || restartOutcome === "restart-health-failed"
+                ? "failed"
+                : undefined,
+          reason: healthy
+            ? undefined
+            : (verificationFailure ??
+              (restartOutcome === "readiness-pending"
+                ? "gateway-readiness-pending"
+                : restartOutcome === "failed"
+                  ? "restart-failed"
+                  : "restart-unhealthy")),
+        },
       },
       rolledBack: healthy,
-      stateRestored,
       stoppedForRollback,
       ...(verifiedAtMs === undefined ? {} : { verifiedAtMs }),
     };
   } catch (error) {
-    const detail = formatErrorMessage(error);
-    if (params.updateRecoveryBackup && !stateRestored) {
-      return failed("rollback-state-unverified", detail);
+    if (hasCommandProcessCleanupError(error)) {
+      throw error;
     }
+    const detail = formatErrorMessage(error);
     try {
       assertCurrent();
     } catch (cause) {
@@ -691,17 +612,23 @@ export async function rollbackFailedUpdate(params: {
       failureReason = error.reason;
     }
     assertCurrent();
-    if (opts.run) {
-      recordUpdateRunStep(
-        opts.run.runId,
-        {
-          step: "package rollback",
-          status: "failed",
-          endedAtMs: Date.now(),
-          detail,
-        },
-        { env: opts.run.env },
-      );
+    const step = {
+      name: "package rollback",
+      command: "restore previous generation",
+      cwd: params.previousRoot,
+      durationMs: 0,
+      exitCode: 1,
+      stderrTail: detail,
+      warnings: failureReason === "service-definition-rollback-unverified" ? [detail] : [],
+    };
+    if (step.warnings.length) {
+      result.steps.push(step);
+    }
+    if (run) {
+      const endedAtMs = Date.now();
+      for (const row of updateRunStepsFromResultStep(step)) {
+        recordUpdateRunStep(run.runId, { ...row, detail, endedAtMs }, { env: run.env });
+      }
     }
     return failed(failureReason);
   }

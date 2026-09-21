@@ -1,21 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { quoteCliArg, quotePowerShellArg } from "../cli/quote-cli-arg.js";
-import { markPackagePostInstallDoctorAdvisory } from "./package-update-steps.js";
-import { formatUpdateDoctorConfigWriteRefusal } from "./update-doctor-config.js";
-import {
-  consumeUpdatePostInstallDoctorResult,
-  createUpdatePostInstallDoctorResultPath,
-  UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
-} from "./update-doctor-result.js";
-import type { UpdateRecoveryBackupRef } from "./update-recovery-backup-contract.js";
 import { runStep } from "./update-runner-command.js";
-import { buildUpdateDoctorEnv, buildUpdateRecoveryDoctorArgs } from "./update-runner-doctor.js";
-import type {
-  RunStepOptions,
-  UpdateRunnerOptions,
-  UpdateStepResult,
-} from "./update-runner-types.js";
+import type { RunStepOptions, UpdateStepResult } from "./update-runner-types.js";
+
 // A successful Git status command does not imply a clean checkout.
 export async function runGitCleanCheckStep(options: RunStepOptions) {
   const result = await runStep({
@@ -75,7 +63,7 @@ export async function resolveGitDoctorEntry(root: string, steps: UpdateStepResul
     return entry;
   }
   steps.push({
-    name: "openclaw doctor entry",
+    name: "package-doctor-entry",
     command: `verify ${entry}`,
     cwd: root,
     durationMs: 0,
@@ -83,88 +71,4 @@ export async function resolveGitDoctorEntry(root: string, steps: UpdateStepResul
     stderrTail: `missing ${entry}`,
   });
   return null;
-}
-
-export async function runGitDoctorStep(params: {
-  root: string;
-  runDoctor?: UpdateRunnerOptions["runGitDoctor"];
-  entryPath: string;
-  nodePath: string;
-  fix: boolean;
-  updateRecoveryBackup?: UpdateRecoveryBackupRef;
-  updateRecoveryOwner?: "unprotected";
-  env?: NodeJS.ProcessEnv;
-  doctorEnvOptions: Parameters<typeof buildUpdateDoctorEnv>[0];
-  step: (name: string, argv: string[], cwd: string, env?: NodeJS.ProcessEnv) => RunStepOptions;
-}) {
-  const options = params.step(
-    "openclaw doctor",
-    [
-      params.nodePath,
-      params.entryPath,
-      "doctor",
-      "--non-interactive",
-      ...(params.fix ? ["--fix"] : []),
-      ...buildUpdateRecoveryDoctorArgs(params.updateRecoveryBackup, params.updateRecoveryOwner),
-    ],
-    params.root,
-    { ...params.env, ...buildUpdateDoctorEnv(params.doctorEnvOptions) },
-  );
-  if (params.runDoctor) {
-    const result = await params.runDoctor(params.root);
-    options.results?.push(
-      result ?? {
-        name: "openclaw doctor",
-        command: "run activation doctor",
-        cwd: params.root,
-        durationMs: 0,
-        exitCode: 1,
-        stderrTail: "Required activation Doctor did not produce a result.",
-      },
-    );
-    return result;
-  }
-  const doctorResultPath = createUpdatePostInstallDoctorResultPath();
-  try {
-    const doctorStep = await runStep({
-      ...options,
-      env: { ...options.env, [UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]: doctorResultPath },
-      // Doctor holds the state-lifecycle coordinator while repairing shared state.
-      // Keep its parent out of that database: the step receipt waits for the child
-      // to exit, and the heartbeat stays disarmed for the whole window. Recorded
-      // driver liveness still prevents abandonment, and the step start already
-      // recorded activity before the child spawned.
-      progress: { ...options.progress, onStepComplete: undefined, onHeartbeat: undefined },
-    });
-    const doctorResult = await consumeUpdatePostInstallDoctorResult(doctorResultPath);
-    const configWriteRefusal = doctorResult?.configWriteRefusal;
-    Object.assign(
-      doctorStep,
-      markPackagePostInstallDoctorAdvisory(
-        {
-          ...doctorStep,
-          ...(doctorResult?.configChanges?.length
-            ? { configChanges: doctorResult.configChanges }
-            : {}),
-          ...(configWriteRefusal
-            ? {
-                configWriteRefusal,
-                exitCode: 1,
-                stderrTail: formatUpdateDoctorConfigWriteRefusal(configWriteRefusal),
-              }
-            : {}),
-        },
-        doctorResult,
-      ),
-    );
-    options.progress?.onStepComplete?.({
-      ...doctorStep,
-      index: options.stepIndex,
-      total: options.totalSteps,
-    });
-    return doctorStep;
-  } catch (error) {
-    await consumeUpdatePostInstallDoctorResult(doctorResultPath);
-    throw error;
-  }
 }

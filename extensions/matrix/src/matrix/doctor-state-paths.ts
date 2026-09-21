@@ -1,6 +1,7 @@
 import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { PluginDoctorMigrationBackupResource } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { resolveMatrixStateLayoutChildDepth } from "../storage-paths.js";
 export async function collectLegacyMatrixStateRoots(
@@ -14,8 +15,11 @@ export async function collectLegacyMatrixStateRoots(
     let entries: Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
+    } catch (error) {
+      if (isRecord(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
+        return;
+      }
+      throw error;
     }
     for (const entry of entries) {
       const entryPath = path.join(dir, entry.name);

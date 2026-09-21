@@ -9,7 +9,10 @@ import {
   LEGACY_UPDATE_RUN_ADVISORY,
   LEGACY_UPDATE_RUN_EXPIRED_REASON,
 } from "./update-run-legacy-expiry.js";
-import { UNPROTECTED_GATEWAY_UPDATE_ADVISORY } from "./update-run-record.js";
+import {
+  isAcknowledgedAbandonedUpdateRun,
+  UNPROTECTED_GATEWAY_UPDATE_ADVISORY,
+} from "./update-run-record.js";
 /** Status heals the bounded legacy defect while other recovery keeps its existing owner. */
 export function readUpdateRunStatus() {
   let runReconciliationError: string | undefined;
@@ -20,11 +23,14 @@ export function readUpdateRunStatus() {
   }
   try {
     const activeRun = findActiveUpdateRun();
-    const lastRun = listUpdateRuns({ limit: 1 })[0];
+    // A preview is retained in history, but it cannot resolve or hide the last
+    // real update outcome shown to operators.
+    const lastRun = listUpdateRuns({ limit: 1, excludeReason: "dry-run" })[0];
     const abandonment = activeRun ? inspectUpdateRunAbandonment(activeRun) : undefined;
     const staleGuidance = activeRun ? staleUpdateRunGuidance(activeRun) : undefined;
     const expired = listUpdateRuns({ limit: 1, reason: LEGACY_UPDATE_RUN_EXPIRED_REASON })[0];
     const currentRun = activeRun ?? lastRun;
+    const showExpired = expired && !isAcknowledgedAbandonedUpdateRun(expired);
     return {
       ...(runReconciliationError ? { runReconciliationError } : {}),
       ...(activeRun ? { activeRun } : {}),
@@ -35,10 +41,10 @@ export function readUpdateRunStatus() {
       ...(abandonment && abandonment !== LEGACY_UPDATE_RUN_EXPIRED_REASON && activeRun
         ? { abandonedRun: { runId: activeRun.runId, rule: abandonment } }
         : {}),
-      ...(expired || currentRun?.origin.unprotectedGatewayUpdate
+      ...(showExpired || currentRun?.origin.unprotectedGatewayUpdate
         ? {
             advisories: [
-              ...(expired
+              ...(showExpired
                 ? [
                     {
                       runId: expired.runId,

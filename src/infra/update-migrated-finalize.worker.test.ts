@@ -5,18 +5,19 @@ import { loggingState } from "../logging/state.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { defaultRuntime } from "../runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
+
 const fixture = vi.hoisted(() => ({
   close: vi.fn<() => Promise<void>>(),
-  doctor: vi.fn(),
   budget: vi.fn(),
+  activation: vi.fn(),
   finish: vi.fn(),
   terminal: vi.fn(),
   writeFile: vi.fn(),
+  fence: { assertCurrent: vi.fn() },
 }));
 
 // Exercise the executable's output boundary without update, service, or database effects.
 vi.mock("node:fs/promises", () => ({ default: { writeFile: fixture.writeFile } }));
-vi.mock("../flows/doctor-health.js", () => ({ runDoctorHealthFlow: fixture.doctor }));
 vi.mock("../cli/daemon-cli.js", () => ({ finishUpdateRun: vi.fn() }));
 vi.mock("../cli/runtime-cleanup-scope.js", () => ({
   retainCliProcessJobUntilExit: vi.fn(),
@@ -28,8 +29,15 @@ vi.mock("../cli/update-cli/update-command-executor.js", () => ({
     _runId: string,
     _root: string,
     run: (fence: { assertCurrent: () => void }) => Promise<unknown>,
-  ) => run({ assertCurrent: vi.fn() }),
-  withUpdateCommandExecutor: vi.fn(),
+    options?: { activationTimeoutMs: number },
+  ) => {
+    fixture.activation(options);
+    return run({ assertCurrent: vi.fn() });
+  },
+  withUpdateCommandExecutor: async (
+    _runId: string,
+    run: (executor: { enter: () => Promise<typeof fixture.fence> }) => Promise<unknown>,
+  ) => run({ enter: async () => fixture.fence }),
 }));
 vi.mock("../cli/update-cli/update-command-post-update.js", () => ({
   finishUpdate: fixture.finish,
@@ -107,7 +115,6 @@ afterEach(() => {
   loggingState.rawConsole = originalConsole;
   setLoggerOverride(null);
   vi.restoreAllMocks();
-  vi.unstubAllEnvs();
 });
 
 it.each(["json", "human", "check"] as const)(
@@ -178,44 +185,253 @@ it.each(["json", "human", "check"] as const)(
 );
 
 it.each([false, true])(
-  "passes delegated Doctor recovery ownership only with a backup (%s)",
-  async (hasBackup) => {
-    const backup = {
-      directory: "/synthetic/recovery",
-      manifestPath: "/synthetic/recovery/manifest.json",
-      manifestSha256: "a".repeat(64),
+  "binds migrated worker finalization to its local candidate runtime (restart pending=%s)",
+  async (restartPending) => {
+    const env = Object.fromEntries(
+      ["TMPDIR", "TMP", "TEMP"].flatMap((key) =>
+        process.env[key] === undefined ? [] : [[key, process.env[key]]],
+      ),
+    );
+    const input = {
+      params: {
+        root: "/fixture/candidate",
+        result: {
+          status: "ok",
+          mode: "npm",
+          root: "/fixture/candidate",
+          runId: "candidate-run",
+          steps: [],
+          durationMs: 0,
+        },
+        mutationStarted: true,
+        installKindChanged: false,
+        configSnapshot: {
+          path: "/fixture/openclaw.json",
+          exists: false,
+          raw: null,
+          parsed: {},
+          sourceConfig: {},
+          resolved: {},
+          runtimeConfig: {},
+          config: {},
+          valid: true,
+          issues: [],
+          warnings: [],
+          legacyIssues: [],
+        },
+        requestedChannel: null,
+        storedChannel: "stable",
+        channel: "stable",
+        downgradeRisk: false,
+        shouldRestart: false,
+        opts: {
+          json: true,
+          run: {
+            runId: "candidate-run",
+            env,
+            activationTimeoutMs: 1_000,
+            ...(restartPending
+              ? { completionOwner: "gateway-restart" as const, gatewayRestartRequired: true }
+              : {}),
+          },
+        },
+        controlPlaneUpdateSentinelMeta: null,
+        preUpdatePluginInstallRecords: {},
+        startedAt: 1,
+        updateStepTimeoutMs: 1_000,
+        rollbackBlockedReason: "state-migrated-no-rollback",
+      },
+      bufferedSteps: [],
+      resultPath: "/fixture/result.json",
     };
-    const settled = createDeferredCore();
-    fixture.close.mockImplementation(async () => {
-      settled.resolve();
+    const completed = createDeferredCore();
+    fixture.close.mockImplementation(async () => completed.resolve());
+    fixture.finish.mockResolvedValue(input.params.result);
+    fixture.terminal.mockReturnValue({
+      runId: "candidate-run",
+      status: restartPending ? "running" : "succeeded",
+      phase: restartPending ? "restarting" : "finished",
     });
-    fixture.doctor.mockResolvedValue(undefined);
-    vi.stubEnv("OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH", "/synthetic/doctor-result.json");
-    process.argv = [process.execPath, "update-migrated-finalize.worker.js", "--doctor"];
+    process.argv = [process.execPath, "update-migrated-finalize.worker.js"];
     vi.spyOn(process.stdin, Symbol.asyncIterator).mockImplementation(async function* () {
-      yield JSON.stringify({
-        executor: {},
-        runId: "synthetic-run",
-        root: "/synthetic",
-        repair: true,
-        configInputHash: "captured-config-hash",
-        ...(hasBackup ? { updateRecoveryBackup: backup } : {}),
-      });
+      yield JSON.stringify(input);
       return undefined;
     });
+
     await import("./update-migrated-finalize.worker.js");
-    await settled.promise;
-    expect(fixture.doctor).toHaveBeenCalledExactlyOnceWith(
-      expect.any(Object),
+    await completed.promise;
+
+    expect(fixture.finish).toHaveBeenCalledExactlyOnceWith(
       {
-        repair: true,
-        nonInteractive: true,
-        ...(hasBackup
-          ? { updateRecoveryOwner: "driver", updateRecoveryBackup: JSON.stringify(backup) }
-          : {}),
+        ...input.params,
+        opts: {
+          ...input.params.opts,
+          run: { ...input.params.opts.run, executorFence: fixture.fence },
+        },
       },
-      { inputHash: "captured-config-hash", assertCurrent: expect.any(Function) },
+      { candidateRuntime: true },
     );
-    expect(process.exitCode).toBe(originalExitCode);
+    expect(fixture.fence.assertCurrent).toHaveBeenCalled();
+    expect(fixture.writeFile).toHaveBeenCalledExactlyOnceWith(
+      input.resultPath,
+      JSON.stringify({
+        result: input.params.result,
+        exitCode: 0,
+        ...(restartPending
+          ? { restartRunId: "candidate-run" }
+          : { terminalRunId: "candidate-run" }),
+        executorDelegation: "pid-start-v1",
+      }),
+      { mode: 0o600 },
+    );
   },
 );
+
+it.each([
+  {
+    name: "supported omission",
+    version: 1,
+    operator: null,
+    owner: "parent",
+    serialized: "1800",
+    expected: undefined,
+  },
+  {
+    name: "supported omission with foreground restart pending",
+    version: 1,
+    operator: null,
+    owner: "parent",
+    serialized: "1800",
+    restartPending: true,
+    expected: undefined,
+  },
+  {
+    name: "explicit deadline",
+    version: 1,
+    operator: "1800",
+    owner: "parent",
+    serialized: "1800",
+    expected: 10_800_000,
+  },
+  {
+    name: "unknown version",
+    version: 2,
+    operator: null,
+    owner: "parent",
+    serialized: "1800",
+    expected: 10_800_000,
+  },
+  {
+    name: "mismatched serialization",
+    version: 1,
+    operator: null,
+    owner: "parent",
+    serialized: "900",
+    expected: 10_800_000,
+  },
+  {
+    name: "malformed operator",
+    version: 1,
+    operator: false,
+    owner: "parent",
+    serialized: "1800",
+    expected: 10_800_000,
+  },
+  {
+    name: "wrong completion owner",
+    version: 1,
+    operator: null,
+    owner: "child",
+    serialized: "1800",
+    expected: 10_800_000,
+  },
+  { name: "legacy producer", expected: 10_800_000 },
+  {
+    name: "inherited explicit allowance",
+    version: 1,
+    operator: null,
+    owner: "parent",
+    serialized: "1800",
+    inherited: 12_345,
+    expected: 12_345,
+  },
+])("preserves aggregate deadline intent for $name", async (row) => {
+  const input = {
+    executor: {},
+    completionOwner: row.owner,
+    timeout:
+      row.version === undefined
+        ? undefined
+        : {
+            version: row.version,
+            serialized: row.serialized,
+            operator: row.operator,
+          },
+    bufferedSteps: [],
+    resultPath: "/synthetic/result.json",
+    params: {
+      root: "/synthetic",
+      opts: {
+        json: true,
+        timeout: row.version === undefined ? undefined : "1800",
+        run: {
+          runId: "synthetic-run",
+          env: {},
+          activationTimeoutMs: row.inherited,
+          ...(row.restartPending
+            ? { completionOwner: "gateway-restart", gatewayRestartRequired: true }
+            : {}),
+        },
+      },
+      updateStepTimeoutMs: 1_800_000,
+      rollbackBlockedReason: "state-migrated-no-rollback",
+      preUpdatePluginInstallRecords: {},
+      result: { ...result, runId: "synthetic-run" },
+    },
+  };
+  const settled = createDeferredCore();
+  fixture.close.mockImplementation(async () => settled.resolve());
+  fixture.budget.mockResolvedValue(10_800_000);
+  fixture.finish.mockResolvedValue(input.params.result);
+  fixture.terminal.mockReturnValue({
+    runId: "synthetic-run",
+    status: row.restartPending ? "running" : "succeeded",
+    ...(row.restartPending ? { phase: "restarting" } : {}),
+  });
+  process.argv = [process.execPath, "update-migrated-finalize.worker.js"];
+  vi.spyOn(process.stdin, Symbol.asyncIterator).mockImplementation(async function* () {
+    yield JSON.stringify(input);
+    return undefined;
+  });
+
+  await import("./update-migrated-finalize.worker.js");
+  await settled.promise;
+
+  expect(process.exitCode).toBe(originalExitCode);
+  expect(fixture.activation).toHaveBeenCalledExactlyOnceWith(
+    row.expected === undefined ? undefined : { activationTimeoutMs: row.expected },
+  );
+  expect(fixture.budget).toHaveBeenCalledTimes(
+    row.expected === undefined || row.inherited !== undefined ? 0 : 1,
+  );
+  expect(fixture.finish).toHaveBeenCalledOnce();
+  expect(fixture.writeFile).toHaveBeenCalledOnce();
+  if (row.restartPending) {
+    expect(fixture.finish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        opts: expect.objectContaining({ timeout: undefined }),
+      }),
+      { candidateRuntime: true },
+    );
+    expect(fixture.writeFile).toHaveBeenCalledWith(
+      input.resultPath,
+      JSON.stringify({
+        result: input.params.result,
+        exitCode: 0,
+        restartRunId: "synthetic-run",
+        executorDelegation: "pid-start-v1",
+      }),
+      { mode: 0o600 },
+    );
+  }
+});

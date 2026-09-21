@@ -8,7 +8,7 @@ import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawStateDatabaseAsync,
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   legacyConfigRules,
   normalizeCompatibilityConfig,
@@ -38,6 +38,26 @@ afterEach(async () => {
 });
 
 describe("codex doctor contract", () => {
+  it.each(["EACCES", "EPERM", "EIO"])("refuses unreadable capture inventory (%s)", async (code) => {
+    const fixture = await createBindingMigrationFixture({
+      name: "unreadable-binding",
+      threadId: "thread-unreadable",
+      storeRoot: "fixed",
+    });
+    const failure = Object.assign(new Error("inventory access failed"), { code });
+    const read = vi.spyOn(fs, "readdir").mockRejectedValueOnce(failure);
+    try {
+      const collect = fixture.migration.collectBackupResources;
+      if (!collect) throw new Error("Migration must declare its backup inventory");
+      await expect(
+        collect({ ...fixture.params, config: { session: { store: fixture.storePath } } }),
+      ).rejects.toBe(failure);
+    } finally {
+      read.mockRestore();
+      await removeCodexDoctorFixture(fixture.stateDir);
+    }
+  });
+
   it("declares binding sidecars before migration without changing them", async () => {
     const fixture = await createBindingMigrationFixture({
       name: "capture-binding",

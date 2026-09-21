@@ -6,6 +6,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { Command as CommanderCommand, Option as CommanderOption } from "commander";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
+import type { DoctorDatabasePreflight } from "../commands/doctor-database-preflight.js";
 import {
   createInvalidConfigError,
   formatInvalidConfigDetails,
@@ -19,7 +20,7 @@ import { isTruthyEnvValue, normalizeEnv } from "../infra/env.js";
 import type { ProxyHandle } from "../infra/net/proxy/proxy-lifecycle.js";
 import { tryProcessCwd } from "../infra/safe-cwd.js";
 import type { PluginCliLoadSession } from "../plugins/cli-registry-loader.js";
-import { createPluginCache, getPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
+import { getPluginCache } from "../plugins/plugin-cache.js";
 import { resolveCliArgvInvocation } from "./argv-invocation.js";
 import {
   normalizeGeneratedHelpCommandArgv,
@@ -56,13 +57,9 @@ import {
   getCoreCliCommandNamesCore,
 } from "./program/core-command-descriptors.js";
 import { getSubCliEntriesCore } from "./program/subcli-descriptors.js";
-import {
-  prepareDoctorBootstrapRecovery,
-  withDoctorBootstrapRecovery,
-} from "./run-main-doctor-recovery.js";
+import { withCliPluginInvocation } from "./run-main-plugin-cache.js";
 import {
   resolveMissingPluginCommandMessage,
-  isDoctorStateMutationInvocation,
   rewriteUpdateFlagArgv,
   shouldHandleBareRoot,
   shouldEnsureCliPath,
@@ -70,7 +67,7 @@ import {
   shouldUseRootHelpFastPath,
   shouldUseSetupOnboardConfigureHelpFastPath,
 } from "./run-main-policy.js";
-import { withCliCommandCleanup, type CliHarnessCleanup } from "./runtime-cleanup-scope.js";
+import type { CliHarnessCleanup } from "./runtime-cleanup-scope.js";
 import { closeCliResources, runCliDisposer } from "./runtime-cleanup.js";
 import { registerSignalExitBarrier, waitForSignalExitBarriers } from "./signal-exit-barrier.js";
 import {
@@ -78,7 +75,6 @@ import {
   createGatewayDispatchStartupTrace,
 } from "./startup-trace.js";
 import { normalizeWindowsArgv } from "./windows-argv.js";
-// Main CLI entry orchestration: fast paths, env setup, plugin aliases, and Commander dispatch.
 
 export {
   rewriteUpdateFlagArgv,
@@ -101,7 +97,7 @@ const UNKNOWN_COMMAND_DISPLAY_LIMIT = 128;
 
 const loadRootHelpLiveConfigModule = async () => await import("./root-help-live-config.js");
 const loadRootHelpMetadataModule = async () => await import("./root-help-metadata.js");
-const loadLoggingModule = async () => await import("../logging.js");
+const loadLoggingModule = async () => await import("../logging/console.js");
 const loadCliRegistryLoaderModule = async () => await import("../plugins/cli-registry-loader.js");
 const loadManifestCommandAliasesRuntimeModule = async () =>
   await import("../plugins/manifest-command-aliases.runtime.js");
@@ -941,12 +937,12 @@ async function createExpectedPluginPolicyError(message: string): Promise<Error> 
 
 async function bootstrapCliProxyCaptureAndDispatcher(
   startupTrace: ReturnType<typeof createGatewayDispatchStartupTrace>,
-  options: { ensureDispatcher?: boolean; capture?: boolean } = {},
+  options: { ensureDispatcher?: boolean } = {},
 ): Promise<void> {
   // Capture init, exit finalize, and coverage warnings all no-op unless the
   // debug-proxy env requests capture; importing their sqlite-store graph anyway
   // costs ~100 MB RSS on metadata-only commands such as `plugins list --json`.
-  if (options.capture !== false && isDebugProxyCaptureEnvEnabled()) {
+  if (isDebugProxyCaptureEnvEnabled()) {
     const [
       { initializeDebugProxyCapture, finalizeDebugProxyCapture },
       { maybeWarnAboutDebugProxyCoverage },
@@ -1017,11 +1013,7 @@ export async function runCli(
       // Nested registrars and late actions share this lightweight owner, even when no
       // top-level plugin preparation is needed. Gateway retains its boot/process owner.
       const gatewayRun = isGatewayRunInvocationArgv(originalArgv);
-      const runWithRecovery = (cleanup?: CliHarnessCleanup) =>
-        withDoctorBootstrapRecovery(originalArgv, () => run(cleanup));
-      return withCliCommandCleanup(gatewayRun, (cleanup) =>
-        gatewayRun ? run() : withPluginCache(createPluginCache(), () => runWithRecovery(cleanup)),
-      );
+      return withCliPluginInvocation(gatewayRun, run);
     },
     {
       machineOutput: builtInMachineOutput,
@@ -1129,9 +1121,6 @@ async function runCliWithPreparedOutputMode(
     true,
     options.runtimeRecoveryEnv,
   );
-  const runtimeSupported = await isCurrentRuntimeSupported();
-  const mutatingDoctor = isDoctorStateMutationInvocation(normalizedArgv, runtimeSupported);
-  const readOnlyDoctor = normalizedInvocation.primary === "doctor" && !mutatingDoctor;
 
   if (await tryRunGatewayServiceUpdateCapabilityProbe(normalizedArgv)) {
     return;
@@ -1153,8 +1142,14 @@ async function runCliWithPreparedOutputMode(
       }
     });
   }
-  if (mutatingDoctor) {
-    await prepareDoctorBootstrapRecovery(normalizedArgv, options.builtInMachineOutput);
+  let doctorDatabasePreflight: DoctorDatabasePreflight | undefined;
+  if (!isHelpOrVersionInvocation && normalizedInvocation.primary === "doctor") {
+    // Debug capture can migrate shared state before Commander reaches Doctor.
+    // Resolve the update guard after selectors settle, before any bootstrap writer.
+    const { preflightUpdateDoctorCli } = await import("../commands/doctor-update-schema-guard.js");
+    doctorDatabasePreflight = await preflightUpdateDoctorCli({
+      json: options.builtInMachineOutput,
+    });
   }
   await configureStartupTraces();
   if (!isHelpOrVersionInvocation && isGatewayRunInvocation) {
@@ -1204,7 +1199,7 @@ async function runCliWithPreparedOutputMode(
     env: process.env,
   });
   const useSourceOnlyBestEffortConfig =
-    !runtimeSupported ||
+    !(await isCurrentRuntimeSupported()) ||
     normalizedInvocation.primary === "update" ||
     normalizedInvocation.primary === "doctor";
   const readBestEffortCliConfig = async (): Promise<OpenClawConfig> => {
@@ -1524,7 +1519,6 @@ async function runCliWithPreparedOutputMode(
     if (!isHelpOrVersionInvocation && !isDatabaseInvocation) {
       await bootstrapCliProxyCaptureAndDispatcher(startupTrace, {
         ensureDispatcher: shouldUseCliEnvProxy,
-        capture: !readOnlyDoctor,
       });
     }
 
@@ -1590,7 +1584,9 @@ async function runCliWithPreparedOutputMode(
           import("../runtime.js"),
         ]),
       );
-      const program = await startupTrace.measure("build-program", () => buildProgram());
+      const program = await startupTrace.measure("build-program", () =>
+        buildProgram({ doctorDatabasePreflight, runtimeRecoveryEnv: options.runtimeRecoveryEnv }),
+      );
       await options.harnessCleanup?.pluginResources?.waitForRegistrations();
 
       // Global error handlers to prevent silent crashes from unhandled rejections/exceptions.

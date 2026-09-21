@@ -39,7 +39,10 @@ import {
   buildClawHubTrustSkippedOutcome,
   buildDryRunPluginUpdateOutcome,
   buildPluginUpdateVersionOutcome,
-  formatPluginUpdateInstallFailure,
+  formatClawHubInstallFailure,
+  formatGitInstallFailure,
+  formatMarketplaceInstallFailure,
+  formatNpmInstallFailure,
   readClawHubTrustErrorCode,
   runPluginUpdateAttempt,
   shouldSkipClawHubTrustFailureForExistingInstall,
@@ -86,13 +89,14 @@ import {
   recordPluginUpdateTransaction,
 } from "./update-summary.js";
 import { reconcileUnchangedUpdate } from "./update-unchanged.js";
+
 export async function updateNpmInstalledPlugins(
   params: UpdateInstalledPluginsParams,
 ): Promise<PluginUpdateSummary> {
   if (params.dryRun) {
     return await runInstalledPluginUpdate(params);
   }
-  return await withPluginLifecycleLease({ assertCurrent: params.beforePersistentEffect }, (lease) =>
+  return await withPluginLifecycleLease({}, (lease) =>
     withPluginInstallTransactions(params, () => lease.assertOwned(), runInstalledPluginUpdate),
   );
 }
@@ -103,14 +107,7 @@ async function runInstalledPluginUpdate(
 ): Promise<PluginUpdateSummary> {
   const logger = params.logger ?? {};
   const retainOnUnavailable = params.retainOnUnavailable === true;
-  const consentCallbacks = capturePluginCapabilityConsentHandlerErrors(
-    params.onCapabilityConsent,
-    async () => {
-      await params.preparePersistentEffect?.();
-      assertCurrent?.();
-      params.beforePersistentEffect?.();
-    },
-  );
+  const consentCallbacks = capturePluginCapabilityConsentHandlerErrors(params.onCapabilityConsent);
   const installs = params.config.plugins?.installs ?? {};
   const targets = new Set(params.pluginIds?.length ? params.pluginIds : Object.keys(installs));
   const normalizedPluginConfig = params.skipDisabledPlugins
@@ -204,14 +201,13 @@ async function runInstalledPluginUpdate(
         ? params.officialPluginUpdateChannel
         : undefined);
     const { specOverride: npmSpecOverride, target: npmTarget } = resolveNpmUpdateTarget({
+      ...params,
       record,
       trustedOfficialInstall: trustedOfficialNpmInstall,
       specOverride: params.specOverrides?.[pluginId],
-      syncOfficialPluginInstalls: params.syncOfficialPluginInstalls,
+      installSpecOverride: params.npmInstallSpecOverrides?.[pluginId],
       updateChannel,
-      coreVersion: params.coreVersion,
       versionBoundToCore: params.versionBoundPluginIds?.has(pluginId),
-      timeoutMs: params.timeoutMs,
     });
     if (normalizedPluginConfig) {
       const enableState = resolveEffectiveEnableState({
@@ -359,7 +355,6 @@ async function runInstalledPluginUpdate(
           record,
           logger,
           beforePersistentEffect: assertCurrent,
-          preparePersistentEffect: consentCallbacks.beforePersistentEffect,
         })) || changed;
     }
     const recordNpmFailure = async (message: string, code?: string): Promise<void> => {
@@ -511,7 +506,7 @@ async function runInstalledPluginUpdate(
       packagePluginIds: params.packagePluginIds?.[pluginId],
       expectedIntegrity,
       onCapabilityConsent: consentCallbacks.onCapabilityConsent,
-      beforePersistentEffect: consentCallbacks.beforePersistentEffect,
+      beforePersistentEffect: params.beforePersistentEffect,
     });
     const runAttempt = () =>
       runPluginUpdateAttempt(
@@ -523,6 +518,7 @@ async function runInstalledPluginUpdate(
           effectiveSpec,
           extensionsDir,
           timeoutMs: params.timeoutMs,
+          workTimeoutMs: params.workTimeoutMs,
           onInstallPolicyWarning: params.onInstallPolicyWarning,
           onBeforePluginArtifactCommit: capabilityConsent.onBeforePluginArtifactCommit,
           expectedIntegrity,
@@ -540,7 +536,6 @@ async function runInstalledPluginUpdate(
       dryRun: params.dryRun === true,
       run: runAttempt,
       beforePersistentEffect: assertCurrent,
-      preparePersistentEffect: consentCallbacks.beforePersistentEffect,
     });
     consentCallbacks.rethrowCallbackError();
     if (attempt.kind === "exception") {
@@ -584,15 +579,37 @@ async function runInstalledPluginUpdate(
         );
         continue;
       }
-      const { message, code } = formatPluginUpdateInstallFailure({
-        pluginId,
-        record,
-        phase: params.dryRun ? "check" : "update",
-        effectiveSpec,
-        activeClawHubInstallSpec,
-        resultSource,
-        result,
-      });
+      const phase = params.dryRun ? "check" : "update";
+      const code = resultSource === "npm" && "code" in result ? result.code : undefined;
+      const message =
+        resultSource === "npm"
+          ? formatNpmInstallFailure({
+              pluginId,
+              spec: effectiveSpec!,
+              phase,
+              result,
+            })
+          : resultSource === "clawhub"
+            ? formatClawHubInstallFailure({
+                pluginId,
+                spec: activeClawHubInstallSpec ?? `clawhub:${record.clawhubPackage!}`,
+                phase,
+                error: result.error,
+              })
+            : record.source === "git"
+              ? formatGitInstallFailure({
+                  pluginId,
+                  spec: effectiveSpec!,
+                  phase,
+                  error: result.error,
+                })
+              : formatMarketplaceInstallFailure({
+                  pluginId,
+                  marketplaceSource: record.marketplaceSource!,
+                  marketplacePlugin: record.marketplacePlugin!,
+                  phase,
+                  error: result.error,
+                });
       await recordNpmFailure(message, code);
       continue;
     }
@@ -704,6 +721,5 @@ async function runInstalledPluginUpdate(
     logger,
     transactionState,
     beforePersistentEffect: assertCurrent,
-    preparePersistentEffect: consentCallbacks.beforePersistentEffect,
   });
 }

@@ -13,14 +13,17 @@ import { resolveGatewayLockDir } from "../config/paths.js";
 import { embedSessionColdArchivesInSnapshot } from "../config/sessions/session-cold-storage-backup.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { assertOpenClawAgentDatabaseOwner } from "../state/openclaw-agent-db-maintenance.js";
-import { readOpenClawAgentDatabaseRegistryRows } from "../state/openclaw-agent-db-registry-listing.js";
-import { clearOpenClawStateCopyLeases } from "../state/openclaw-state-copy-leases.js";
+import { readOpenClawAgentDatabaseRegistryRows } from "../state/openclaw-agent-db-registry.read.js";
+import { resolveQuarantineStorePath } from "../state/openclaw-quarantine-store.js";
 import { assertOpenClawStateDatabaseOwner } from "../state/openclaw-state-db-maintenance.js";
 import {
   resolveOpenClawRegisteredAgentDatabasePath,
   resolveOpenClawStateSqlitePath,
 } from "../state/openclaw-state-db.paths.js";
-import { sanitizeOpenClawGlobalStateSnapshot } from "../state/openclaw-state-snapshot-sanitizer.js";
+import {
+  sanitizeOpenClawGlobalStateSnapshot,
+  sanitizeOpenClawStateLeaseRows,
+} from "../state/openclaw-state-snapshot-sanitizer.js";
 import {
   captureBackupSqliteSourceGroup,
   planBackupSqliteSourceGroups,
@@ -43,7 +46,6 @@ import {
   type LegacyAuditBackupSnapshot,
 } from "./state-migrations.audit-backup.js";
 import { assertNotUpdateCapturePath } from "./update-capture-paths.js";
-// Snapshots every SQLite database owned by the frozen backup resource inventory.
 
 type SqliteBackupAsset = {
   sourcePath: string;
@@ -66,7 +68,7 @@ type CanonicalSqliteSource = {
   archiveSourcePath: string;
   identity: Stats;
   sourcePath: string;
-} & ({ role: "global" } | { role: "agent"; agentId: string });
+} & ({ role: "global" | "quarantine" } | { role: "agent"; agentId: string });
 
 function resolveSqliteBackupDatabasePath(sourcePath: string): string | undefined {
   for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
@@ -253,7 +255,7 @@ export async function createBackupSqliteSnapshotPlan(params: {
               sanitizeOpenClawGlobalStateSnapshot(database);
               rewriteLegacyAuditBackupCheckpoints(database, params.legacyAuditSnapshots);
             } else if (canonicalSource?.role === "agent") {
-              clearOpenClawStateCopyLeases(database);
+              sanitizeOpenClawStateLeaseRows(database);
             }
             await embedSessionColdArchivesInSnapshot({
               database,
@@ -337,17 +339,26 @@ export async function createBackupSqliteSnapshotPlan(params: {
   const coreDatabases: BackupCoreDatabase[] = [
     { role: "global", sourcePath: globalPath, identity: globalIdentity },
   ];
-  for (const agent of capturedAgents) {
-    const identity = await fs.stat(agent.sourcePath).catch((error: unknown) => {
+  for (const database of [
+    {
+      role: "quarantine" as const,
+      sourcePath: resolveQuarantineStorePath({
+        ...process.env,
+        OPENCLAW_STATE_DIR: params.resources.stateDir,
+      }),
+    },
+    ...capturedAgents,
+  ]) {
+    const identity = await fs.stat(database.sourcePath).catch((error: unknown) => {
       if (hasErrnoCode(error, "ENOENT")) {
         return undefined;
       }
       throw error;
     });
     if (identity && !identity.isFile()) {
-      throw new Error(`Core SQLite path must resolve to a regular file: ${agent.sourcePath}`);
+      throw new Error(`Core SQLite path must resolve to a regular file: ${database.sourcePath}`);
     }
-    coreDatabases.push(Object.freeze({ ...agent, identity }));
+    coreDatabases.push(Object.freeze({ ...database, identity }));
   }
   const inventory = sealBackupResourceInventory(params.resources, coreDatabases);
   const discovery = await discoverBackupSqliteSources({ inventory });
