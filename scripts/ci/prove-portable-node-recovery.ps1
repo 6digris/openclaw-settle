@@ -134,7 +134,7 @@ try {
     if (($calls -join ',') -cne 'winget,choco,scoop') { throw 'Did not exercise all three failing package managers in order.' }
     if ($script:ArchiveProof.Count -ne 1) { throw 'Recovery did not download exactly one official ZIP.' }
     $nodeExe = Get-PortableNodeCommandPath
-    if (-not $nodeExe -or -not (Check-Node -NodePath $nodeExe)) { throw 'Real runtime/SQLite validation failed.' }
+    if (-not $nodeExe -or -not (Check-Node)) { throw 'Real runtime/SQLite validation failed.' }
     Write-PortableProofCheckpoint 'recovered-runtime-validated'
     $resolvedNode = (Get-Command node -CommandType Application | Select-Object -First 1).Source
     if ($resolvedNode -ine $nodeExe) { throw 'Process PATH did not select the installed portable runtime.' }

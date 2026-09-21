@@ -244,7 +244,7 @@ function Initialize-PublicPortableNode {
 try {
     Assert-Proof (-not $PrerequisiteOnly -or $Scenario -eq 'non-msi') 'Prerequisite mode only acquires the portable input.'
     Assert-Proof ($env:RUNNER_ENVIRONMENT -eq 'github-hosted' -and $env:RUNNER_OS -eq 'Windows') 'Only a fresh disposable GitHub-hosted Windows VM is authorized.'
-    Assert-Proof ($ExpectedHead -ceq 'dac01337bab5251fec2726f41ec4b199862e9321') 'Unexpected candidate.'
+    Assert-Proof ($ExpectedHead -ceq '4bc8d10aedd7fac04a4fe7b04a6c06f79cc23d10') 'Unexpected candidate.'
     Assert-Proof (-not (Test-Path -LiteralPath $WorkRoot)) 'Owned staging already exists.'
     $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     $proof.host = @{ administrator=$admin; interactive=[Environment]::UserInteractive; sessionId=(Get-Process -Id $PID).SessionId; image=$env:ImageVersion; powershell=$PSVersionTable.PSVersion.ToString(); freeBytes=(Get-PSDrive C).Free }
@@ -473,7 +473,7 @@ try {
             $proof.unsupported = Get-RuntimeFacts $runtime 'unsupported-runtime'
             Initialize-PreservationState
             $proof.preservation.beforeGate = Get-PreservationState
-            Assert-Proof (-not (Check-Node -NodePath $runtime)) 'Unsupported real Node was accepted.'
+            Assert-Proof (-not (Check-Node)) 'Unsupported real Node was accepted.'
             Assert-Proof ($global:WingetProofTrace.install.Count -eq 0 -and $global:WingetProofTrace.repair.Count -eq 0) 'Unsupported-version gate unexpectedly installed/repaired.'
         } else {
             $type = if ($Scenario -eq 'non-msi') { 'zip' } else { 'wix' }
@@ -517,7 +517,7 @@ try {
                 Assert-Proof ((Get-AuthenticodeSignature $runtime).Status -eq 'Valid') 'Installed Node signature is invalid.'
             }
             $proof.before = Get-RuntimeFacts $runtime 'runtime-before'
-            Assert-Proof (Check-Node -NodePath $runtime) 'Pinned native package fails existing runtime gate.'
+            Assert-Proof (Check-Node) 'Pinned native package fails existing runtime gate.'
             $proof.nodeBeforeSha256 = (Get-FileHash $runtime).Hash
             Initialize-PreservationState
             if ($Scenario -ne 'healthy') {
