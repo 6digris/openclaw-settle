@@ -9,8 +9,6 @@ import {
   createCodexAppServerToolResultExtensionRunner,
   extractMessagingToolSend,
   extractMessagingToolSendResult,
-  extractToolResultMediaArtifact,
-  filterToolResultMediaUrls,
   finalizeToolTerminalPresentation,
   formatToolExecutionErrorMessage,
   getBeforeToolCallFailureDisposition,
@@ -22,6 +20,7 @@ import {
   type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
   isDeliveredMessageToolOnlySourceReplyResult,
   isDeliveredMessagingToolResult,
+  isAsyncStartedToolResult,
   isReplaySafeToolCall,
   isToolWrappedWithBeforeToolCallHook,
   isToolResultError,
@@ -47,6 +46,10 @@ import {
   normalizeAcceptedSessionSpawnResult,
   type AcceptedSessionSpawn,
   type AgentHarnessToolExecutionSnapshot,
+  runWithToolExecutionValidation,
+  recordAgentHarnessMessagingDelivery,
+  recordAgentHarnessToolResultMedia,
+  resolveAgentHarnessToolResultPresentation,
 } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
 import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
@@ -115,7 +118,6 @@ type CodexToolResultHookContext = Omit<CodexDynamicToolHookContext, "config">;
 
 type ProjectedCodexDynamicTool = ProjectedTool<AnyAgentTool>;
 
-const INTERNAL_TOOL_EXECUTION_VALIDATION = Symbol.for("openclaw.internalToolExecutionValidation");
 const MAX_CODEX_DYNAMIC_TOOL_VALIDATION_ERRORS = 4;
 const MAX_CODEX_DYNAMIC_TOOL_VALIDATION_ERROR_CHARS = 160;
 const CODEX_DYNAMIC_TOOL_VALIDATION_TRUNCATED_SUFFIX = " [detail truncated]";
@@ -153,17 +155,6 @@ function assertCodexDynamicToolInputMatchesSchema(params: {
   const omitted = validation.errors.length - visibleErrors.length;
   const omittedSuffix = omitted > 0 ? `; ${omitted} more violation(s) omitted` : "";
   throw new Error(`Invalid arguments for tool "${params.toolName}": ${details}${omittedSuffix}.`);
-}
-
-function createCodexDynamicToolValidationControl(params: {
-  toolCallId: string;
-  validate: (value: unknown) => void;
-}): Record<PropertyKey, unknown> {
-  return {
-    [INTERNAL_TOOL_EXECUTION_VALIDATION]: true,
-    toolCallId: params.toolCallId,
-    validate: params.validate,
-  };
 }
 
 function applyCurrentMessageProvider(
@@ -685,21 +676,19 @@ export function createCodexDynamicToolBridge(params: {
             : undefined,
         };
         executionBoundary.markDispatched();
-        const executionArgs: unknown[] = [call.callId, preparedArgs, signal];
-        if (shouldValidateCodexDynamicToolInput(tool)) {
-          executionArgs.push(
-            createCodexDynamicToolValidationControl({
-              toolCallId: call.callId,
-              validate: (value) =>
+        const execute = () => tool.execute(call.callId, preparedArgs, signal);
+        const rawResult = shouldValidateCodexDynamicToolInput(tool)
+          ? await runWithToolExecutionValidation(
+              call.callId,
+              (value) =>
                 assertCodexDynamicToolInputMatchesSchema({
                   toolName,
                   schema: toolEntry.inputSchema,
                   value,
                 }),
-            }),
-          );
-        }
-        const rawResult = await Reflect.apply(tool.execute, tool, executionArgs);
+              execute,
+            )
+          : await execute();
         executionBoundary.capture();
         const executedArgs = executionBoundary.executedArguments;
         // Delivery is committed before result middleware; presentation changes
@@ -731,7 +720,6 @@ export function createCodexDynamicToolBridge(params: {
           args: structuredClone(executedArgs),
           result: middlewareResult,
         });
-        const resultIsError = rawIsError || isToolResultError(result);
         // A successful spawn is durable before presentation middleware can rewrite details.
         const acceptedSessionSpawn =
           toolName === "sessions_spawn" && !rawIsError
@@ -740,18 +728,15 @@ export function createCodexDynamicToolBridge(params: {
         if (acceptedSessionSpawn) {
           telemetry.acceptedSessionSpawns.push(acceptedSessionSpawn);
         }
-        const finalResultFailureKind = resolveToolResultFailureKind(result);
-        const resultFailureKind = rawResultFailureKind ?? finalResultFailureKind;
-        const observerResult =
-          rawResultFailureKind && finalResultFailureKind !== rawResultFailureKind
-            ? {
-                ...result,
-                details: {
-                  ...(isRecord(result.details) ? result.details : {}),
-                  status: rawResultFailureKind,
-                },
-              }
-            : result;
+        const {
+          result: observerResult,
+          isError: resultIsError,
+          failureKind: resultFailureKind,
+        } = resolveAgentHarnessToolResultPresentation({
+          result,
+          executionIsError: rawIsError,
+          executionFailureKind: rawResultFailureKind,
+        });
         notifyAgentToolResult(options?.onAgentToolResult, toolName, observerResult, resultIsError);
         void runAgentHarnessAfterToolCallHook({
           toolName,
@@ -1140,23 +1125,19 @@ function collectToolTelemetry(params: {
   }
   // Only a live invocation may accept new media; committed effects remain evidence.
   if (params.result && !params.signal.aborted) {
-    const media = extractToolResultMediaArtifact(params.result);
+    const media = recordAgentHarnessToolResultMedia({
+      facts: params.telemetry,
+      toolName: params.toolName,
+      result: params.result,
+      mediaTrustResult: params.coreTtsToolResult ?? params.mediaTrustResult,
+      trustedLocalMediaToolNames: params.trustedLocalMediaToolNames,
+    });
     if (media) {
-      const mediaUrls = filterToolResultMediaUrls(
-        params.toolName,
-        media.mediaUrls,
-        params.coreTtsToolResult ?? params.mediaTrustResult ?? params.result,
-        params.trustedLocalMediaToolNames,
-      );
-      const seen = new Set(params.telemetry.toolMediaUrls);
+      const mediaUrls = media.mediaUrls;
       const autoDeliveryMediaUrls = new Set(params.telemetry.toolAutoDeliveryMediaUrls);
       const rawAutoDeliveryMediaUrls = new Set(params.autoDeliveryTtsMediaUrls);
       let retainsCoreTtsMedia = false;
       for (const mediaUrl of mediaUrls) {
-        if (!seen.has(mediaUrl)) {
-          seen.add(mediaUrl);
-          params.telemetry.toolMediaUrls.push(mediaUrl);
-        }
         if (rawAutoDeliveryMediaUrls.has(mediaUrl)) {
           autoDeliveryMediaUrls.add(mediaUrl);
           retainsCoreTtsMedia = true;
@@ -1171,9 +1152,6 @@ function collectToolTelemetry(params: {
         !params.telemetry.coreTtsToolResults.includes(params.coreTtsToolResult)
       ) {
         params.telemetry.coreTtsToolResults.push(params.coreTtsToolResult);
-      }
-      if (media.audioAsVoice) {
-        params.telemetry.toolAudioAsVoice = true;
       }
     }
   }
@@ -1196,38 +1174,27 @@ function collectToolTelemetry(params: {
   ) {
     return undefined;
   }
-  params.telemetry.didSendViaMessagingTool = true;
   const sourceReplyPayload = extractInternalSourceReplyPayload(params.result?.details);
   if (sourceReplyPayload) {
-    const record = {
-      ...sourceReplyPayload,
-      ...(params.sourceReplyFinal !== undefined
-        ? { sourceReplyFinal: params.sourceReplyFinal }
-        : {}),
-    };
-    params.telemetry.messagingToolSourceReplyPayloads.push(record);
-    return record;
+    return recordAgentHarnessMessagingDelivery({
+      facts: params.telemetry,
+      sourceReplyPayload,
+      sourceReplyFinal: params.sourceReplyFinal,
+    });
   }
-  const text = readFirstString(params.args, ["text", "message", "body", "content"]);
-  if (text) {
-    params.telemetry.messagingToolSentTexts.push(text);
-  }
-  const mediaUrls = collectMediaUrls(params.args);
-  params.telemetry.messagingToolSentMediaUrls.push(...mediaUrls);
-  const record = {
-    ...(params.messagingTarget ?? {
+  return recordAgentHarnessMessagingDelivery({
+    facts: params.telemetry,
+    target: params.messagingTarget ?? {
       tool: params.toolName,
       provider: readFirstString(params.args, ["provider", "channel"]) ?? params.toolName,
       accountId: readFirstString(params.args, ["accountId", "account_id"]),
       to: readFirstString(params.args, ["to", "target", "recipient"]),
       threadId: readFirstString(params.args, ["threadId", "thread_id", "messageThreadId"]),
-    }),
-    ...(text ? { text } : {}),
-    ...(mediaUrls.length > 0 ? { mediaUrls } : {}),
-    ...(params.sourceReplyFinal !== undefined ? { sourceReplyFinal: params.sourceReplyFinal } : {}),
-  };
-  params.telemetry.messagingToolSentTargets.push(record);
-  return record;
+    },
+    text: readFirstString(params.args, ["text", "message", "body", "content"]),
+    mediaUrls: collectMediaUrls(params.args),
+    sourceReplyFinal: params.sourceReplyFinal,
+  });
 }
 function extractInternalSourceReplyPayload(
   details: unknown,
@@ -1269,10 +1236,6 @@ function isToolResultYield(result: AgentToolResult<unknown>): boolean {
     return false;
   }
   return details.status.trim().toLowerCase() === "yielded";
-}
-function isAsyncStartedToolResult(result: AgentToolResult<unknown>): boolean {
-  const details = result.details;
-  return isRecord(details) && details.async === true && details.status === "started";
 }
 function normalizeToolResultMaxChars(maxChars: number): number {
   return typeof maxChars === "number" && Number.isFinite(maxChars) && maxChars > 0

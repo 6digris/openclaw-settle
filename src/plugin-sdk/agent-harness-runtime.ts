@@ -257,6 +257,8 @@ export {
 } from "../agents/embedded-agent-tool-media.js";
 export {
   extractToolErrorMessage,
+  isAsyncStartedToolResult,
+  readAsyncStartedTaskIds,
   sanitizeToolResult,
 } from "../agents/embedded-agent-tool-results.js";
 export {
