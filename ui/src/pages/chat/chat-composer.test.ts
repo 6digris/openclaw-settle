@@ -9,7 +9,7 @@ import type { ComposerEditor } from "../../components/composer-editor.ts";
 import { t } from "../../i18n/index.ts";
 import {
   createComposerProps as props,
-  questionPrompt,
+  createQuestionPrompt,
   findComposerButton as button,
   renderComposerFixture as renderComposer,
   resetComposerFixture,
@@ -17,6 +17,9 @@ import {
 import { renderChatComposer } from "./components/chat-composer.ts";
 import { installChatComposerPickerDismissal } from "./components/chat-picker-overlay.ts";
 import * as realtimeTalkInput from "./talk/input.ts";
+
+const questionPrompt = (id: string, question: string) =>
+  createQuestionPrompt(id, question, ["Yes", "No"]);
 
 const discoverRealtimeTalkInputsMock = vi.fn();
 const openMicrophoneMock = vi.fn();

@@ -73,7 +73,11 @@ export async function resetComposerFixture(afterStateReset?: () => void): Promis
   vi.restoreAllMocks();
 }
 
-export function questionPrompt(id: string, question: string): QuestionPrompt {
+export function createQuestionPrompt(
+  id: string,
+  question: string,
+  labels: readonly string[],
+): QuestionPrompt {
   return {
     id,
     questions: [
@@ -81,7 +85,7 @@ export function questionPrompt(id: string, question: string): QuestionPrompt {
         questionId: "choice",
         header: "Choice",
         question,
-        options: [{ label: "Yes" }, { label: "No" }],
+        options: labels.map((label) => ({ label })),
         isOther: false,
       },
     ],
