@@ -81,6 +81,7 @@ internal class GatewayIngressController(
 
     class Acquired(
       val registration: Registration,
+      val acknowledgement: SignOutAcknowledgement?,
     ) : RetryOwner
   }
 
@@ -703,7 +704,7 @@ internal class GatewayIngressController(
       val prepared =
         register(endpoint, tls, isCurrent) { selected ->
           checkOwnerLocked()
-          owner = RetryOwner.Acquired(selected)
+          owner = RetryOwner.Acquired(selected, signOutAcknowledgement)
         }
       return prepareRegistered(prepared, true, admissionCheckpoint, isCurrent)
     }
@@ -713,7 +714,7 @@ internal class GatewayIngressController(
         !callerIsCurrent {
           ownedOrigin()?.let { store.requireAdmission(it, admissionCheckpoint) }
           isCurrent()
-        }
+        } || !ownsPresentationLocked()
       ) {
         throw CancellationException("Gateway retry superseded")
       }
@@ -732,7 +733,10 @@ internal class GatewayIngressController(
         }
 
         is RetryOwner.Acquired -> {
-          isRegisteredLocked(captured.registration)
+          // Its own registration replacement may clear the old action, but a later
+          // explicit Sign out owns its result even when the persisted origin differs.
+          isRegisteredLocked(captured.registration) &&
+            (signOutAcknowledgement == null || signOutAcknowledgement === captured.acknowledgement)
         }
       }
 
@@ -962,9 +966,9 @@ internal class GatewayIngressController(
             // can synchronously re-enter and replace it with a newer Retry outcome.
             SignOutAcknowledgement(survivingAttention?.takeIf { it == pending } ?: pending, entry, registration, origin)
           } else {
-            // An ordinary sibling can finish the original profile's pending Sign out,
-            // but cannot acquire its presentation or adopt a replacement registration.
-            carried
+            // Preserve the original profile's displayed action, but give every explicit
+            // Sign out new completion custody so an older acquired Retry cannot replace it.
+            carried?.let { SignOutAcknowledgement(it.action, it.entry, it.registration, it.origin) }
           }
         if (acknowledgement != null) signOutAcknowledgement = acknowledgement
         publishLocked(acknowledgement?.action ?: survivingAttention, mutablePresentation.value.browserLaunch.takeUnless { intent != null && it?.attemptId == intent.id })
