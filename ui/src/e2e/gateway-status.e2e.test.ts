@@ -174,6 +174,7 @@ suite.define(() => {
         colorScheme: "dark",
         locale: "en-US",
         serviceWorkers: "block",
+        hasTouch: true,
       },
       async ({ page }) => {
         await page.addInitScript(() => {
@@ -250,9 +251,17 @@ suite.define(() => {
             animations: "disabled",
           });
         }
-        expect(await menu.textContent()).toContain("Outgoing messages saved in this browser");
-        expect(await menu.textContent()).toContain("Failed messages need review or retry");
-        expect(await menu.textContent()).toContain("Some may already have arrived");
+        const outbox = menu.locator(".sidebar-identity-menu__outbox");
+        const outboxTooltip = outbox.locator("openclaw-tooltip");
+        expect(await outbox.locator("p").count()).toBe(0);
+        await outbox.hover();
+        await outboxTooltip.locator("wa-tooltip[open]").waitFor();
+        const outboxHelp = await outboxTooltip.locator("wa-tooltip").textContent();
+        expect(outboxHelp).toContain("Outgoing messages saved in this browser");
+        expect(outboxHelp).toContain("Failed messages need review or retry");
+        expect(outboxHelp).toContain("Some may already have arrived");
+        await page.keyboard.press("Escape");
+        await outboxTooltip.locator("wa-tooltip[open]").waitFor({ state: "detached" });
         expect(await page.locator(".chat-queue__item").count()).toBe(2);
         expect(await gateway.getRequests("chat.send")).toHaveLength(0);
         await page.keyboard.press("Escape");
@@ -262,6 +271,10 @@ suite.define(() => {
         await footer.locator(".sidebar-identity-card").click();
         const explanation = menu.locator(".sidebar-identity-menu__outbox");
         await explanation.waitFor();
+        await explanation.tap();
+        await outboxTooltip.locator("wa-tooltip[open]").waitFor();
+        expect(await menu.isVisible()).toBe(true);
+        expect(await gateway.getRequests("chat.send")).toHaveLength(0);
         const bounds = await explanation.boundingBox();
         expect(bounds).not.toBeNull();
         expect(bounds!.x).toBeGreaterThanOrEqual(0);

@@ -199,9 +199,12 @@ describe("AppSidebar gateway footer subtitle", () => {
     await sidebar.updateComplete;
     const outbox = sidebar.querySelector(".sidebar-identity-menu__outbox");
     expect(outbox?.textContent).toContain("3 in outbox");
-    expect(outbox?.textContent).toContain("Outgoing messages saved in this browser");
-    expect(outbox?.textContent).toContain("Failed messages need review or retry");
-    expect(outbox?.textContent).toContain("Some may already have arrived");
+    const outboxHelp = outbox?.querySelector("openclaw-tooltip");
+    expect(outboxHelp?.anchor).toBe(outbox);
+    expect(outboxHelp?.openOnClick).toBe(true);
+    expect(outboxHelp?.content).toContain("Outgoing messages saved in this browser");
+    expect(outboxHelp?.content).toContain("Failed messages need review or retry");
+    expect(outboxHelp?.content).toContain("Some may already have arrived");
     sidebar.queuedOutboxCount = 0;
     await sidebar.updateComplete;
     expect(sidebar.querySelector(".sidebar-identity-menu__outbox")).toBeNull();

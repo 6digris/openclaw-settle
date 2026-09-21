@@ -248,12 +248,29 @@ export function renderSidebarIdentityMenu(params: SidebarIdentityMenuParams) {
       <div class="sidebar-customize-menu__separator" role="separator"></div>
       ${
         params.queuedOutboxCount > 0
-          ? html`<div class="sidebar-identity-menu__outbox">
-                <strong
-                  >${t("connection.queuedCount", { count: String(params.queuedOutboxCount) })}</strong
+          ? html`<wa-dropdown-item
+                class="sidebar-customize-menu__item sidebar-identity-menu__outbox"
+                ${ref((element) => {
+                  if (element instanceof HTMLElement) {
+                    const tooltip = element.querySelector("openclaw-tooltip");
+                    if (tooltip) {
+                      tooltip.anchor = element;
+                    }
+                  }
+                })}
+              >
+                <span class="sidebar-customize-menu__text"
+                  >${t("connection.queuedCount", { count: String(params.queuedOutboxCount) })}</span
                 >
-                <p>${t("connection.outboxDescription")}</p>
-              </div>
+                <openclaw-tooltip
+                  slot="details"
+                  open-on-click
+                  placement="right"
+                  .content=${t("connection.outboxDescription")}
+                >
+                  <span class="nav-item__icon" aria-hidden="true">${icons.info}</span>
+                </openclaw-tooltip>
+              </wa-dropdown-item>
               <div class="sidebar-customize-menu__separator" role="separator"></div>`
           : nothing
       }
