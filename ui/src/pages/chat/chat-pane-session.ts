@@ -343,7 +343,7 @@ export abstract class ChatPaneSession extends ChatPaneTaskSuggestions {
           result !== null &&
           this.state === state &&
           state.sessionKey === guardKey &&
-          this.presented
+          this.secondarySessionReadsReady()
         ) {
           // Settlement can expose activity that arrived behind the optimistic read.
           this.markSessionRead(selectedChatSessionRow(state));

@@ -8,6 +8,7 @@ import type { GatewaySessionRow } from "../../api/types.ts";
 import type { ApplicationGatewaySnapshot } from "../../app/gateway.ts";
 import { sessionsResult } from "../../lib/sessions/session-capability.test-support.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
+import { setChatHistoryLoad } from "./chat-history-state.ts";
 import { createSessionCapabilityFixture, createTestChatPane } from "./chat-pane.test-support.ts";
 
 async function createUnreadAcknowledgementHarness(
@@ -51,7 +52,17 @@ async function createUnreadAcknowledgementHarness(
     }
     throw new Error(`Unexpected request: ${method}`);
   });
-  const { pane, sessions, emitGatewayEvent } = createTestChatPane({ client });
+  const { pane, sessions, state, emitGatewayEvent } = createTestChatPane({ client });
+  state.currentSessionId = sessionId;
+  setChatHistoryLoad(state, {
+    phase: "committed",
+    sessions,
+    client,
+    connectionEpoch: state.connectionEpoch,
+    sessionKey: key,
+    requestAgentId: undefined,
+    sessionInfo: row,
+  });
   const patch = vi.spyOn(sessions, "patch");
   await sessions.refresh({ force: true });
   const unsubscribe = sessions.subscribe(pane.applySessionsState.bind(pane));
