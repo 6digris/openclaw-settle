@@ -28,6 +28,7 @@ import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { createGatewayMethodRegistry } from "../methods/registry.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
+import { withOperatorToolGatewayAuthority } from "../server-plugin-in-process-dispatch.js";
 import {
   dispatchInboundMessageMock,
   installGatewayTestHooks,
@@ -43,7 +44,7 @@ installGatewayTestHooks();
 registerAgentSessionLoopTestLifecycle();
 const temporaryDirs = useAutoCleanupTempDirTracker(afterEach);
 
-async function createHostedChildFixture(system = false) {
+async function createHostedChildFixture(system = false, toolInvocation = false) {
   const storePath = path.join(temporaryDirs.make("openclaw-child-custody-"), "sessions.json");
   testState.sessionStorePath = storePath;
   const parentKey = "agent:main:parent";
@@ -59,6 +60,7 @@ async function createHostedChildFixture(system = false) {
   let sourceCurrent = true;
   let hostCurrent = true;
   let gatewayCurrent = true;
+  let invocationCurrent = true;
   const signal = new AbortController();
   const beforeInputCommit = vi.fn(() => {});
   const registry = getTestPluginRegistry();
@@ -146,37 +148,56 @@ async function createHostedChildFixture(system = false) {
     }),
     "admitted parent caller",
   );
+  const dispatch = () =>
+    callInProcessGatewayToolWithCreation<{
+      key: string;
+      sessionId: string;
+      runId: string;
+      runStarted: boolean;
+    }>(
+      "sessions.create",
+      {
+        agentId: "main",
+        key: childKey,
+        parentSessionKey: parentKey,
+        spawnDepth: 1,
+        task: "Continue independently.",
+      },
+      {
+        via: "spawn",
+        actor: { type: "agent", id: "main" },
+        requesterSessionKey: parentKey,
+        inheritedToolPolicy: { version: 1, allow: [], deny: [] },
+      },
+      {
+        signal: signal.signal,
+        sessionMutationCommitGuard: () => {
+          if (!hostCurrent) {
+            throw new Error("explicit input host closed");
+          }
+        },
+      },
+    );
   const send = () =>
     withGatewayToolCallerIdentity(caller, () =>
-      callInProcessGatewayToolWithCreation<{
-        key: string;
-        sessionId: string;
-        runId: string;
-        runStarted: boolean;
-      }>(
-        "sessions.create",
-        {
-          agentId: "main",
-          key: childKey,
-          parentSessionKey: parentKey,
-          spawnDepth: 1,
-          task: "Continue independently.",
-        },
-        {
-          via: "spawn",
-          actor: { type: "agent", id: "main" },
-          requesterSessionKey: parentKey,
-          inheritedToolPolicy: { version: 1, allow: [], deny: [] },
-        },
-        {
-          signal: signal.signal,
-          sessionMutationCommitGuard: () => {
-            if (!hostCurrent) {
-              throw new Error("explicit input host closed");
-            }
-          },
-        },
-      ),
+      toolInvocation
+        ? withOperatorToolGatewayAuthority(
+            {
+              authenticatedUserProfile: system
+                ? undefined
+                : identifiedClient(profile.id).authenticatedUserProfile,
+              operatorRoleActor: system ? { kind: "system" } : undefined,
+              operatorRunAuthority: caller.operatorAuthority,
+              scopes: caller.operatorAuthority?.scopes ?? ["operator.write"],
+              assertCurrent: () => {
+                if (!invocationCurrent) {
+                  throw new Error("inherited tool invocation closed");
+                }
+              },
+            },
+            dispatch,
+          )
+        : dispatch(),
     );
   const scope = () => ({
     agentId: "main",
@@ -202,6 +223,9 @@ async function createHostedChildFixture(system = false) {
     persistenceResult,
     dispatchEntered: dispatchEntered.promise,
     closeParent: () => parent.close(),
+    closeInvocation: () => {
+      invocationCurrent = false;
+    },
     revokeSource: () => {
       sourceCurrent = false;
     },
@@ -242,6 +266,53 @@ function userMessages(
 }
 
 describe("hosted creation transfers accepted child input", () => {
+  it.each([false, true])(
+    "continues after the inherited tool invocation completes (system=%s)",
+    async (system) => {
+      const fixture = await createHostedChildFixture(system, true);
+      try {
+        const accepted = await fixture.send();
+        expect(accepted.runStarted).toBe(true);
+        const scope = fixture.scope();
+        expect(accepted.sessionId).toBe(scope.sessionId);
+        await fixture.dispatchEntered;
+        expect(listSessionPendingInputs(scope)).toMatchObject({
+          total: 1,
+          items: [{ state: "queued" }],
+        });
+        expect(userMessages(scope)).toEqual([]);
+        // Returning from send has already aborted the real invocation envelope's signal.
+        fixture.closeInvocation();
+        fixture.closeParent();
+        await fixture.finish();
+        expect(fixture.provider).toHaveBeenCalledOnce();
+        expect(userMessages(scope)).toHaveLength(1);
+        expect(listSessionPendingInputs(scope)).toEqual({ items: [], total: 0 });
+        expect(fixture.context.chatAbortControllers.has(accepted.runId)).toBe(false);
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "retains inherited invocation authority through child input COMMIT (system=%s)",
+    async (system) => {
+      const fixture = await createHostedChildFixture(system, true);
+      fixture.beforeInputCommit.mockImplementation(() => fixture.closeInvocation());
+      try {
+        await expect(fixture.send()).rejects.toThrow("inherited tool invocation closed");
+        expect(fixture.beforeInputCommit).toHaveBeenCalledOnce();
+        expect(listSessionPendingInputs(fixture.scope())).toEqual({ items: [], total: 0 });
+        expect(userMessages(fixture.scope())).toEqual([]);
+        expect(fixture.provider).not.toHaveBeenCalled();
+        expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
+
   it.each([false, true])(
     "continues after the admitted parent closes (system=%s)",
     async (system) => {

@@ -779,14 +779,18 @@ describe("scoped vitest configs", () => {
     }
   });
 
-  it("serializes and isolates Telegram extension files with conflicting mocks", () => {
+  it("isolates Telegram extension mocks while inheriting file scheduling", () => {
     expectThreadedIsolatedRunner(defaultExtensionTelegramConfig);
-    expect(requireTestConfig(defaultExtensionTelegramConfig).fileParallelism).toBe(false);
+    expect(requireTestConfig(defaultExtensionTelegramConfig).fileParallelism).toBe(
+      sharedVitestConfig.test.fileParallelism,
+    );
   });
 
-  it("serializes Slack extension files that share process globals", () => {
+  it("keeps Slack file-local fixtures on reusable forks with inherited scheduling", () => {
     expectForkedNonIsolatedRunner(defaultExtensionSlackConfig, diagnosticForksPool);
-    expect(requireTestConfig(defaultExtensionSlackConfig).fileParallelism).toBe(false);
+    expect(requireTestConfig(defaultExtensionSlackConfig).fileParallelism).toBe(
+      sharedVitestConfig.test.fileParallelism,
+    );
   });
 
   it("normalizes split extension channel include patterns relative to the scoped dir", () => {
@@ -1261,6 +1265,8 @@ describe("scoped vitest configs", () => {
     expect(testConfig.include).toEqual(["test/**/*.test.ts", "src/scripts/**/*.test.ts"]);
     expect(testConfig.exclude).toEqual(expect.arrayContaining(toolingDockerTestFiles));
     expect(testConfig.exclude).toEqual(expect.arrayContaining(toolingIsolatedTestFiles));
+    expect(testConfig.fileParallelism).toBe(sharedVitestConfig.test.fileParallelism);
+    expect(testConfig.maxWorkers).toBe(sharedVitestConfig.test.maxWorkers);
     expect(testConfig.include).not.toContain("src/config/doc-baseline.integration.test.ts");
   });
 

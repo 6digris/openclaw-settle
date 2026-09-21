@@ -1,5 +1,7 @@
+import { getRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { SessionOperatorScope } from "../../shared/session-method-scopes-base.js";
+import { isGatewayAuthPolicyCurrent } from "../auth-policy.js";
 import { readGatewayDeviceRevocationGuard } from "../device-revocation.js";
 import type { ExpectedProfileBinding } from "../expected-profile.js";
 import {
@@ -127,6 +129,7 @@ export function bindWebSocketRequestMutationAuthority<T extends GatewayRequestOp
       options.hasCurrentClientAuthority !== hasCurrentClientAuthority ||
       options.sessionMutationCommitGuard !== undefined ||
       client.invalidated ||
+      !isGatewayAuthPolicyCurrent(client.authPolicyGeneration, getRuntimeConfigSnapshot()) ||
       !hasCurrentDeviceRevocation() ||
       client.internal?.agentRuntimeIdentity
     ) {
