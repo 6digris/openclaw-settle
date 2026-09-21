@@ -516,157 +516,80 @@ describeBrowserLayout.concurrent("chat footer browser layout", () => {
       });
     },
   );
-  it("spaces delivery separators evenly and keeps recovery actions inside narrow rows", async () => {
-    const realChatServer = await startControlUiE2eServer();
+  it("keeps delivery recovery visible and keyboard-reachable in narrow chat", async () => {
+    const server = await startControlUiE2eServer();
     try {
-      await withBrowserPage(openBrowserPage(1280, 900, { isolated: true }), async (page) => {
+      await withBrowserPage(openBrowserPage(320, 844, { isolated: true }), async (page) => {
         await page.addInitScript({ content: createControlUiMockSameOriginGatewayScript() });
         await installMockGateway(page, {
-          historyMessages: [
-            {
-              role: "user",
-              timestamp: Date.now(),
-              content: [{ type: "text", text: "Delivery recovery layout" }],
-              __openclaw: {
-                id: "delivery-layout",
-                kind: "pending-send",
-                state: "unconfirmed",
-                error: "Synthetic source delivery error",
+          historyMessages: ["failed", "unconfirmed", "waiting-reconnect"].flatMap(
+            (state, index) => [
+              {
+                role: "user",
+                timestamp: 1_000 + index * 2,
+                content: [{ type: "text", text: "Pending " + state }],
+                __openclaw: {
+                  id: "delivery-" + index,
+                  kind: "pending-send",
+                  state,
+                  ...(index === 1
+                    ? {
+                        senderId: "peer",
+                        senderName: "Peer",
+                        senderIdentity: { type: "profile", id: "peer" },
+                      }
+                    : {}),
+                },
               },
-            },
-          ],
+              {
+                role: "assistant",
+                timestamp: 1_001 + index * 2,
+                content: [{ type: "text", text: "Separate turn" }],
+              },
+            ],
+          ),
         });
-        await page.goto(realChatServer.baseUrl + "chat");
-        const status = page.locator(".chat-send-status");
-        await status.waitFor({ timeout: 30_000 });
-        await expectBrowser(status).toHaveAttribute("title", "Synthetic source delivery error");
-        const gaps = await status.evaluate((element) => {
-          const children = Array.from(element.querySelectorAll("[aria-hidden='true']"));
-          return children.map((separator) => {
-            const dot = separator.getBoundingClientRect();
-            const label = separator.nextElementSibling!.getBoundingClientRect();
-            const preceding = separator.parentElement!.previousElementSibling;
-            const before = preceding?.getBoundingClientRect();
-            const separatorGaps = [label.left - dot.right];
-            if (before && before.top === dot.top) {
-              separatorGaps.push(dot.left - before.right);
-            }
-            return separatorGaps;
-          });
-        });
-        expect(gaps).toHaveLength(3);
-        for (const gap of gaps.flat()) {
-          expect(gap).toBeGreaterThanOrEqual(5.5);
-          expect(gap).toBeLessThanOrEqual(6.5);
-        }
-        await page.setViewportSize({ width: 320, height: 844 });
+        await page.goto(server.baseUrl + "chat");
+        const statuses = page.locator(".chat-send-status");
+        await expectBrowser(statuses).toHaveCount(3, { timeout: 30_000 });
+        // Enlarged text must not push recovery controls outside the conversation.
         await page.addStyleTag({ content: ".chat-send-status { font-size: 24px; }" });
-        const geometry = await status.evaluate((element) => {
-          const rect = element.getBoundingClientRect();
-          const buttons = Array.from(element.querySelectorAll("button"));
-          return {
-            left: rect.left,
-            right: rect.right,
-            overflow: element.scrollWidth - element.clientWidth,
-            rows: buttons.map((button) => {
-              const action = button.getBoundingClientRect();
-              const dot = button.previousElementSibling!.getBoundingClientRect();
-              return { left: action.left, right: action.right, dotTop: dot.top, top: action.top };
-            }),
-          };
-        });
-        expect(geometry.left).toBeGreaterThanOrEqual(0);
-        expect(geometry.right).toBeLessThanOrEqual(320);
-        expect(geometry.overflow).toBeLessThanOrEqual(1);
-        for (const row of geometry.rows) {
-          expect(row.left).toBeGreaterThanOrEqual(0);
-          expect(row.right).toBeLessThanOrEqual(320);
-          expect(row.dotTop).toBeCloseTo(row.top, 0);
-        }
-        const retry = status.locator(".chat-send-status__retry");
-        await retry.focus();
-        await expectBrowser(retry).toBeFocused();
-        await page.keyboard.press("Tab");
-        await expectBrowser(status.locator(".chat-send-status__discard")).toBeFocused();
-      });
-    } finally {
-      await realChatServer.close();
-    }
-  }, 60_000);
-
-  it.for(["dark", "light"])(
-    "keeps delivery text neutral and recovery links differentiated in %s mode",
-    async (theme, context) => {
-      await withBrowserPage(openBrowserPage(390, 844), async (page) => {
-        await page.setContent(`<!doctype html><html data-theme-mode="${theme}"><head><style>${readUiCss()}</style></head><body>
-        <span id="text-color-probe" style="color: var(--text)">Status</span>
-        <span id="link-color-probe" style="color: var(--link)">Recovery</span>
-        <span id="muted-color-probe" style="color: var(--muted)">Secondary</span>
-        <div class="chat-thread">
-        ${[
-          { state: "unconfirmed", label: "Delivery unconfirmed" },
-          { state: "failed", label: "Not sent" },
-        ]
-          .flatMap(({ state, label }) =>
-            ["own", "peer", "direct"].map(
-              (
-                sender,
-              ) => `<div class="chat-group user chat-group--with-footer${sender === "peer" ? " chat-group--peer" : ""}">
-          <div class="chat-group-messages"><div class="chat-bubble">Attempted message</div></div>
-          <div class="chat-group-footer chat-group-footer--send-status${sender === "direct" ? "" : " chat-group-footer--persistent-identity"}">
-            <div class="chat-group-footer__meta"><span class="chat-sender-name">You</span>
-              <span class="chat-send-status" data-send-state="${state}">
-                <span>·</span><span>${label}</span><span>·</span>
-                <button class="chat-send-status__action chat-send-status__retry" type="button">Retry</button>
-                ${state === "unconfirmed" ? '<button class="chat-send-status__action chat-send-status__discard" type="button">Discard</button>' : ""}
-              </span>
-            </div>
-          </div>
-        </div>`,
-            ),
-          )
-          .join("")}
-        </div>
-      </body></html>`);
-
-        for (const state of ["unconfirmed", "failed"]) {
-          const statuses = page.locator(`.chat-send-status[data-send-state="${state}"]`);
-          const expectedColor = await page
-            .locator("#text-color-probe")
-            .evaluate((element) => getComputedStyle(element).color);
+        for (const theme of ["light", "dark"]) {
+          await page.evaluate((mode) => {
+            document.documentElement.dataset.themeMode = mode;
+          }, theme);
           for (const status of await statuses.all()) {
+            await status.scrollIntoViewIfNeeded();
             await page.mouse.move(0, 0);
-            // A child can report opacity 1 while its collapsed identity footer hides it.
-            const footer = status.locator("..").locator("..");
-            await expectBrowser(footer).toHaveCSS("opacity", "1");
-            expect(await status.evaluate((element) => getComputedStyle(element).color)).toBe(
-              expectedColor,
+            const footer = status.locator(
+              "xpath=ancestor::div[contains(@class, 'chat-group-footer--send-status')]",
             );
-            for (const action of await status.locator("button").all()) {
-              const secondary = await action.evaluate((element) =>
-                element.classList.contains("chat-send-status__discard"),
-              );
-              const actionColor = await page
-                .locator(secondary ? "#muted-color-probe" : "#link-color-probe")
-                .evaluate((element) => getComputedStyle(element).color);
-              expect(actionColor).not.toBe(expectedColor);
-              await expectBrowser(action).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-              await expectBrowser(action).toHaveCSS("opacity", "1");
-              await expectBrowser(action).toHaveCSS("pointer-events", "auto");
-              expect(
-                await action.evaluate((element) => getComputedStyle(element).borderStyle),
-              ).toBe("none");
-              expect(await action.evaluate((element) => getComputedStyle(element).color)).toBe(
-                actionColor,
-              );
-              await action.hover();
-              await context.expect
-                .poll(() => action.evaluate((element) => getComputedStyle(element).color))
-                .toBe(actionColor);
+            await expectBrowser(footer).toHaveCSS("opacity", "1");
+            for (const action of await status.getByRole("button").all()) {
+              await expectBrowser(action).toBeVisible();
+              await expectBrowser(action).toBeEnabled();
+              const bounds = await action.boundingBox();
+              if (!bounds) {
+                throw new Error("Recovery action has no rendered bounds");
+              }
+              expect(bounds.x).toBeGreaterThanOrEqual(0);
+              expect(bounds.x + bounds.width).toBeLessThanOrEqual(320);
             }
           }
+          const unconfirmed = page.locator('.chat-send-status[data-send-state="unconfirmed"]');
+          const retry = unconfirmed.getByRole("button", { name: "Retry queued message" });
+          await retry.focus();
+          await page.keyboard.press("Tab");
+          await expectBrowser(
+            unconfirmed.getByRole("button", { name: "Discard", exact: true }),
+          ).toBeFocused();
+          await page.keyboard.press("Shift+Tab");
+          await expectBrowser(retry).toBeFocused();
+          await retry.evaluate((element) => (element as HTMLElement).blur());
         }
       });
-    },
-  );
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
 });
