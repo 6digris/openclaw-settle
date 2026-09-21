@@ -477,9 +477,9 @@ prepare_squash_merge_body() {
   printf '%s\n' "$body_file"
 }
 
-# Replacement approval names a reviewed head, not permission to reuse another
+# Recovery approval names a reviewed head, not permission to reuse another
 # head's artifacts. Subshell isolation prevents sourced stamps from changing admission.
-verify_merge_replacement_artifacts() (
+verify_merge_recovery_artifacts() (
   local pr="$1" head="$2" qualified_refusal="${3:-false}"
   local HOSTED_GATES_TARGET_HEAD_SHA=""
   local PR_NUMBER="" PR_HEAD_SHA="" PR_HEAD_SHA_BEFORE=""
@@ -512,7 +512,8 @@ merge_run() {
   local pr="$1"
   local auto_merge_requested="${2:-false}"
   local recovery_oid="${3:-}" recovery_record="" recovery_actor=""
-  local replacement_head="${4:-}" replacement_artifacts="" recovery_captures=()
+  local replacement_head="${4:-}" recovery_artifacts="" recovery_captures=()
+  local recovery_artifact_head="$replacement_head"
   local body_path="${5:-}" captured_body="" merge_body_snapshot=""
   local legacy_directory="${6:-}" legacy_refusal="" legacy_captures=()
   local cancel_auto="${7:-false}"
@@ -581,6 +582,9 @@ merge_run() {
     qualified_refusal=true
     MERGE_REFUSAL_DIRECTORY="$refusal_directory"
     MERGE_TRANSPORT=graphql
+    if [ -z "$recovery_artifact_head" ]; then
+      recovery_artifact_head=$(printf '%s\n' "$recovery_record" | jq -er .head) || return 1
+    fi
   fi
 
   local required required_artifacts=(
@@ -590,7 +594,7 @@ merge_run() {
     .local/prep.md
     .local/prep.env
   )
-  [ -z "$replacement_head" ] || required_artifacts+=(.local/prep-context.env .local/gates.env)
+  [ -z "$recovery_artifact_head" ] || required_artifacts+=(.local/prep-context.env .local/gates.env)
   for required in "${required_artifacts[@]}"; do
     require_artifact "$required" || return 1
   done
@@ -603,9 +607,11 @@ merge_run() {
       recovery_captures+=("$capture")
       required_artifacts+=("$capture")
     done
-    replacement_artifacts=$(pr_git hash-object --no-filters -- "${required_artifacts[@]}") || return 1
-    if ! verify_merge_replacement_artifacts "$pr" "$replacement_head" "$qualified_refusal"; then
-      merge_outcome_stop "replacement head requires matching PR, freshly reviewed prepare context, prepared tree, and completed gate stamps; re-run review and prepare"
+  fi
+  if [ -n "$recovery_artifact_head" ]; then
+    recovery_artifacts=$(pr_git hash-object --no-filters -- "${required_artifacts[@]}") || return 1
+    if ! verify_merge_recovery_artifacts "$pr" "$recovery_artifact_head" "$qualified_refusal"; then
+      merge_outcome_stop "recovery requires matching PR, freshly reviewed prepare context, prepared tree, and valid gate bindings; re-run review and prepare"
       return 1
     fi
   fi
@@ -855,9 +861,9 @@ merge_run() {
     return 1
   fi
   validate_clawsweeper_review_comments "$pr" "$PREP_HEAD_SHA" || return 1
-  if [ -n "$replacement_head" ]; then
-    if [ "$replacement_artifacts" != "$(pr_git hash-object --no-filters -- "${required_artifacts[@]}")" ]; then
-      merge_outcome_stop "replacement artifacts changed during admission"
+  if [ -n "$recovery_artifact_head" ]; then
+    if [ "$recovery_artifacts" != "$(pr_git hash-object --no-filters -- "${required_artifacts[@]}")" ]; then
+      merge_outcome_stop "recovery artifacts changed during admission"
       return 1
     fi
     verify_prep_branch_matches_prepared_head "$pr" "$LOCAL_PREP_HEAD_SHA" || return 1

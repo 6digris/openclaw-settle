@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { createMergeOutcomeFixtureHarness } from "./pr-merge-outcome.test-support.js";
@@ -55,59 +55,126 @@ function qualifiedAutoRefusal(f: ReturnType<typeof fixture>, diagnostic = false)
 }
 
 describePosix("qualified pre-dispatch merge recovery", () => {
-  it("recovers a qualified pre-dispatch refusal with retained evidence", () => {
+  it.each([false, true])(
+    "recovers a qualified pre-dispatch refusal with retained evidence (replacement=%s)",
+    (replaceHead) => {
+      const f = fixture();
+      const proof = qualifiedAutoRefusal(f);
+      const replacement = replaceHead ? f.replacePreparedHead() : "";
+      const preparedHead = replacement || f.head;
+      writeFileSync(
+        join(f.worktree, ".local/gates.env"),
+        `PR_NUMBER=123\nGATES_MODE=github_pending\nHOSTED_GATES_TARGET_HEAD_SHA=${preparedHead}\n`,
+      );
+      f.save({ ...f.state(), requiredCheckName: "openclaw/ci-gate" });
+      const run = f.run(
+        false,
+        f.repo,
+        "squash",
+        proof.outcome,
+        replacement,
+        "",
+        "",
+        "",
+        false,
+        proof.directory,
+      );
+      expect(run.status, run.output).toBe(0);
+      expect(f.state().mutations).toBe(1);
+      expect(f.record()).toMatchObject({
+        phase: "complete",
+        head: preparedHead,
+        route: "immediate",
+        recovery: {
+          outcome: proof.outcome,
+          ...(replacement ? { replacementHead: replacement } : {}),
+          preDispatchRefusal: { kind: proof.qualification.kind, capture: proof.capture },
+        },
+      });
+      if (!replacement) {
+        expect(f.record().recovery).not.toHaveProperty("replacementHead");
+      }
+      f.git(["merge-base", "--is-ancestor", proof.outcome, outcomeRef]);
+      expect(f.git(["rev-parse", `${outcomeRef}:pre-dispatch-refusal/${proof.capture}`])).toBe(
+        proof.qualification.capture,
+      );
+      expect(f.run().status).toBe(0);
+      expect(f.state().mutations).toBe(1);
+      const replay = f.run(
+        false,
+        f.repo,
+        "squash",
+        proof.outcome,
+        replacement,
+        "",
+        "",
+        "",
+        false,
+        proof.directory,
+      );
+      expect(replay.status, replay.output).toBe(1);
+      expect(f.state().mutations).toBe(1);
+    },
+  );
+
+  it.each([
+    "stale-prep-context",
+    "stale-gate-head",
+    "review-during-checks",
+    "prepared-head-during-checks",
+  ])("same-head qualified refusal recovery rejects invalidated local evidence: %s", (fault) => {
     const f = fixture();
     const proof = qualifiedAutoRefusal(f);
-    const replacement = f.replacePreparedHead();
-    writeFileSync(
-      join(f.worktree, ".local/gates.env"),
-      `PR_NUMBER=123\nGATES_MODE=github_pending\nHOSTED_GATES_TARGET_HEAD_SHA=${replacement}\n`,
-    );
-    f.save({ ...f.state(), requiredCheckName: "openclaw/ci-gate" });
+    const captures = f.captures();
+    const next = f.state();
+    let changedReview = "";
+    let movedHead = "";
+    if (fault === "stale-prep-context" || fault === "stale-gate-head") {
+      const file = join(
+        f.worktree,
+        ".local",
+        fault === "stale-prep-context" ? "prep-context.env" : "gates.env",
+      );
+      writeFileSync(file, readFileSync(file, "utf8").replace(f.head, f.base));
+    }
+    if (fault === "review-during-checks") {
+      const review = JSON.parse(readFileSync(join(f.worktree, ".local/review.json"), "utf8"));
+      changedReview = `${JSON.stringify({ ...review, recommendation: "NEEDS WORK" })}\n`;
+      next.duringChecks = { artifact: "review.json", artifactContents: changedReview };
+    }
+    if (fault === "prepared-head-during-checks") {
+      movedHead = f.commit(
+        f.git(["rev-parse", `${f.head}^{tree}`]),
+        [f.head],
+        "Local preparation advanced during admission\n",
+      );
+      next.duringChecks = { preparedHead: movedHead };
+    }
+    f.save(next);
     const run = f.run(
       false,
       f.repo,
       "squash",
       proof.outcome,
-      replacement,
       "",
-      "",
-      "",
-      false,
-      proof.directory,
-    );
-    expect(run.status, run.output).toBe(0);
-    expect(f.state().mutations).toBe(1);
-    expect(f.record()).toMatchObject({
-      phase: "complete",
-      head: replacement,
-      route: "immediate",
-      recovery: {
-        outcome: proof.outcome,
-        replacementHead: replacement,
-        preDispatchRefusal: { kind: proof.qualification.kind, capture: proof.capture },
-      },
-    });
-    f.git(["merge-base", "--is-ancestor", proof.outcome, outcomeRef]);
-    expect(f.git(["rev-parse", `${outcomeRef}:pre-dispatch-refusal/${proof.capture}`])).toBe(
-      proof.qualification.capture,
-    );
-    expect(f.run().status).toBe(0);
-    expect(f.state().mutations).toBe(1);
-    const replay = f.run(
-      false,
-      f.repo,
-      "squash",
-      proof.outcome,
-      replacement,
       "",
       "",
       "",
       false,
       proof.directory,
     );
-    expect(replay.status, replay.output).toBe(1);
-    expect(f.state().mutations).toBe(1);
+    expect(run.error, run.output).toBeUndefined();
+    expect(run.status, run.output).toBe(1);
+    expect(f.state()).toMatchObject({ mutations: 0, posts: 0 });
+    expect(f.git(["rev-parse", outcomeRef])).toBe(proof.outcome);
+    expect(f.captures()).toEqual(captures);
+    if (changedReview) {
+      expect(readFileSync(join(f.worktree, ".local/review.json"), "utf8")).toBe(changedReview);
+    }
+    if (movedHead) {
+      expect(f.git(["rev-parse", "refs/heads/pr-123-prep"])).toBe(movedHead);
+      expect(f.state().pr.headRefOid).toBe(f.head);
+    }
   });
 
   it("preserves a pre-dispatch outcome across incomplete checks and ineligible admission", () => {

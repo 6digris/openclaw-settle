@@ -316,7 +316,13 @@ export function createMergeOutcomeFixtureHarness() {
       requiredCheckName: "CI",
       refusalCapture: "error: string rewrite protection blocked unsafe input\n",
       ciExit: 0,
-      duringChecks: null as null | { head?: string; artifact?: string; bodyPath?: string },
+      duringChecks: null as null | {
+        head?: string;
+        preparedHead?: string;
+        artifact?: string;
+        artifactContents?: string;
+        bodyPath?: string;
+      },
       review: true,
       ready: true,
       cleanup: "",
@@ -534,7 +540,12 @@ else if(args[0]==="api"&&args.some(arg=>arg.startsWith("repos/fixture/repo/actio
 else if(args[0]==="pr"&&args[1]==="checks") {
   if(s.duringChecks?.bodyPath) fs.writeFileSync(s.duringChecks.bodyPath,"Changed later");
   if(s.duringChecks?.head) s.pr.headRefOid=s.duringChecks.head;
-  if(s.duringChecks?.artifact) fs.appendFileSync(process.env.FIXTURE_REPO+"/.worktrees/pr-123/.local/"+s.duringChecks.artifact,"\\n# changed during checks\\n");
+  if(s.duringChecks?.preparedHead) git(["update-ref","refs/heads/pr-123-prep",s.duringChecks.preparedHead]);
+  if(s.duringChecks?.artifact) {
+    const path=process.env.FIXTURE_REPO+"/.worktrees/pr-123/.local/"+s.duringChecks.artifact;
+    if(typeof s.duringChecks.artifactContents==="string") fs.writeFileSync(path,s.duringChecks.artifactContents);
+    else fs.appendFileSync(path,"\\n# changed during checks\\n");
+  }
   out([{name:s.requiredCheckName,bucket:s.gates,state:s.gates==="pass"?"SUCCESS":"FAILURE"}]);}
 else if(args[0]==="pr"&&args[1]==="view") {
   const fields=args[args.indexOf("--json")+1].split(",");
