@@ -1,22 +1,12 @@
 // Telegram tests cover bot message context.thread binding plugin behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { telegramRouteTestSessionRuntime } from "./bot-message-context.route-test-support.js";
 import { buildTelegramMessageContextForTest } from "./bot-message-context.test-harness.js";
 
 type ResolveTelegramConversationRoute =
   typeof import("./conversation-route.js").resolveTelegramConversationRoute;
 type TelegramConversationBindingMode = ReturnType<ResolveTelegramConversationRoute>["bindingMode"];
 
-const recordInboundSessionMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const resolveTelegramConversationRouteMock = vi.hoisted(() => vi.fn());
-type TelegramTestSessionRuntime = NonNullable<
-  import("./bot-message-context.types.js").BuildTelegramMessageContextParams["sessionRuntime"]
->;
-const recordInboundSessionForThreadBindingTest: NonNullable<
-  TelegramTestSessionRuntime["recordInboundSession"]
-> = async (params) => {
-  await recordInboundSessionMock(params);
-};
 
 vi.mock("./conversation-route.js", async () => {
   const actual =
@@ -27,11 +17,6 @@ vi.mock("./conversation-route.js", async () => {
       resolveTelegramConversationRouteMock(...args),
   };
 });
-
-const threadBindingSessionRuntime = {
-  ...telegramRouteTestSessionRuntime,
-  recordInboundSession: recordInboundSessionForThreadBindingTest,
-} satisfies TelegramTestSessionRuntime;
 
 function createBoundRoute(params: {
   accountId: string;
@@ -70,7 +55,6 @@ function createForumTopicMessage() {
 async function buildForumTopicMessageContext(accountId?: string) {
   return await buildTelegramMessageContextForTest({
     ...(accountId ? { accountId } : {}),
-    sessionRuntime: threadBindingSessionRuntime,
     message: createForumTopicMessage(),
     options: { forceWasMentioned: true },
     resolveGroupActivation: () => true,
@@ -86,7 +70,6 @@ function expectRouteArgs(): Record<string, unknown> {
 
 describe("buildTelegramMessageContext thread binding override", () => {
   beforeEach(() => {
-    recordInboundSessionMock.mockClear();
     resolveTelegramConversationRouteMock.mockReset();
   });
 
@@ -125,7 +108,6 @@ describe("buildTelegramMessageContext thread binding override", () => {
     );
 
     const ctx = await buildTelegramMessageContextForTest({
-      sessionRuntime: threadBindingSessionRuntime,
       message: createForumTopicMessage(),
       resolveGroupActivation: () => undefined,
       resolveGroupRequireMention: () => true,
@@ -149,7 +131,6 @@ describe("buildTelegramMessageContext thread binding override", () => {
     );
 
     const ctx = await buildTelegramMessageContextForTest({
-      sessionRuntime: threadBindingSessionRuntime,
       message: createForumTopicMessage(),
       resolveGroupActivation: () => undefined,
       resolveGroupRequireMention: () => true,
@@ -194,7 +175,6 @@ describe("buildTelegramMessageContext thread binding override", () => {
     );
 
     const ctx = await buildTelegramMessageContextForTest({
-      sessionRuntime: threadBindingSessionRuntime,
       message: {
         message_id: 1,
         chat: { id: 1234, type: "private" },
@@ -223,7 +203,6 @@ describe("buildTelegramMessageContext thread binding override", () => {
     );
 
     const ctx = await buildTelegramMessageContextForTest({
-      sessionRuntime: threadBindingSessionRuntime,
       message: {
         message_id: 1,
         message_thread_id: 77,

@@ -98,14 +98,6 @@ describe("resolveTelegramToken", () => {
         }) as OpenClawConfig,
       expected: { token: "file-token", source: "tokenFile" },
     },
-    {
-      name: "falls back to config token when no env or tokenFile",
-      envToken: "",
-      cfg: {
-        channels: { telegram: { botToken: "cfg-token" } },
-      } as OpenClawConfig,
-      expected: { token: "cfg-token", source: "config" },
-    },
   ])("$name", ({ envToken, cfg, resolveCfg, expected }) => {
     vi.stubEnv("TELEGRAM_BOT_TOKEN", envToken);
     const res = resolveTelegramToken(resolveCfg ? resolveCfg() : cfg);

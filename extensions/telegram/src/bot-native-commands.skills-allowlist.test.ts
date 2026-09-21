@@ -50,13 +50,13 @@ describe("registerTelegramNativeCommands skill allowlist integration", () => {
     const cfg: OpenClawConfig = {
       agents: {
         list: [
-          { id: "alpha", workspace: workspaceDir, skills: ["alpha-skill"] },
+          { id: "alpha", default: true, workspace: workspaceDir, skills: ["alpha-skill"] },
           { id: "beta", workspace: workspaceDir, skills: ["beta-skill"] },
         ],
       },
       bindings: [
         {
-          agentId: "alpha",
+          agentId: "beta",
           match: { channel: "telegram", accountId: "bot-a" },
         },
       ],
@@ -89,7 +89,7 @@ describe("registerTelegramNativeCommands skill allowlist integration", () => {
       command: string;
     }>;
 
-    expect(registeredCommands.map((entry) => entry.command)).toContain("alpha_skill");
-    expect(registeredCommands.map((entry) => entry.command)).not.toContain("beta_skill");
+    expect(registeredCommands.map((entry) => entry.command)).toContain("beta_skill");
+    expect(registeredCommands.map((entry) => entry.command)).not.toContain("alpha_skill");
   });
 });

@@ -3,22 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildTelegramMessageContextForTest } from "./bot-message-context.test-harness.js";
 import { isTelegramForumServiceMessage } from "./forum-service-message.js";
 
-const TELEGRAM_FORUM_SERVICE_FIELDS = [
-  "forum_topic_created",
-  "forum_topic_edited",
-  "forum_topic_closed",
-  "forum_topic_reopened",
-  "general_forum_topic_hidden",
-  "general_forum_topic_unhidden",
-] as const;
-
 describe("isTelegramForumServiceMessage", () => {
-  it("returns true for any Telegram forum service field", () => {
-    for (const field of TELEGRAM_FORUM_SERVICE_FIELDS) {
-      expect(isTelegramForumServiceMessage({ [field]: {} })).toBe(true);
-    }
-  });
-
   it("returns false for normal messages and non-objects", () => {
     expect(isTelegramForumServiceMessage({ text: "hello" })).toBe(false);
     expect(isTelegramForumServiceMessage(null)).toBe(false);
@@ -27,7 +12,7 @@ describe("isTelegramForumServiceMessage", () => {
 });
 
 describe("buildTelegramMessageContext sender prefix", () => {
-  async function buildCtx(params: { messageId: number; options?: Record<string, unknown> }) {
+  async function buildCtx(params: { messageId: number }) {
     return await buildTelegramMessageContextForTest({
       message: {
         message_id: params.messageId,
@@ -36,7 +21,6 @@ describe("buildTelegramMessageContext sender prefix", () => {
         text: "hello",
         from: { id: 42, first_name: "Alice" },
       },
-      options: params.options,
     });
   }
 
@@ -46,22 +30,5 @@ describe("buildTelegramMessageContext sender prefix", () => {
     expect(ctx).not.toBeNull();
     const body = ctx?.ctxPayload?.Body ?? "";
     expect(body).toContain("Alice (42): hello");
-  });
-
-  it("sets MessageSid from message_id", async () => {
-    const ctx = await buildCtx({ messageId: 12345 });
-
-    expect(ctx).not.toBeNull();
-    expect(ctx?.ctxPayload?.MessageSid).toBe("12345");
-  });
-
-  it("respects messageIdOverride option", async () => {
-    const ctx = await buildCtx({
-      messageId: 12345,
-      options: { messageIdOverride: "67890" },
-    });
-
-    expect(ctx).not.toBeNull();
-    expect(ctx?.ctxPayload?.MessageSid).toBe("67890");
   });
 });

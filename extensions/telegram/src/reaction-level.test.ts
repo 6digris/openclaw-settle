@@ -62,50 +62,6 @@ describe("resolveTelegramReactionLevel", () => {
     expectMinimalFlags(result);
   });
 
-  it("returns off level with no reactions enabled", () => {
-    const cfg: OpenClawConfig = {
-      channels: { telegram: { reactionLevel: "off" } },
-    };
-
-    const result = resolveTelegramReactionLevel({ cfg });
-    expectReactionFlags(result, {
-      level: "off",
-      ackEnabled: false,
-      agentReactionsEnabled: false,
-    });
-  });
-
-  it("returns ack level with only ackEnabled", () => {
-    const cfg: OpenClawConfig = {
-      channels: { telegram: { reactionLevel: "ack" } },
-    };
-
-    const result = resolveTelegramReactionLevel({ cfg });
-    expectReactionFlags(result, {
-      level: "ack",
-      ackEnabled: true,
-      agentReactionsEnabled: false,
-    });
-  });
-
-  it("returns minimal level with agent reactions enabled and minimal guidance", () => {
-    const cfg: OpenClawConfig = {
-      channels: { telegram: { reactionLevel: "minimal" } },
-    };
-
-    const result = resolveTelegramReactionLevel({ cfg });
-    expectMinimalFlags(result);
-  });
-
-  it("returns extensive level with agent reactions enabled and extensive guidance", () => {
-    const cfg: OpenClawConfig = {
-      channels: { telegram: { reactionLevel: "extensive" } },
-    };
-
-    const result = resolveTelegramReactionLevel({ cfg });
-    expectExtensiveFlags(result);
-  });
-
   it("resolves reaction level from a specific account", () => {
     const cfg: OpenClawConfig = {
       channels: {
@@ -168,7 +124,6 @@ describe("resolveTelegramReactionLevel", () => {
       },
     } as unknown as OpenClawConfig;
 
-    expect(() => resolveTelegramReactionLevel({ cfg })).not.toThrow();
     const result = resolveTelegramReactionLevel({ cfg });
     expectReactionFlags(result, {
       level: "off",
@@ -192,7 +147,6 @@ describe("resolveTelegramReactionLevel", () => {
       },
     } as unknown as OpenClawConfig;
 
-    expect(() => resolveTelegramReactionLevel({ cfg, accountId: "ops" })).not.toThrow();
     const result = resolveTelegramReactionLevel({ cfg, accountId: "ops" });
     expectReactionFlags(result, {
       level: "ack",

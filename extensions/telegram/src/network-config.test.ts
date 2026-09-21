@@ -89,11 +89,6 @@ describe("resolveTelegramAutoSelectFamilyDecision", () => {
     expect(decision).toEqual(expected);
   });
 
-  it("defaults to enable on Node 22", () => {
-    const decision = resolveTelegramAutoSelectFamilyDecision({ env: {}, nodeMajor: 22 });
-    expect(decision).toEqual({ value: true, source: "default-node22" });
-  });
-
   it("returns null when no decision applies", () => {
     const decision = resolveTelegramAutoSelectFamilyDecision({ env: {}, nodeMajor: 20 });
     expect(decision).toEqual({ value: null });

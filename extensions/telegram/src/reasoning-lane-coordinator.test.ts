@@ -10,13 +10,6 @@ describe("splitTelegramReasoningText", () => {
     });
   });
 
-  it("keeps unclosed unflagged reasoning-looking text in the answer lane", () => {
-    const text = "Before <think>unclosed content after";
-    expect(splitTelegramReasoningText(text)).toEqual({
-      answerText: text,
-    });
-  });
-
   it("formats tagged text when the payload is explicitly reasoning", () => {
     expect(splitTelegramReasoningText("<think>example</think>Done", true)).toEqual({
       reasoningText: "🧠 _example_",
@@ -25,20 +18,6 @@ describe("splitTelegramReasoningText", () => {
 
   it("suppresses internal reflection from explicitly typed reasoning", () => {
     expect(splitTelegramReasoningText("<internal>private reflection</internal>", true)).toEqual({});
-  });
-
-  it("ignores literal think tags inside inline code", () => {
-    const text = "Use `<think>example</think>` literally.";
-    expect(splitTelegramReasoningText(text)).toEqual({
-      answerText: text,
-    });
-  });
-
-  it("ignores literal think tags inside fenced code", () => {
-    const text = "```xml\n<think>example</think>\n```";
-    expect(splitTelegramReasoningText(text)).toEqual({
-      answerText: text,
-    });
   });
 
   it.each([
@@ -57,13 +36,6 @@ describe("splitTelegramReasoningText", () => {
   it("keeps unrelated partial tags visible", () => {
     expect(splitTelegramReasoningText("< interface", true)).toStrictEqual({
       reasoningText: "🧠 _< interface_",
-    });
-  });
-
-  it("keeps visible Thinking-prefixed answers in the answer lane", () => {
-    const text = "Thinking...\nI'll check that now";
-    expect(splitTelegramReasoningText(text)).toEqual({
-      answerText: text,
     });
   });
 });

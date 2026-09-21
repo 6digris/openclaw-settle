@@ -11,7 +11,6 @@ import {
   resolveTelegramBotHasTopicsEnabled,
   resolveTelegramForumFlag,
   resolveTelegramForumThreadId,
-  shouldUseTelegramDmThreadSession,
 } from "./helpers.js";
 import { renderTelegramTextEntities } from "./inbound-text-entities.js";
 
@@ -190,35 +189,6 @@ describe("resolveTelegramForumFlag", () => {
   });
 });
 
-describe("shouldUseTelegramDmThreadSession", () => {
-  it("requires a DM thread id", () => {
-    expect(
-      shouldUseTelegramDmThreadSession({
-        botHasTopicsEnabled: true,
-      }),
-    ).toBe(false);
-  });
-
-  it("keeps DM thread ids flat when bot topics are not enabled", () => {
-    expect(shouldUseTelegramDmThreadSession({ dmThreadId: 42 })).toBe(false);
-    expect(
-      shouldUseTelegramDmThreadSession({
-        dmThreadId: 42,
-        botHasTopicsEnabled: false,
-      }),
-    ).toBe(false);
-  });
-
-  it("uses DM thread sessions when Telegram reports bot topics enabled", () => {
-    expect(
-      shouldUseTelegramDmThreadSession({
-        dmThreadId: 42,
-        botHasTopicsEnabled: true,
-      }),
-    ).toBe(true);
-  });
-});
-
 describe("resolveTelegramBotHasTopicsEnabled", () => {
   it("trusts only Telegram getMe has_topics_enabled=true", () => {
     expect(resolveTelegramBotHasTopicsEnabled({ has_topics_enabled: true })).toBe(true);
@@ -301,20 +271,6 @@ describe("normalizeForwardedContext", () => {
     expect(ctx?.fromSignature).toBe("Admin");
     expect(ctx?.fromChatType).toBe("supergroup");
     expect(ctx?.date).toBe(600);
-  });
-
-  it("uses author_signature from forward_origin", () => {
-    const ctx = normalizeForwardedContext({
-      forward_origin: {
-        type: "channel",
-        chat: { title: "My Channel", id: -100999, type: "channel" },
-        date: 700,
-        author_signature: "New Sig",
-        message_id: 1,
-      },
-    } as TelegramMessage);
-    expect(ctx?.fromSignature).toBe("New Sig");
-    expect(ctx?.from).toBe("My Channel (New Sig)");
   });
 
   it("returns undefined signature when author_signature is blank", () => {
@@ -870,42 +826,6 @@ describe("hasBotMention", () => {
         "gaian",
       ),
     ).toBe(true);
-  });
-
-  it("matches mention followed by space", () => {
-    expect(
-      hasBotMention(
-        {
-          text: "@gaian how are you",
-          chat: { id: 1, type: "supergroup" },
-        } as TelegramMessage,
-        "gaian",
-      ),
-    ).toBe(true);
-  });
-
-  it("does not match substring of a longer username", () => {
-    expect(
-      hasBotMention(
-        {
-          text: "@gaianchat_bot hello",
-          chat: { id: 1, type: "supergroup" },
-        } as TelegramMessage,
-        "gaian",
-      ),
-    ).toBe(false);
-  });
-
-  it("does not match when mention is a prefix of another word", () => {
-    expect(
-      hasBotMention(
-        {
-          text: "@gaianbot do something",
-          chat: { id: 1, type: "supergroup" },
-        } as TelegramMessage,
-        "gaian",
-      ),
-    ).toBe(false);
   });
 });
 

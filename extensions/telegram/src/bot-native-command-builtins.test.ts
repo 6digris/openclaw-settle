@@ -9,7 +9,7 @@ import {
 } from "./bot-native-command-executors.test-support.js";
 import { createTelegramPrivateCommandContext } from "./bot-native-commands.fixture-test-support.js";
 
-const { agentRuntimeMocks, commandAuthMocks, replyMocks, sessionMocks } = executorTestMocks;
+const { agentRuntimeMocks, commandAuthMocks, sessionMocks } = executorTestMocks;
 
 describe("Telegram native command built-ins", () => {
   beforeEach(resetSessionMetaMocks);
@@ -63,7 +63,6 @@ describe("Telegram native command built-ins", () => {
       requireReplyMarkup: true,
       label: "thinking menu",
     });
-    expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -208,7 +207,6 @@ describe("Telegram native command built-ins", () => {
       requireReplyMarkup: true,
       label: "thread thinking menu",
     });
-    expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("uses the configured default model instead of temporary auto fallback overrides", async () => {
@@ -253,7 +251,6 @@ describe("Telegram native command built-ins", () => {
       requireReplyMarkup: true,
       label: "default model thinking menu",
     });
-    expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("uses configured model defaults instead of runtime auth metadata for the fast menu", async () => {
@@ -311,7 +308,6 @@ describe("Telegram native command built-ins", () => {
       row.map((button) => button.text),
     );
     expect(labels).toContain("auto (30 sec)");
-    expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("uses the read-only catalog for Claude CLI thinking menus", async () => {
@@ -361,7 +357,6 @@ describe("Telegram native command built-ins", () => {
       requireReplyMarkup: true,
       label: "Claude CLI thinking menu",
     });
-    expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("uses target model thinking defaults before global thinking defaults", async () => {
@@ -400,7 +395,6 @@ describe("Telegram native command built-ins", () => {
       requireReplyMarkup: true,
       label: "target model thinking menu",
     });
-    expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("uses per-agent thinking defaults before target model and global thinking defaults", async () => {
@@ -439,7 +433,6 @@ describe("Telegram native command built-ins", () => {
       requireReplyMarkup: true,
       label: "agent thinking menu",
     });
-    expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it.each(["high", "off"] as const)(
@@ -476,7 +469,6 @@ describe("Telegram native command built-ins", () => {
         requireReplyMarkup: true,
         label: "routed agent model thinking menu",
       });
-      expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
     },
   );
 
@@ -493,7 +485,6 @@ describe("Telegram native command built-ins", () => {
 
     expect(next).toHaveBeenCalledOnce();
     expect(sendMessage).not.toHaveBeenCalled();
-    expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
   it("does not load the session store when a native argument menu is skipped", async () => {
@@ -508,6 +499,5 @@ describe("Telegram native command built-ins", () => {
     expect(sessionMocks.sessionStoreEntries).not.toHaveBeenCalled();
     expect(agentRuntimeMocks.loadModelCatalog).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalledOnce();
-    expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 });

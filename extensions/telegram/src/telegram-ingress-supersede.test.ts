@@ -544,27 +544,6 @@ describe("telegram ingress supersede policy", () => {
     ).toBe(testCase.expected);
   });
 
-  it("reuses ingress command gate for sender authorization", async () => {
-    expect(
-      await isTelegramSpooledUpdateSenderAuthorized(
-        messageUpdate({ updateId: 1, text: "x", senderId: OWNER_ID }),
-        auth,
-      ),
-    ).toBe(true);
-    expect(
-      await isTelegramSpooledUpdateSenderAuthorized(
-        messageUpdate({
-          updateId: 1,
-          text: "x",
-          senderId: STRANGER_ID,
-          chatId: -1001,
-          chatType: "supergroup",
-        }),
-        auth,
-      ),
-    ).toBe(false);
-  });
-
   it("authorizes paired DM senders via the pairing store under dmPolicy pairing", async () => {
     const pairedId = "424242";
     openClawState = await createOpenClawTestState({

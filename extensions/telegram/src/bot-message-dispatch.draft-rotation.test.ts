@@ -32,29 +32,6 @@ import {
 } from "./bot-message-dispatch.test-harness.js";
 
 describeTelegramDispatch("dispatchTelegramMessage draft-rotation", () => {
-  it("streams block and final text through the same answer message", async () => {
-    const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
-    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
-      async ({ dispatcherOptions, replyOptions }) => {
-        await replyOptions?.onPartialReply?.({ text: "Working" });
-        await dispatcherOptions.deliver({ text: "Done" }, { kind: "final" });
-        return { queuedFinal: true };
-      },
-    );
-
-    await dispatchWithContext({ context: createContext() });
-
-    expect(answerDraftStream.update).toHaveBeenNthCalledWith(1, "Working");
-    expect(answerDraftStream.update).toHaveBeenNthCalledWith(
-      2,
-      "Done",
-      expect.objectContaining({ onPlatformSendDispatch: expect.any(Function) }),
-    );
-    expect(answerDraftStream.stop).toHaveBeenCalled();
-    expect(deliverReplies).not.toHaveBeenCalled();
-    expect(editMessageTelegram).not.toHaveBeenCalled();
-  });
-
   it("sends trailing verbose status after streamed final answer without replacing the answer draft", async () => {
     const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(

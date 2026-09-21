@@ -318,16 +318,6 @@ function rejectFirstTelegramAlbumDownloadWhen(partial: boolean) {
   }
 }
 
-async function rejectTelegramAlbumDownload(shutdown: AbortController, abort: boolean) {
-  if (abort) {
-    shutdown.abort();
-  }
-  const cause = abort
-    ? Object.assign(new Error("aborted"), { name: "AbortError" })
-    : new Error("Failed to fetch media");
-  throw new MediaFetchError("fetch_failed", cause.message, { cause });
-}
-
 describe("createTelegramBot channel_post media", () => {
   beforeAll(() => {
     createTelegramBot = (opts) =>
@@ -945,50 +935,6 @@ describe("createTelegramBot channel_post media", () => {
       ]);
       expect(sendMessageSpy).not.toHaveBeenCalled();
       expect(replySpy).not.toHaveBeenCalled();
-    } finally {
-      setTimeoutSpy.mockRestore();
-    }
-  });
-
-  it("keeps album delivery when a photo download fails", async () => {
-    const firstMessageId = 401;
-    setOpenChannelPostConfig();
-    const shutdown = new AbortController();
-    const mediaPath = "/tmp/live-album-first.jpg";
-    saveRemoteMedia
-      .mockResolvedValueOnce({
-        id: "live-album-first.jpg",
-        path: mediaPath,
-        size: 4,
-        contentType: "image/jpeg",
-      } satisfies SavedRemoteMedia)
-      .mockImplementationOnce(() => rejectTelegramAlbumDownload(shutdown, false));
-    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
-    try {
-      createTelegramBot({
-        token: "tok",
-        testTimings: TELEGRAM_TEST_TIMINGS,
-        fetchAbortSignal: shutdown.signal,
-      });
-      const handler = getOnHandler("channel_post") as (
-        ctx: Record<string, unknown>,
-      ) => Promise<void>;
-      await queueChannelPostAlbum(handler, {
-        caption: "live partial album",
-        mediaGroupId: `live-album-${firstMessageId}`,
-        firstMessageId,
-        secondMessageId: firstMessageId + 1,
-      });
-      await flushChannelPostMediaGroup(setTimeoutSpy, 2_075);
-
-      expect(replySpy).toHaveBeenCalledTimes(1);
-      expect(replyPayload()).toMatchObject({
-        Body: expect.stringContaining("live partial album"),
-        media: [
-          expect.objectContaining({ path: mediaPath }),
-          expect.objectContaining({ path: undefined }),
-        ],
-      });
     } finally {
       setTimeoutSpy.mockRestore();
     }

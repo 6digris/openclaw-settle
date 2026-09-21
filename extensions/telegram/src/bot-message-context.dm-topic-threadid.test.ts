@@ -1,10 +1,6 @@
 // Telegram tests cover bot message contextm topic threadid plugin behavior.
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  getRecordedUpdateLastRoute,
-  loadTelegramMessageContextRouteHarness,
-  recordInboundSessionMock,
-} from "./bot-message-context.route-test-support.js";
+import { describe, expect, it, vi } from "vitest";
+import { buildTelegramMessageContextForTest } from "./bot-message-context.test-harness.js";
 
 vi.mock("./bot-message-context.body.js", () => ({
   resolveTelegramInboundBody: async () => ({
@@ -28,47 +24,18 @@ vi.mock("./bot-message-context.body.js", () => ({
   }),
 }));
 
-let buildTelegramMessageContextForTest: typeof import("./bot-message-context.test-harness.js").buildTelegramMessageContextForTest;
-let clearRuntimeConfigSnapshot: typeof import("openclaw/plugin-sdk/runtime-config-snapshot").clearRuntimeConfigSnapshot;
-
 describe("buildTelegramMessageContext DM topic threadId in deliveryContext (#8891)", () => {
   async function buildCtx(params: {
     message: Record<string, unknown>;
     options?: Record<string, unknown>;
     resolveGroupActivation?: () => boolean | undefined;
-    sessionRuntime?: Parameters<typeof buildTelegramMessageContextForTest>[0]["sessionRuntime"];
   }) {
     return await buildTelegramMessageContextForTest({
       message: params.message,
       options: params.options,
       resolveGroupActivation: params.resolveGroupActivation,
-      ...(params.sessionRuntime !== undefined ? { sessionRuntime: params.sessionRuntime } : {}),
     });
   }
-
-  function expectRecordedRoute(params: { to: string; threadId?: string }) {
-    const updateLastRoute = getRecordedUpdateLastRoute(0) as
-      | { threadId?: string; to?: string }
-      | undefined;
-    if (!updateLastRoute) {
-      throw new Error("expected recorded Telegram route");
-    }
-    expect(updateLastRoute.to).toBe(params.to);
-    expect(updateLastRoute.threadId).toBe(params.threadId);
-  }
-
-  afterEach(() => {
-    clearRuntimeConfigSnapshot();
-  });
-
-  beforeAll(async () => {
-    ({ clearRuntimeConfigSnapshot, buildTelegramMessageContextForTest } =
-      await loadTelegramMessageContextRouteHarness());
-  });
-
-  beforeEach(() => {
-    recordInboundSessionMock.mockClear();
-  });
 
   it("passes threadId to updateLastRoute for DM topics", async () => {
     const ctx = await buildCtx({
@@ -81,15 +48,11 @@ describe("buildTelegramMessageContext DM topic threadId in deliveryContext (#889
     if (!ctx?.ctxPayload) {
       throw new Error("expected Telegram DM topic context payload");
     }
-    expect(recordInboundSessionMock).toHaveBeenCalled();
-
-    expectRecordedRoute({ to: "telegram:1234", threadId: "42" });
+    expect(ctx.turn.record.updateLastRoute?.to).toBe("telegram:1234");
+    expect(ctx.turn.record.updateLastRoute?.threadId).toBe("42");
   });
 
-  it("builds Telegram payloads through the shared channel turn context", async () => {
-    const { buildChannelInboundEventContext } = await import("openclaw/plugin-sdk/channel-inbound");
-    const buildChannelInboundEventContextMock = vi.fn(buildChannelInboundEventContext);
-
+  it("preserves the reply body and bot sender identity in Telegram payloads", async () => {
     const ctx = await buildCtx({
       message: {
         chat: { id: 1234, type: "private" },
@@ -102,30 +65,10 @@ describe("buildTelegramMessageContext DM topic threadId in deliveryContext (#889
         },
         from: { id: 42, first_name: "Alice", username: "alice_bot", is_bot: true },
       },
-      sessionRuntime: {
-        buildChannelInboundEventContext:
-          buildChannelInboundEventContextMock as unknown as typeof buildChannelInboundEventContext,
-      },
     });
 
     expect(ctx?.ctxPayload.ReplyToBody).toBe("parent");
     expect(ctx?.ctxPayload.SenderIsBot).toBe(true);
-    expect(buildChannelInboundEventContextMock).toHaveBeenCalledOnce();
-    const [turnOptions] = buildChannelInboundEventContextMock.mock.calls.at(0) ?? [];
-    expect(turnOptions?.channel).toBe("telegram");
-    expect(turnOptions?.conversation.routePeer).toEqual({ kind: "direct", id: "42" });
-    expect(turnOptions?.conversation.parentId).toBeUndefined();
-    expect(turnOptions?.from).toBe("telegram:1234");
-    expect(turnOptions?.sender?.isBot).toBe(true);
-    expect(turnOptions?.message.rawBody).toBe("hello");
-    expect(turnOptions?.message.bodyForAgent).toBe("hello");
-    expect(turnOptions?.reply?.to).toBe("telegram:1234");
-    expect(turnOptions?.reply?.originatingTo).toBeUndefined();
-    expect(turnOptions?.reply?.replyToId).toBe("9");
-    expect(turnOptions?.supplemental?.quote?.id).toBe("9");
-    expect(turnOptions?.supplemental?.quote?.body).toBe("parent");
-    expect(turnOptions?.supplemental?.quote?.sender).toBe("Bob");
-    expect(turnOptions?.supplemental?.quote?.senderAllowed).toBe(true);
   });
 
   it("preserves voice-note source modality without treating ordinary audio as voice", async () => {
@@ -156,9 +99,10 @@ describe("buildTelegramMessageContext DM topic threadId in deliveryContext (#889
     if (!ctx?.ctxPayload) {
       throw new Error("expected Telegram DM context payload");
     }
-    expect(recordInboundSessionMock).toHaveBeenCalled();
-
-    expectRecordedRoute({ to: "telegram:1234" });
+    expect(ctx.ctxPayload.SessionKey).toBe("agent:main:main");
+    expect(ctx.ctxPayload.MessageThreadId).toBeUndefined();
+    expect(ctx.turn.record.updateLastRoute?.to).toBe("telegram:1234");
+    expect(ctx.turn.record.updateLastRoute?.threadId).toBeUndefined();
   });
 
   it("passes threadId to updateLastRoute for forum topic group messages", async () => {
@@ -175,9 +119,8 @@ describe("buildTelegramMessageContext DM topic threadId in deliveryContext (#889
     if (!ctx?.ctxPayload) {
       throw new Error("expected Telegram forum topic context payload");
     }
-    expect(recordInboundSessionMock).toHaveBeenCalled();
-
-    expectRecordedRoute({ to: "telegram:-1001234567890:topic:99", threadId: "99" });
+    expect(ctx.turn.record.updateLastRoute?.to).toBe("telegram:-1001234567890:topic:99");
+    expect(ctx.turn.record.updateLastRoute?.threadId).toBe("99");
   });
 
   it("keeps the forum General topic target aligned with live routing", async () => {
@@ -193,8 +136,7 @@ describe("buildTelegramMessageContext DM topic threadId in deliveryContext (#889
     if (!ctx?.ctxPayload) {
       throw new Error("expected Telegram General topic context payload");
     }
-    expect(recordInboundSessionMock).toHaveBeenCalled();
-
-    expectRecordedRoute({ to: "telegram:-1001234567890", threadId: "1" });
+    expect(ctx.turn.record.updateLastRoute?.to).toBe("telegram:-1001234567890");
+    expect(ctx.turn.record.updateLastRoute?.threadId).toBe("1");
   });
 });

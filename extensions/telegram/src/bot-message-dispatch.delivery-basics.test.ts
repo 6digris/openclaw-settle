@@ -272,34 +272,6 @@ describeTelegramDispatch("dispatchTelegramMessage delivery-basics", () => {
     });
   });
 
-  it("queues media-only final Telegram replies through outbound delivery when available", async () => {
-    deliverInboundReplyWithMessageSendContext.mockResolvedValue({
-      status: "handled_visible",
-      delivery: {
-        messageIds: ["1002"],
-        visibleReplySent: true,
-      },
-    });
-    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
-      await dispatcherOptions.deliver({ mediaUrl: "file:///tmp/final.png" }, { kind: "final" });
-      return { queuedFinal: true };
-    });
-
-    await dispatchWithContext({
-      context: createContext(),
-      streamMode: "off",
-      telegramDeps: telegramDepsForTest,
-    });
-
-    const outbound = expectRecordFields(mockCallArg(deliverInboundReplyWithMessageSendContext), {
-      channel: "telegram",
-      info: { kind: "final" },
-    });
-    expectRecordFields(outbound.payload, { mediaUrl: "file:///tmp/final.png" });
-    expectRecordFields(outbound.requiredCapabilities, { media: true, payload: true });
-    expect(deliverReplies).not.toHaveBeenCalled();
-  });
-
   it("suppresses text-only tool output after media-only final Telegram replies", async () => {
     deliverInboundReplyWithMessageSendContext.mockResolvedValue({
       status: "handled_visible",
@@ -326,6 +298,7 @@ describeTelegramDispatch("dispatchTelegramMessage delivery-basics", () => {
       info: { kind: "final" },
     });
     expectRecordFields(outbound.payload, { mediaUrl: "file:///tmp/final.png" });
+    expectRecordFields(outbound.requiredCapabilities, { media: true, payload: true });
     expect(deliverReplies).not.toHaveBeenCalled();
   });
 

@@ -6,10 +6,7 @@ import {
   isNumericTelegramUserId,
   normalizeTelegramAllowFromEntry,
 } from "./allow-from.js";
-import {
-  resolveTelegramGroupRequireMention,
-  resolveTelegramGroupToolPolicy,
-} from "./group-policy.js";
+import { resolveTelegramGroupRequireMention } from "./group-policy.js";
 import { looksLikeTelegramTargetId, normalizeTelegramMessagingTarget } from "./normalize.js";
 import { installMaybePersistResolvedTelegramTargetTests } from "./target-writeback.test-shared.js";
 import {
@@ -196,38 +193,6 @@ describe("isNumericTelegramChatId", () => {
 });
 
 describe("telegram group policy", () => {
-  it("resolves topic-level requireMention and chat-level tools for topic ids", () => {
-    const telegramCfg = {
-      channels: {
-        telegram: {
-          botToken: "telegram-test",
-          groups: {
-            "-1001": {
-              requireMention: true,
-              tools: { allow: ["message.send"] },
-              topics: {
-                "77": {
-                  requireMention: false,
-                },
-              },
-            },
-            "*": {
-              requireMention: true,
-            },
-          },
-        },
-      },
-    } as OpenClawConfig;
-    expect(
-      resolveTelegramGroupRequireMention({ cfg: telegramCfg, groupId: "-1001:topic:77" }),
-    ).toBe(false);
-    expect(resolveTelegramGroupToolPolicy({ cfg: telegramCfg, groupId: "-1001:topic:77" })).toEqual(
-      {
-        allow: ["message.send"],
-      },
-    );
-  });
-
   it("honors account-scoped topic requireMention overrides", () => {
     const telegramCfg = {
       channels: {

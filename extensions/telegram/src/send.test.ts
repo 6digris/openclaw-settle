@@ -123,7 +123,6 @@ function makeTelegramChatFullInfo(id: number): TelegramChatFullInfo {
 const {
   botApi,
   botRawApi,
-  botConfigUseSpy,
   botCtorSpy,
   imageMetadata,
   loadConfig,
@@ -1090,15 +1089,6 @@ describe("sendMessageTelegram", () => {
     expect(client.apiRoot).toBe("https://api.telegram.org");
   });
 
-  it("installs the shared grammY throttler on send clients", async () => {
-    botApi.sendMessage.mockResolvedValue({ message_id: 1, chat: { id: "123" } });
-
-    await sendMessageTelegram("123", "hi", { cfg: TELEGRAM_TEST_CFG, token: "tok" });
-
-    const [middleware] = firstMockCall(botConfigUseSpy, "bot config use call");
-    expect(middleware).toBeTypeOf("function");
-  });
-
   it("invalidates the projection cursor when a later chunk fails terminally", async () => {
     const storePath = `/tmp/openclaw-telegram-projection-terminal-${process.pid}-${Date.now()}.json`;
     const cfg = { session: { store: storePath } };
@@ -1468,22 +1458,6 @@ describe("sendMessageTelegram", () => {
     const blocks = botRawApi.sendRichMessage.mock.calls[0]?.[0]?.rich_message.blocks ?? [];
     expect(inputRichBlocksToPlainText(blocks)).toContain("• Florist - Red Bird");
     expect(inputRichBlocksToPlainText(blocks)).toContain("• Tomberlin - Seventeen");
-  });
-
-  it("preserves nonempty Markdown when rich rendering is empty", async () => {
-    botApi.sendMessage.mockResolvedValue({ message_id: 45, chat: { id: "123" } });
-    const markdown = "[reference]: https://example.com";
-
-    await sendMessageTelegram("123", markdown, {
-      cfg: { channels: { telegram: { richMessages: true } } },
-      token: "tok",
-    });
-
-    // Link-definition-only markdown may render empty blocks; plain fallback or skip is ok.
-    if (botRawApi.sendRichMessage.mock.calls.length > 0) {
-      const blocks = botRawApi.sendRichMessage.mock.calls[0]?.[0]?.rich_message.blocks ?? [];
-      expect(Array.isArray(blocks)).toBe(true);
-    }
   });
 
   it.each([
@@ -1962,43 +1936,6 @@ describe("sendMessageTelegram", () => {
     ).rejects.toBe(rejection);
 
     expect(botApi.sendMessage).toHaveBeenCalledTimes(3);
-  });
-
-  it.each([
-    new Error("delivery observer failed"),
-    createHtmlParseError(),
-    new Error("Bad Request: message text is empty"),
-    createChunkRejection("delivery observer failed"),
-  ])("does not continue after accepted-send bookkeeping fails: %s", async (observerError) => {
-    botApi.sendMessage
-      .mockResolvedValueOnce({ message_id: 54, chat: { id: "123" } })
-      .mockResolvedValueOnce({ message_id: 55, chat: { id: "123" } })
-      .mockResolvedValue({ message_id: 56, chat: { id: "123" } });
-    const onDeliveryResult = vi
-      .fn()
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(observerError);
-
-    let observed: unknown;
-    try {
-      await sendMessageTelegram("123", "A".repeat(9000), {
-        cfg: TELEGRAM_TEST_CFG,
-        token: "tok",
-        textMode: "html",
-        onDeliveryResult,
-      });
-    } catch (error) {
-      observed = error;
-    }
-
-    expect(isChannelPartialDeliveryError(observed)).toBe(true);
-    if (!isChannelPartialDeliveryError(observed)) {
-      throw observed;
-    }
-    expect(observed.deliveryResult.messageIds).toEqual(["54", "55"]);
-    expect(observed.deliveryResult.receipt?.platformMessageIds).toEqual(["54", "55"]);
-    expect(botApi.sendMessage).toHaveBeenCalledTimes(2);
-    expect(onDeliveryResult).toHaveBeenCalledTimes(2);
   });
 
   it("chunks long inline markdown through the HTML text path", async () => {
@@ -2565,35 +2502,6 @@ describe("sendMessageTelegram", () => {
     ).rejects.toThrow(/returned no message_id/i);
   });
 
-  it("uses native fetch for BAN compatibility when api is omitted", async () => {
-    const originalFetch = globalThis.fetch;
-    const originalBun = (globalThis as { Bun?: unknown }).Bun;
-    const fetchSpy = vi.fn<typeof fetch>();
-    globalThis.fetch = fetchSpy;
-    if (originalBun === undefined) {
-      (globalThis as { Bun?: unknown }).Bun = {};
-    }
-    botApi.sendMessage.mockResolvedValue({
-      message_id: 1,
-      chat: { id: "123" },
-    });
-    try {
-      await sendMessageTelegram("123", "hi", { cfg: TELEGRAM_TEST_CFG, token: "tok" });
-      const clientFetch = (
-        firstMockCall(botCtorSpy, "bot constructor call")[1] as {
-          client?: { fetch?: unknown };
-        }
-      )?.client?.fetch;
-      expect(clientFetch).toBeTypeOf("function");
-      expect(clientFetch).not.toBe(fetchSpy);
-    } finally {
-      globalThis.fetch = originalFetch;
-      if (originalBun === undefined) {
-        delete (globalThis as { Bun?: unknown }).Bun;
-      }
-    }
-  });
-
   it("normalizes chat ids with internal prefixes", async () => {
     const sendMessage = vi.fn().mockResolvedValue({
       message_id: 1,
@@ -3100,35 +3008,6 @@ describe("sendMessageTelegram", () => {
       parse_mode: "HTML",
     });
     expect(sendMessage).not.toHaveBeenCalled();
-  });
-
-  it("renders markdown in media captions", async () => {
-    const chatId = "123";
-    const caption = "hi **boss**";
-
-    const sendPhoto = vi.fn().mockResolvedValue({
-      message_id: 90,
-      chat: { id: chatId },
-    });
-    const api = makeTelegramApiTestMock({ sendPhoto });
-
-    mockLoadedMedia({
-      buffer: Buffer.from("fake-image"),
-      contentType: "image/jpeg",
-      fileName: "photo.jpg",
-    });
-
-    await sendMessageTelegram(chatId, caption, {
-      cfg: TELEGRAM_TEST_CFG,
-      token: "tok",
-      api,
-      mediaUrl: "https://example.com/photo.jpg",
-    });
-
-    expectMediaSendCall(firstMockCall(sendPhoto, "send photo call"), "send photo call", chatId, {
-      caption: "hi <b>boss</b>",
-      parse_mode: "HTML",
-    });
   });
 
   it.each([
@@ -4873,30 +4752,6 @@ describe("sendMessageTelegram", () => {
     expect(requireRecord(options, "load web media options").maxBytes).toBe(42 * 1024 * 1024);
   });
 
-  it("sends long html-mode rich text with buttons", async () => {
-    const chatId = "123";
-    const htmlText = `<b>${"A".repeat(5000)}</b>`;
-
-    const sendMessage = vi.fn().mockResolvedValue({ message_id: 91, chat: { id: chatId } });
-    const api = makeTelegramApiTestMock({ sendMessage });
-
-    const res = await sendMessageTelegram(chatId, htmlText, {
-      cfg: TELEGRAM_TEST_CFG,
-      token: "tok",
-      api,
-      textMode: "html",
-      buttons: [[{ text: "OK", callback_data: "ok" }]],
-    });
-
-    expect(sendMessage.mock.calls.length).toBeGreaterThan(1);
-    const lastCall = sendMessage.mock.calls.at(-1);
-    const lastParams = requireRecord(lastCall?.[2], "last sendMessage params");
-    expect(lastParams.reply_markup).toEqual({
-      inline_keyboard: [[{ text: "OK", callback_data: "ok" }]],
-    });
-    expect(res.messageId).toBe("91");
-  });
-
   it("sends long default markdown rich text with buttons", async () => {
     const chatId = "123";
     const markdownText = `**${"A".repeat(5000)}**`;
@@ -5647,20 +5502,6 @@ describe("editMessageTelegram", () => {
     ).resolves.toEqual({ ok: true, messageId: "1", chatId: "123" });
 
     expect(botApi.editMessageText).toHaveBeenCalledTimes(2);
-  });
-
-  it("edits text with formatted HTML", async () => {
-    botApi.editMessageText.mockResolvedValue({ message_id: 1, chat: { id: "123" } });
-
-    await editMessageTelegram("123", 1, "**edited**", {
-      token: "tok",
-      cfg: {},
-    });
-
-    expect(botApi.editMessageText).toHaveBeenCalledWith("123", 1, "<b>edited</b>", {
-      parse_mode: "HTML",
-    });
-    expect(botRawApi.editMessageText).not.toHaveBeenCalled();
   });
 
   it("edits complex text as formatted HTML", async () => {

@@ -36,7 +36,6 @@ describeTelegramDispatch("dispatchTelegramMessage progress-updates reasoning and
     expect(createTelegramDraftStream).toHaveBeenCalledTimes(1);
     expect(draftStream.updatePreview).toHaveBeenCalledWith(
       telegramProgressPreview(
-        "Shelling\n\n🛠️ Exec\n🧠 Checking files",
         "<b>Shelling</b>\n<b>🛠️ Exec</b> <i>running</i>\n🧠 <i>Checking files</i>",
       ),
     );
@@ -66,10 +65,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-updates reasoning and
 
     expect(createTelegramDraftStream).toHaveBeenCalledTimes(1);
     expect(draftStream.updatePreview).toHaveBeenLastCalledWith(
-      telegramProgressPreview(
-        "Shelling\n\n🧠 Thinking… (~200 tokens)",
-        "<b>Shelling</b>\n<b>🧠 Thinking… (~200 tokens)</b>",
-      ),
+      telegramProgressPreview("<b>Shelling</b>\n<b>🧠 Thinking… (~200 tokens)</b>"),
     );
     expectDeliveredReply(0, { text: "Done" });
   });
@@ -321,7 +317,6 @@ describeTelegramDispatch("dispatchTelegramMessage progress-updates reasoning and
 
     expect(draftStream.updatePreview).toHaveBeenCalledWith(
       telegramProgressPreview(
-        "Shelling\n\nChecking recent context\n🛠️ Exec",
         "<b>Shelling</b>\nChecking recent context\n<b>🛠️ Exec</b> <i>running</i>",
       ),
     );
@@ -358,10 +353,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-updates reasoning and
     });
 
     expect(draftStream.updatePreview).toHaveBeenLastCalledWith(
-      telegramProgressPreview(
-        "Shelling\n\nChecking recent context\nFast mode enabled",
-        "<b>Shelling</b>\nChecking recent context\nFast mode enabled",
-      ),
+      telegramProgressPreview("<b>Shelling</b>\nChecking recent context\nFast mode enabled"),
     );
     expect(deliverReplies).not.toHaveBeenCalled();
   });
@@ -447,38 +439,6 @@ describeTelegramDispatch("dispatchTelegramMessage progress-updates reasoning and
     expect(draftStream.updatePreview).not.toHaveBeenCalled();
   });
 
-  it("retracts the Telegram preamble headline by item identity", async () => {
-    const draftStream = createSequencedDraftStream(2001);
-    createTelegramDraftStream.mockReturnValue(draftStream);
-    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ replyOptions }) => {
-      await replyOptions?.onReplyStart?.();
-      await replyOptions?.onItemEvent?.({
-        kind: "preamble",
-        itemId: "preamble-1",
-        progressText: "Checking recent context",
-      });
-      await emitToolStart(replyOptions, { name: "exec", phase: "start", toolCallId: "exec-1" });
-      await replyOptions?.onItemEvent?.({
-        kind: "preamble",
-        itemId: "preamble-1",
-        progressText: "",
-      });
-      return { queuedFinal: false };
-    });
-
-    await dispatchWithContext({
-      context: createContext(),
-      streamMode: "progress",
-      telegramCfg: {
-        streaming: { mode: "progress", progress: { toolProgress: true, label: "Shelling" } },
-      },
-    });
-
-    const lastPreview = draftStream.updatePreview.mock.calls.at(-1)?.[0];
-    expect(lastPreview?.text).toContain("Exec");
-    expect(lastPreview?.text).not.toContain("Checking recent context");
-  });
-
   it("keeps structured progress rendering after a silent preamble", async () => {
     const draftStream = createSequencedDraftStream(2001);
     createTelegramDraftStream.mockReturnValue(draftStream);
@@ -502,10 +462,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-updates reasoning and
     });
 
     expect(draftStream.updatePreview).toHaveBeenCalledWith(
-      telegramProgressPreview(
-        "Shelling\n\n🛠️ Exec",
-        "<b>Shelling</b>\n<b>🛠️ Exec</b> <i>running</i>",
-      ),
+      telegramProgressPreview("<b>Shelling</b>\n<b>🛠️ Exec</b> <i>running</i>"),
     );
   });
 });

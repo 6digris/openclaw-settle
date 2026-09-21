@@ -164,18 +164,6 @@ describe("buildModelSelectionCallbackData", () => {
     ).toMatch(/^mdl1~m:[A-Za-z0-9_-]{43}$/);
   });
 
-  it("keeps oversized provider-scoped models selectable within Telegram's callback limit", () => {
-    const provider = "ollama";
-    const model = "xentriom/gemma-4-12B-agentic-fable5-composer2.5-v2:latest";
-    expect(Buffer.byteLength(`mdl_sel_${provider}/${model}`, "utf8")).toBe(72);
-    expect(Buffer.byteLength(`mdl_sel/${model}`, "utf8")).toBe(65);
-
-    const callback = buildModelSelectionCallbackData({ provider, model });
-    expect(callback).toMatch(/^mdl1~m:[A-Za-z0-9_-]{43}$/);
-    expect(Buffer.byteLength(callback ?? "", "utf8")).toBeLessThanOrEqual(64);
-    expect(buildModelSelectionCallbackData({ provider, model })).toBe(callback);
-  });
-
   it("preserves unambiguous provider ownership for non-legacy provider identifiers", () => {
     for (const provider of ["~", "team/provider", "研究所", "x".repeat(80)]) {
       const callback = buildModelSelectionCallbackData({ provider, model: "model" });

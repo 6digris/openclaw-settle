@@ -925,32 +925,6 @@ describe("deliverReplies", () => {
     expect(events).toEqual(["recordVoice", "sendVoice"]);
   });
 
-  it("renders markdown in media captions", async () => {
-    const runtime = createRuntime();
-    const sendPhoto = vi.fn().mockResolvedValue({
-      message_id: 2,
-      chat: { id: "123" },
-    });
-    const bot = createBot({ sendPhoto });
-
-    mockMediaLoad("photo.jpg", "image/jpeg", "image");
-
-    await deliverWith({
-      replies: [{ mediaUrl: "https://example.com/photo.jpg", text: "hi **boss**" }],
-      runtime,
-      bot,
-    });
-
-    expect(firstMockCallArg(sendPhoto, 0)).toBe("123");
-    if (firstMockCallArg(sendPhoto, 1) === undefined) {
-      throw new Error("Expected Telegram photo media");
-    }
-    expectRecordFields(mockCallArg(sendPhoto, 0, 2), {
-      caption: "hi <b>boss</b>",
-      parse_mode: "HTML",
-    });
-  });
-
   it.each([
     { contentType: "image/png", filename: "image.png", method: "sendPhoto" },
     { contentType: "video/quicktime", filename: "video.mov", method: "sendVideo" },
@@ -2786,29 +2760,6 @@ describe("deliverReplies", () => {
     expect(runtime.log).toHaveBeenCalledWith(
       "telegram sendRichMessage degrade=plain-fallback:rich-entity-invalid: GrammyError: Call to 'sendRichMessage' failed! (400: Bad Request: RICH_MESSAGE_URL_INVALID)",
     );
-  });
-
-  it("falls back to plain text for other invalid rich entity validation errors", async () => {
-    const runtime = createRuntime();
-    const sendMessage = vi.fn().mockResolvedValue({
-      message_id: 13,
-      chat: { id: "123" },
-    });
-    const bot = createBot({ sendMessage });
-    (bot.api.raw as unknown as { sendRichMessage: ReturnType<typeof vi.fn> }).sendRichMessage = vi
-      .fn()
-      .mockRejectedValue(createRichEntityInvalidError("URL"));
-    const text = "Status with a rejected URL entity";
-
-    await deliverWith({
-      replies: [{ text }],
-      runtime,
-      bot,
-      richMessages: true,
-    });
-
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(firstMockCallArg(sendMessage, 1)).toBe(text);
   });
 
   it("does not fall back to plain text for non-validation rich message errors", async () => {

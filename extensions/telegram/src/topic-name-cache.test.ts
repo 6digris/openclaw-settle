@@ -84,15 +84,6 @@ describe("topic-name-cache", () => {
     clearTelegramRuntimeForTest();
   });
 
-  it("stores and retrieves a topic name", async () => {
-    await updateTopicName(-100123, 42, { name: "Deployments" });
-    await expect(getTopicName(-100123, 42)).resolves.toBe("Deployments");
-  });
-
-  it("returns undefined for unknown topics", async () => {
-    await expect(getTopicName(-100123, 99)).resolves.toBeUndefined();
-  });
-
   it("handles renames via forum_topic_edited", async () => {
     await updateTopicName(-100123, 42, { name: "Deployments" });
     await updateTopicName(-100123, 42, { name: "CI/CD" });

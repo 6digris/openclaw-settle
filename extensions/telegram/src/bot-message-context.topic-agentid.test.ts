@@ -44,15 +44,6 @@ describe("buildTelegramMessageContext per-topic agentId routing", () => {
     expect(ctx?.ctxPayload?.SessionKey).toBe("agent:main:telegram:group:-1001234567890:topic:3");
   });
 
-  it("routes to topic-specific agent when agentId is set", async () => {
-    const ctx = await buildForumContext({
-      topicConfig: { agentId: "zu", systemPrompt: "I am Zu" },
-    });
-
-    expect(ctx?.ctxPayload?.SessionKey).toContain("agent:zu:");
-    expect(ctx?.ctxPayload?.SessionKey).toContain("telegram:group:-1001234567890:topic:3");
-  });
-
   it("keeps the effective main group scope for a topic-specific agent", async () => {
     const ctx = await buildForumContext({
       cfg: { session: { groupScope: "main", mainKey: "work" } },
@@ -71,7 +62,7 @@ describe("buildTelegramMessageContext per-topic agentId routing", () => {
     const ctxC = await buildForTopic(5, "q");
 
     expect(ctxA?.ctxPayload?.SessionKey).toContain("agent:main:");
-    expect(ctxB?.ctxPayload?.SessionKey).toContain("agent:zu:");
+    expect(ctxB?.ctxPayload?.SessionKey).toBe("agent:zu:telegram:group:-1001234567890:topic:3");
     expect(ctxC?.ctxPayload?.SessionKey).toContain("agent:q:");
 
     expect(ctxA?.ctxPayload?.SessionKey).not.toBe(ctxB?.ctxPayload?.SessionKey);
@@ -113,35 +104,5 @@ describe("buildTelegramMessageContext per-topic agentId routing", () => {
     });
 
     expect(ctx?.ctxPayload?.SessionKey).toContain("agent:main:");
-  });
-
-  it("preserves an unknown topic agentId in the session key", async () => {
-    const ctx = await buildForumContext({ topicConfig: { agentId: "ghost" } });
-
-    expect(ctx?.ctxPayload?.SessionKey).toContain("agent:ghost:");
-  });
-
-  it("routes DM topic to specific agent when agentId is set", async () => {
-    const ctx = await buildTelegramMessageContextForTest({
-      message: {
-        message_id: 1,
-        chat: {
-          id: 123456789,
-          type: "private",
-        },
-        date: 1700000000,
-        text: "@bot hello",
-        message_thread_id: 99,
-        from: { id: 42, first_name: "Alice" },
-      },
-      options: { forceWasMentioned: true },
-      resolveGroupActivation: () => true,
-      resolveTelegramGroupConfig: () => ({
-        groupConfig: { requireMention: false },
-        topicConfig: { agentId: "support", systemPrompt: "I am support" },
-      }),
-    });
-
-    expect(ctx?.ctxPayload?.SessionKey).toContain("agent:support:");
   });
 });

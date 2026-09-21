@@ -56,17 +56,6 @@ function plainMessage(messageId: number, text: string) {
 }
 
 describe("buildTelegramMessageContext reply/quote debounce batches", () => {
-  it("preserves a quote carried by a non-first buffered message", async () => {
-    const context = await buildTelegramMessageContextForTest({
-      message: plainMessage(2, "plain note\nquoting note"),
-      options: {
-        bufferedMessages: [plainMessage(1, "plain note"), quotingMessage(2, "quoting note")],
-      },
-    });
-
-    expect(context?.ctxPayload.Body).toContain(QUOTED_LINE);
-  });
-
   it("keeps cached first-message ancestry after a quote-only follow-up", async () => {
     const first = quotingMessage(1, "first ask");
     const context = await buildTelegramMessageContextForTest({

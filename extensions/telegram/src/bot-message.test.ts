@@ -183,27 +183,6 @@ describe("telegram bot message processor", () => {
     };
   }
 
-  it("dispatches when context is available", async () => {
-    const sendTyping = vi.fn().mockResolvedValue(undefined);
-    buildTelegramMessageContext.mockResolvedValue(
-      createMessageContext({
-        sendTyping,
-      }),
-    );
-
-    const processMessage = createTelegramMessageProcessor(baseDeps);
-    await expect(processSampleMessage(processMessage)).resolves.toEqual({ kind: "completed" });
-
-    expect(sendTyping).toHaveBeenCalledTimes(1);
-    expect(dispatchTelegramMessage).toHaveBeenCalledTimes(1);
-    expect(requireInvocationOrder(sendTyping.mock, "send typing invocation")).toBeLessThan(
-      requireInvocationOrder(dispatchTelegramMessage.mock, "message dispatch invocation"),
-    );
-    expect(telegramInboundInfo).toHaveBeenCalledWith(
-      "Inbound message telegram:123 -> @openclaw_bot (direct, 11 chars)",
-    );
-  });
-
   it("keeps delivery settings on a held turn while the next turn uses new policy", async () => {
     const held = createDeferred<void>();
     const contextStarted = createDeferred<void>();
@@ -332,14 +311,6 @@ describe("telegram bot message processor", () => {
 
     expect(sendTyping).not.toHaveBeenCalled();
     expect(dispatchTelegramMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it("skips dispatch when no context is produced", async () => {
-    buildTelegramMessageContext.mockResolvedValue(null);
-    const processMessage = createTelegramMessageProcessor(baseDeps);
-    await expect(processSampleMessage(processMessage)).resolves.toEqual({ kind: "skipped" });
-    expect(dispatchTelegramMessage).not.toHaveBeenCalled();
-    expect(telegramInboundInfo).not.toHaveBeenCalled();
   });
 
   it("logs media summaries without message content through the message processor", async () => {

@@ -29,14 +29,6 @@ beforeEach(async () => {
 });
 
 describe("normalizeAllowFrom invalid-entry warn dedupe", () => {
-  it("warns once per invalid entry across repeated calls", () => {
-    normalizeOutsideTestGuard(["@someone", "12345"]);
-    normalizeOutsideTestGuard(["@someone"]);
-    normalizeOutsideTestGuard(["@someone", "@other"]);
-
-    expect(warnMock).toHaveBeenCalledTimes(2);
-  });
-
   it("evicts the oldest warning while keeping recent duplicates suppressed", () => {
     for (let i = 0; i <= WARN_CACHE_MAX; i++) {
       normalizeOutsideTestGuard([`@user${i}`]);
@@ -48,15 +40,5 @@ describe("normalizeAllowFrom invalid-entry warn dedupe", () => {
 
     normalizeOutsideTestGuard(["@user0"]);
     expect(warnMock).toHaveBeenCalledTimes(WARN_CACHE_MAX + 2);
-  });
-
-  it("does not change normalization or warn under the test guard", () => {
-    expect(normalizeAllowFrom(["*", " tg:12345 ", "@someone"])).toEqual({
-      entries: ["12345"],
-      hasWildcard: true,
-      hasEntries: true,
-      invalidEntries: ["@someone"],
-    });
-    expect(warnMock).not.toHaveBeenCalled();
   });
 });

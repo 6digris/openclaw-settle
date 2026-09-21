@@ -10,10 +10,9 @@ type ResolveTelegramInboundBody =
 type TelegramInboundBodyResult = NonNullable<Awaited<ReturnType<ResolveTelegramInboundBody>>>;
 
 type SessionRuntimeModule = typeof import("./bot-message-context.session.runtime.js");
-type RecordInboundSessionFn = SessionRuntimeModule["recordInboundSession"];
 type ResolveStorePathFn = SessionRuntimeModule["resolveStorePath"];
 
-const { inboundBodyResult, recordInboundSessionMock, resolveStorePathMock } = vi.hoisted(() => {
+const { inboundBodyResult, resolveStorePathMock } = vi.hoisted(() => {
   const createInboundBodyResult = (): TelegramInboundBodyResult => ({
     bodyText: "hello",
     rawBody: "hello",
@@ -36,7 +35,6 @@ const { inboundBodyResult, recordInboundSessionMock, resolveStorePathMock } = vi
   });
   return {
     inboundBodyResult: { value: createInboundBodyResult(), reset: createInboundBodyResult },
-    recordInboundSessionMock: vi.fn<RecordInboundSessionFn>(async () => undefined),
     resolveStorePathMock: vi.fn<ResolveStorePathFn>(),
   };
 });
@@ -47,8 +45,6 @@ vi.mock("./bot-message-context.session.runtime.js", async () => {
   );
   return {
     ...actual,
-    recordInboundSession: (...args: Parameters<typeof actual.recordInboundSession>) =>
-      recordInboundSessionMock(...args),
     resolveStorePath: (...args: Parameters<typeof actual.resolveStorePath>) =>
       resolveStorePathMock(...args),
   };
@@ -78,7 +74,6 @@ beforeEach(async () => {
 afterEach(async () => {
   clearRuntimeConfigSnapshot();
   resetTopicNameCacheForTest();
-  recordInboundSessionMock.mockClear();
   resolveStorePathMock.mockReset();
   await fs.rm(defaultSessionStoreRoot, { recursive: true, force: true });
 });
@@ -167,19 +162,6 @@ describe("buildTelegramMessageContext dm thread sessions", () => {
 
     expect(ctx?.ctxPayload?.MessageThreadId).toBe(42);
     expect(ctx?.ctxPayload?.SessionKey).toBe("agent:support:main:thread:1234:42");
-  });
-
-  it("uses the main session key when no thread id", async () => {
-    const ctx = await buildContext({
-      message_id: 1,
-      chat: { id: 1234, type: "private" },
-      date: 1700000000,
-      text: "hello",
-      from: { id: 42, first_name: "Alice" },
-    });
-
-    expect(ctx?.ctxPayload?.MessageThreadId).toBeUndefined();
-    expect(ctx?.ctxPayload?.SessionKey).toBe("agent:main:main");
   });
 });
 
@@ -352,45 +334,6 @@ describe("buildTelegramMessageContext group sessions without forum", () => {
     expect(ctx?.ctxPayload?.SessionKey).toBe("agent:main:telegram:group:-1001234567890:topic:99");
     expect(ctx?.ctxPayload?.MessageThreadId).toBe(99);
     expect(ctx?.ctxPayload?.OriginatingTo).toBe("telegram:-1001234567890:topic:99");
-  });
-
-  it("surfaces topic name from reply_to_message forum metadata", async () => {
-    const ctx = await buildContext({
-      message_id: 3,
-      chat: { id: -1001234567890, type: "supergroup", title: "Test Forum", is_forum: true },
-      date: 1700000002,
-      text: "@bot hello",
-      message_thread_id: 99,
-      from: { id: 42, first_name: "Alice" },
-      reply_to_message: {
-        message_id: 2,
-        forum_topic_created: { name: "Deployments", icon_color: 0x6fb9f0 },
-      },
-    });
-
-    expect(ctx?.ctxPayload?.TopicName).toBe("Deployments");
-  });
-
-  it("handles forum messages without session runtime overrides", async () => {
-    const ctx = await buildTelegramMessageContextForTest({
-      message: {
-        message_id: 3,
-        chat: { id: -1001234567890, type: "supergroup", title: "Test Forum", is_forum: true },
-        date: 1700000002,
-        text: "@bot hello",
-        message_thread_id: 99,
-        from: { id: 42, first_name: "Alice" },
-        reply_to_message: {
-          message_id: 2,
-          forum_topic_created: { name: "Deployments", icon_color: 0x6fb9f0 },
-        },
-      },
-      options: { forceWasMentioned: true },
-      resolveGroupActivation: () => true,
-      sessionRuntime: null,
-    });
-
-    expect(ctx?.ctxPayload?.TopicName).toBe("Deployments");
   });
 
   it("reloads topic name from disk after cache reset", async () => {

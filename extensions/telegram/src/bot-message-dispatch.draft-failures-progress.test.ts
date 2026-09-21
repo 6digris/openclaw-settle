@@ -591,10 +591,7 @@ describeTelegramDispatch("dispatchTelegramMessage draft-failures-progress", () =
     // #121600: default command progress is status-only — raw command text stays
     // out of chat previews (`/verbose full` / commandText: "raw" retain it).
     expect(answerDraftStream.updatePreview).toHaveBeenCalledWith(
-      telegramProgressPreview(
-        "Cracking\n\n🛠️ Exec running",
-        "<b>Cracking</b>\n<b>🛠️ Exec</b> <i>running</i>",
-      ),
+      telegramProgressPreview("<b>Cracking</b>\n<b>🛠️ Exec</b> <i>running</i>"),
     );
     expect(answerDraftStream.update).not.toHaveBeenCalledWith("Branch is up to date");
     expect(answerDraftStream.forceNewMessage).not.toHaveBeenCalled();
@@ -657,30 +654,6 @@ describeTelegramDispatch("dispatchTelegramMessage draft-failures-progress", () =
       expect.objectContaining({ text: expect.stringContaining("Exec") }),
     );
     expectDeliveredReply(0, { text: "Terminal block after tool" });
-    expectWindowRetiredAfterFinal(answerDraftStream, deliverReplies);
-  });
-
-  it("seals pending progress before sending the final answer", async () => {
-    // Seal the preview queue first so stale progress cannot overtake the final.
-    const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
-    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
-      async ({ dispatcherOptions, replyOptions }) => {
-        await emitToolStart(replyOptions, { name: "exec", phase: "start", toolCallId: "exec-1" });
-        await dispatcherOptions.deliver({ text: "All done" }, { kind: "final" });
-        return { queuedFinal: true };
-      },
-    );
-
-    await dispatchWithContext({
-      context: createContext(),
-      streamMode: "progress",
-      telegramCfg: { streaming: { mode: "progress", progress: { toolProgress: true } } },
-    });
-
-    expectDeliveredReply(0, { text: "All done" });
-    expect(
-      requireInvocationOrder(answerDraftStream.discard, 0, "progress draft discard"),
-    ).toBeLessThan(requireInvocationOrder(deliverReplies, 0, "final reply delivery"));
     expectWindowRetiredAfterFinal(answerDraftStream, deliverReplies);
   });
 

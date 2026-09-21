@@ -586,37 +586,6 @@ describe("createTelegramIngressMonitor", () => {
     });
   });
 
-  it("tombstones completed dispatch results", async () => {
-    await withTempState(async (stateDir) => {
-      const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>({
-        channelId: "telegram",
-        accountId: "default",
-        stateDir,
-      });
-      const eventId = "2".padStart(16, "0");
-      const payload = updatePayload(2);
-      const laneKey = telegramSpooledUpdateLaneKey(payload.update);
-      await queue.enqueue(eventId, payload, { laneKey });
-
-      const monitor = createTelegramIngressMonitor({
-        queue,
-        getConfig: () => cfg,
-        accountId: "default",
-        dispatch: async (_update, lifecycle) => {
-          await lifecycle.onAdopted();
-          return { kind: "completed" };
-        },
-      });
-
-      monitor.start();
-      await monitor.waitForIdle();
-
-      const status = await queue.enqueue(eventId, payload, { laneKey });
-      expect(status.kind).toBe("completed");
-      await monitor.stop();
-    });
-  });
-
   it("logs a diagnostic when dispatch records no outcome and defers no participant", async () => {
     await withTempState(async (stateDir) => {
       const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>({

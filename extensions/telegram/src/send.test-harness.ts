@@ -133,7 +133,6 @@ const {
 type TelegramSendTestMocks = {
   botApi: typeof botApi;
   botRawApi: typeof botRawApi;
-  botConfigUseSpy: MockFn;
   botCtorSpy: MockFn;
   loadConfig: MockFn;
   resolveStorePath: MockFn;
@@ -231,7 +230,6 @@ export function getTelegramSendTestMocks(): TelegramSendTestMocks {
   return {
     botApi,
     botRawApi,
-    botConfigUseSpy,
     botCtorSpy,
     loadConfig,
     resolveStorePath,

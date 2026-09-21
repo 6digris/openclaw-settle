@@ -174,27 +174,6 @@ describe("bot-native-command-menu", () => {
     expect(retryPayload.every((command) => Object.keys(command as object).length === 2)).toBe(true);
   });
 
-  it("promotes /skill when local fitting omits every direct skill", () => {
-    const configured = Array.from({ length: 100 }, (_, index) => ({
-      command: `configured_${index}`,
-      description: `Configured ${index}`,
-    }));
-    const result = buildCappedTelegramMenuCommands({
-      allCommands: [
-        ...configured,
-        { command: "skill", description: "Run a skill" },
-        { command: "direct_one", description: "Direct one", isSkill: true },
-        { command: "direct_two", description: "Direct two", isSkill: true },
-      ],
-    });
-
-    expect(result.skillCommandsOmitted).toBe(true);
-    expect(result.commandsToRegister.map((command) => command.command)).toEqual([
-      "skill",
-      ...configured.slice(0, 99).map((command) => command.command),
-    ]);
-  });
-
   it.each([
     {
       label: "partial direct-skill prefix",
@@ -289,11 +268,13 @@ describe("bot-native-command-menu", () => {
       .mockRejectedValueOnce(new Error("400: Bad Request: BOT_COMMANDS_TOO_MUCH"))
       .mockResolvedValue(undefined);
     const runtimeLog = vi.fn();
+    const runtimeError = vi.fn();
     const source = buildSkillRetryCommands({ nativeCount: 57, skillCount: 20, pluginCount: 20 });
     syncMenuCommandsWithMocks({
       deleteMyCommands: vi.fn(async () => undefined),
       setMyCommands,
       runtimeLog,
+      runtimeError,
       commandsToRegister: source,
       accountId: `test-second-skill-retry-${Date.now()}`,
       botToken: "bot-second-skill-retry",
@@ -326,6 +307,7 @@ describe("bot-native-command-menu", () => {
       "Telegram rejected 80 commands (BOT_COMMANDS_TOO_MUCH); retrying with 64.",
       "Telegram accepted 64 commands after BOT_COMMANDS_TOO_MUCH (started with 100; omitted 36). Reduce plugin/skill/custom commands to expose more menu entries.",
     ]);
+    expect(runtimeError).not.toHaveBeenCalled();
   });
 
   it("hashes effective localizations independently of insertion order", async () => {
@@ -418,16 +400,6 @@ describe("bot-native-command-menu", () => {
         descriptionLocalizations: { ko: "작동함" },
       },
     ]);
-    expect(result.issues).toStrictEqual([]);
-  });
-
-  it("normalizes hyphenated plugin command names", () => {
-    const result = buildPluginTelegramMenuCommands({
-      specs: [{ name: "agent-run", description: "Run agent" }],
-      existingCommands: new Set<string>(),
-    });
-
-    expect(result.commands).toEqual([{ command: "agent_run", description: "Run agent" }]);
     expect(result.issues).toStrictEqual([]);
   });
 

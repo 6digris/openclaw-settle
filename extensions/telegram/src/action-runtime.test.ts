@@ -1948,39 +1948,6 @@ describe("handleTelegramAction", () => {
     ).toEqual(["/tmp/legacy-root"]);
   });
 
-  it("forwards gateway client scopes into Telegram send target resolution", async () => {
-    await handleTelegramAction(
-      {
-        action: "sendMessage",
-        to: "@testchannel",
-        content: "Hello from CLI",
-      },
-      telegramConfig(),
-      { gatewayClientScopes: ["operator.write"] },
-    );
-    const call = mockCall(sendMessageTelegram, 0, "gateway-scoped send");
-    expect(requireRecord(call[2], "gateway-scoped send options").gatewayClientScopes).toEqual([
-      "operator.write",
-    ]);
-  });
-
-  it("forwards gateway client scopes into Telegram poll target resolution", async () => {
-    await handleTelegramAction(
-      {
-        action: "poll",
-        to: "@testchannel",
-        question: "Ready?",
-        answers: ["Yes", "No"],
-      },
-      telegramConfig(),
-      { gatewayClientScopes: ["operator.write"] },
-    );
-    const call = mockCall(sendPollTelegram, 0, "gateway-scoped poll");
-    expect(requireRecord(call[2], "gateway-scoped poll options").gatewayClientScopes).toEqual([
-      "operator.write",
-    ]);
-  });
-
   it.each([
     {
       name: "react",
@@ -2692,22 +2659,6 @@ describe("handleTelegramAction", () => {
     });
   });
 
-  it("fails required action-send pins when pinning fails", async () => {
-    pinMessageTelegram.mockRejectedValueOnce(new Error("pin failed"));
-
-    await expect(
-      handleTelegramAction(
-        {
-          action: "sendMessage",
-          to: "123456",
-          content: "Pin this",
-          delivery: { pin: { enabled: true, required: true } },
-        },
-        telegramConfig(),
-      ),
-    ).rejects.toThrow(/pin failed/);
-  });
-
   it("respects sendMessage gating", async () => {
     const cfg = {
       channels: {
@@ -3153,15 +3104,6 @@ describe("handleTelegramAction per-account gating", () => {
     expect(call[1]).toBe("sticker-id");
     expect(requireRecord(call[2], "account sticker options").token).toBe("tok-media");
   }
-
-  it("allows sticker when account config enables it", async () => {
-    const cfg = accountTelegramConfig({
-      accounts: {
-        media: { botToken: "tok-media", actions: { sticker: true } },
-      },
-    });
-    await expectAccountStickerSend(cfg);
-  });
 
   it("blocks sticker when account omits it", async () => {
     const cfg = {

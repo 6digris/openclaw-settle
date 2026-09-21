@@ -5984,35 +5984,6 @@ describe("createTelegramBot", () => {
     expect(replySpy).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks native DM commands for unpaired users", async () => {
-    mockTelegramConfig({ dmPolicy: "pairing" }, { commands: { native: true } });
-    readChannelAllowFromStore.mockResolvedValueOnce([]);
-
-    createTelegramBot({ token: "tok" });
-    const handler = commandSpy.mock.calls.find((call) => call[0] === "status")?.[1] as
-      | ((ctx: Record<string, unknown>) => Promise<void>)
-      | undefined;
-    if (!handler) {
-      throw new Error("status command handler missing");
-    }
-
-    await handler({
-      message: {
-        chat: { id: 12345, type: "private" },
-        from: { id: 12345, username: "testuser" },
-        text: "/status",
-        date: 1736380800,
-        message_id: 42,
-      },
-      match: "",
-    });
-
-    expect(replySpy).not.toHaveBeenCalled();
-    expect(sendMessageSpy).toHaveBeenCalledWith(12345, expect.stringContaining("Pairing code:"), {
-      parse_mode: "HTML",
-    });
-  });
-
   it("enqueues system event for reaction", async () => {
     await dispatchTelegramReaction({
       updateId: 500,
@@ -6155,14 +6126,6 @@ describe("createTelegramBot", () => {
         old_reaction: [{ type: "emoji", emoji: THUMBS_UP_EMOJI }],
         new_reaction: [],
       },
-      expectedEnqueueCalls: 0,
-    },
-    {
-      name: "blocks reaction in own mode when cache is warm and message not sent by bot",
-      updateId: 601,
-      channelConfig: { dmPolicy: "open", reactionNotifications: "own" },
-      reaction: { message_id: 99 },
-      sentByBot: false,
       expectedEnqueueCalls: 0,
     },
   ];

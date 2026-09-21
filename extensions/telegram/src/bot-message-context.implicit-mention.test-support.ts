@@ -57,21 +57,6 @@ describe("buildTelegramMessageContext implicitMention forum service messages", (
     });
   }
 
-  it("does NOT trigger implicitMention for forum_topic_created service message", async () => {
-    // Bot auto-generated "Topic created" message carries forum_topic_created.
-    const ctx = await buildGroupReplyCtx({
-      replyToMessageText: undefined,
-      replyFromIsBot: true,
-      replyToMessageExtra: {
-        forum_topic_created: { name: "New Topic", icon_color: 0x6fb9f0 },
-      },
-    });
-
-    // With requireMention and no explicit @mention, the message should be
-    // skipped (null) because implicitMention should NOT fire.
-    expect(ctx).toBeNull();
-  });
-
   it.each(TELEGRAM_FORUM_SERVICE_FIELDS)(
     "does NOT trigger implicitMention for %s service message",
     async (field) => {
@@ -84,26 +69,6 @@ describe("buildTelegramMessageContext implicitMention forum service messages", (
       expect(ctx).toBeNull();
     },
   );
-
-  it("does NOT trigger implicitMention for forum_topic_closed service message", async () => {
-    const ctx = await buildGroupReplyCtx({
-      replyToMessageText: undefined,
-      replyFromIsBot: true,
-      replyToMessageExtra: { forum_topic_closed: {} },
-    });
-
-    expect(ctx).toBeNull();
-  });
-
-  it("does NOT trigger implicitMention for general_forum_topic_hidden service message", async () => {
-    const ctx = await buildGroupReplyCtx({
-      replyToMessageText: undefined,
-      replyFromIsBot: true,
-      replyToMessageExtra: { general_forum_topic_hidden: {} },
-    });
-
-    expect(ctx).toBeNull();
-  });
 
   it("DOES trigger implicitMention for real bot replies (non-empty text)", async () => {
     const ctx = await buildGroupReplyCtx({

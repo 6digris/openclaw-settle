@@ -72,10 +72,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-updates", () => {
 
       expect(answerDraftStream.updatePreview).toHaveBeenCalledTimes(1);
       expect(answerDraftStream.updatePreview).toHaveBeenCalledWith(
-        telegramProgressPreview(
-          "Shelling\n\n🛠️ Exec running",
-          "<b>Shelling</b>\n<b>🛠️ Exec</b> <i>running</i>",
-        ),
+        telegramProgressPreview("<b>Shelling</b>\n<b>🛠️ Exec</b> <i>running</i>"),
       );
       expectDeliveredReply(0, { text: "Branch is up to date" });
     },
@@ -394,7 +391,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-updates", () => {
       });
 
       expect(draftStream.updatePreview).toHaveBeenLastCalledWith(
-        telegramProgressPreview("Shelling\n\n🛠️ Exec", "<b>Shelling</b>\n<b>🛠️ Exec</b>"),
+        telegramProgressPreview("<b>Shelling</b>\n<b>🛠️ Exec</b>"),
       );
       if (mode === "progress") {
         expect(draftStream.flush).toHaveBeenCalled();
@@ -430,10 +427,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-updates", () => {
     });
 
     expect(draftStream.updatePreview).toHaveBeenLastCalledWith(
-      telegramProgressPreview(
-        "Working\n\n🧭 Agents running",
-        "<b>Working</b>\n<b>🧭 Agents</b> <i>running</i>",
-      ),
+      telegramProgressPreview("<b>Working</b>\n<b>🧭 Agents</b> <i>running</i>"),
     );
   });
 
@@ -503,7 +497,6 @@ describeTelegramDispatch("dispatchTelegramMessage progress-updates", () => {
     expect(draftStream.forceNewMessage).toHaveBeenCalledTimes(1);
     expect(draftStream.updatePreview).toHaveBeenCalledWith(
       telegramProgressPreview(
-        "Shelling\n\n🛠️ Exec running\n📄 Web Fetch: working",
         "<b>Shelling</b>\n<b>🛠️ Exec</b> <i>running</i>\n📄 Web Fetch: working",
       ),
     );
@@ -603,10 +596,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-updates", () => {
     });
 
     expect(draftStream.updatePreview).toHaveBeenLastCalledWith(
-      telegramProgressPreview(
-        "Shelling\n\n🛠️ Exec failed",
-        "<b>Shelling</b>\n<b>🛠️ Exec</b> <i>failed</i>",
-      ),
+      telegramProgressPreview("<b>Shelling</b>\n<b>🛠️ Exec</b> <i>failed</i>"),
     );
   });
 });

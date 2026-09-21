@@ -264,8 +264,8 @@ describe("canonicalizeTelegramPresentationPayload", () => {
     {
       label: "normalized and Unicode values",
       optionValues: [" Deploy ", "東京", "Production 🚀"],
-      renderedValues: ["production 🚀", "東京", "deploy"],
-      expectedIndices: [2, 1, 0],
+      renderedValues: ["production 🚀", "東京", "deploy", " Deploy "],
+      expectedIndices: [2, 1, 0, 0],
     },
   ])(
     "uses authoritative Gateway indices for $label",

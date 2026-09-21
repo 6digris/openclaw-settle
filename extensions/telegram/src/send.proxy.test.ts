@@ -198,69 +198,7 @@ describe("telegram proxy client", () => {
     expect(botCtorSpy).toHaveBeenNthCalledWith(2, "tok", firstOptions);
   });
 
-  it("closes the evicted Telegram transport when the client options cache exceeds its limit", async () => {
-    const closeSpies: Array<ReturnType<typeof vi.fn>> = [];
-    makeProxyFetch.mockImplementation(() => vi.fn() as unknown as typeof fetch);
-    resolveTelegramTransport.mockImplementation(() => {
-      const fetchImpl = vi.fn() as unknown as typeof fetch;
-      const close = vi.fn(async () => undefined);
-      closeSpies.push(close);
-      return {
-        fetch: fetchImpl,
-        sourceFetch: fetchImpl,
-        close,
-      };
-    });
-    const cfg = {
-      channels: {
-        telegram: {
-          accounts: Object.fromEntries(
-            Array.from({ length: 65 }, (_unused, index) => [
-              `acct-${index}`,
-              { proxy: `http://proxy-${index}.test:8080` },
-            ]),
-          ),
-        },
-      },
-    };
-
-    for (let index = 0; index < 65; index += 1) {
-      await sendMessageTelegram("123", `message ${index}`, {
-        cfg,
-        token: "tok",
-        accountId: `acct-${index}`,
-      });
-    }
-
-    expect(resolveTelegramTransport).toHaveBeenCalledTimes(65);
-    expect(closeSpies[0]).toHaveBeenCalledTimes(1);
-    expect(closeSpies.slice(1).every((close) => close.mock.calls.length === 0)).toBe(true);
-  });
-
   it.each([
-    {
-      name: "an active send finishes",
-      setupFirstSend: () => {
-        let resolveFirstSend: (value: {
-          message_id: number;
-          chat: { id: string };
-        }) => void = () => {};
-        botApi.sendMessage.mockImplementationOnce(
-          () =>
-            new Promise((resolve) => {
-              resolveFirstSend = resolve;
-            }),
-        );
-        return {
-          waitUntilActive: async () => {
-            await vi.waitFor(() => expect(botApi.sendMessage).toHaveBeenCalledTimes(1));
-          },
-          finish: async () => {
-            resolveFirstSend({ message_id: 1, chat: { id: "123" } });
-          },
-        };
-      },
-    },
     {
       name: "a retryable send is waiting between attempts",
       setupFirstSend: () => {

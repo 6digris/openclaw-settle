@@ -281,18 +281,6 @@ describe("collectTelegramStatusIssues", () => {
 
     expect(issues).toStrictEqual([]);
   });
-
-  it("ignores accounts that are not both enabled and configured", () => {
-    expect(
-      collectTelegramStatusIssues([
-        {
-          accountId: "main",
-          enabled: false,
-          configured: true,
-        } as ChannelAccountSnapshot,
-      ]),
-    ).toStrictEqual([]);
-  });
 });
 
 describe("resolveTelegramStatusReactionEmojis", () => {

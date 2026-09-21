@@ -94,25 +94,6 @@ describe("buildTelegramMessageContext media carriers", () => {
     expect(target?.body).toBeUndefined();
   });
 
-  it("renders cached native media kinds in reply-chain text", async () => {
-    const context = await buildTelegramMessageContextForTest({
-      message: {
-        chat: { id: 42, type: "private", first_name: "Ada" },
-        text: "What was that?",
-      },
-      replyChain: [
-        {
-          messageId: "9",
-          sender: "Pat",
-          mediaType: "image",
-        },
-      ],
-    });
-
-    expect(context?.ctxPayload.Body).toContain("[Reply chain - nearest first]");
-    expect(context?.ctxPayload.Body).toContain("<media:image>");
-  });
-
   it("keeps native sticker kind ahead of its materialized image MIME", async () => {
     const context = await buildTelegramMessageContextForTest({
       message: {
@@ -146,6 +127,8 @@ describe("buildTelegramMessageContext media carriers", () => {
     });
 
     expect(context?.ctxPayload.ReplyToBody).toBe("<media:image>");
+    expect(context?.ctxPayload.Body).toContain("[Reply chain - nearest first]");
+    expect(context?.ctxPayload.Body).toContain("<media:image>");
     expect(context?.ctxPayload.Body).toContain("<media:document>");
   });
 
@@ -257,12 +240,26 @@ describe("buildTelegramMessageContext media carriers", () => {
           kind: "sticker",
           path: "/tmp/sticker.webp",
           contentType: "image/webp",
-          stickerMetadata: { cachedDescription: "A waving sticker" },
+          stickerMetadata: {
+            fileId: "sticker-2",
+            fileUniqueId: "sticker-u2",
+            cachedDescription: "A waving sticker",
+          },
         },
       ],
       historyLimit: 5,
     });
 
     expect(context?.ctxPayload.BodyForAgent).toBe("[Sticker] A waving sticker");
+    expect(context?.ctxPayload.media).toEqual([
+      expect.objectContaining({ path: "/tmp/sticker.webp", contentType: "image/webp" }),
+    ]);
+    expect(context?.ctxPayload.StickerMediaIncluded).toBe(true);
+    expect(context?.ctxPayload.SkipStickerMediaUnderstanding).toBe(true);
+    expect(context?.ctxPayload.Sticker).toMatchObject({
+      fileId: "sticker-2",
+      fileUniqueId: "sticker-u2",
+      cachedDescription: "A waving sticker",
+    });
   });
 });

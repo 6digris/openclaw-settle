@@ -316,27 +316,6 @@ describe("telegramPlugin gateway startup", () => {
     });
   });
 
-  it("passes successful startup probe botInfo into the polling monitor", async () => {
-    installTelegramRuntime();
-    probeTelegram.mockResolvedValue({
-      ok: true,
-      status: null,
-      error: null,
-      elapsedMs: 12,
-      bot: {
-        id: startupBotInfo.id,
-        username: startupBotInfo.username,
-      },
-      botInfo: startupBotInfo,
-    });
-    monitorTelegramProvider.mockResolvedValue(undefined);
-
-    const { task } = startTelegramAccount();
-
-    await expect(task).resolves.toBeUndefined();
-    expect(latestMonitorOptions().botInfo).toBe(startupBotInfo);
-  });
-
   it("caches successful startup probe botInfo for later restarts", async () => {
     installTelegramRuntime();
     probeTelegram.mockResolvedValue({
@@ -355,6 +334,7 @@ describe("telegramPlugin gateway startup", () => {
     const { task } = startTelegramAccount("ops");
 
     await expect(task).resolves.toBeUndefined();
+    expect(latestMonitorOptions().botInfo).toBe(startupBotInfo);
     await expect(
       readCachedTelegramBotInfo({
         accountId: "ops",

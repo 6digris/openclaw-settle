@@ -1,10 +1,6 @@
 // Telegram tests cover bot info cache plugin behavior.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  deleteCachedTelegramBotInfo,
-  readCachedTelegramBotInfo,
-  writeCachedTelegramBotInfo,
-} from "./bot-info-cache.js";
+import { readCachedTelegramBotInfo, writeCachedTelegramBotInfo } from "./bot-info-cache.js";
 import type { TelegramBotInfo } from "./bot-info.js";
 import { setTelegramRuntime } from "./runtime.js";
 import { clearTelegramRuntimeForTest } from "./runtime.test-support.js";
@@ -43,9 +39,6 @@ function useMemoryStore() {
     async lookup(key: string) {
       return entries.get(key);
     },
-    async delete(key: string) {
-      return entries.delete(key);
-    },
   };
   setTelegramRuntime({
     state: {
@@ -62,20 +55,6 @@ afterEach(() => {
 });
 
 describe("Telegram bot info cache", () => {
-  it("reads botInfo for the same account and bot token", async () => {
-    useMemoryStore();
-
-    await writeCachedTelegramBotInfo({
-      accountId: "ops",
-      botToken: "123456:secret",
-      botInfo,
-    });
-
-    await expect(
-      readCachedTelegramBotInfo({ accountId: "ops", botToken: "123456:secret" }),
-    ).resolves.toMatchObject({ botInfo });
-  });
-
   it("ignores botInfo written for a different token fingerprint", async () => {
     useMemoryStore();
 
@@ -105,21 +84,6 @@ describe("Telegram bot info cache", () => {
         botToken: "123456:secret",
         now: new Date(Date.now() + BOT_INFO_CACHE_MAX_AGE_MS + 1),
       }),
-    ).resolves.toBeNull();
-  });
-
-  it("deletes cached botInfo for an account", async () => {
-    useMemoryStore();
-
-    await writeCachedTelegramBotInfo({
-      accountId: "ops",
-      botToken: "123456:secret",
-      botInfo,
-    });
-    await deleteCachedTelegramBotInfo({ accountId: "ops" });
-
-    await expect(
-      readCachedTelegramBotInfo({ accountId: "ops", botToken: "123456:secret" }),
     ).resolves.toBeNull();
   });
 

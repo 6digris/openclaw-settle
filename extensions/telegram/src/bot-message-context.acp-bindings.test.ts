@@ -2,7 +2,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ensureConfiguredBindingRouteReadyMock = vi.hoisted(() => vi.fn());
-const recordInboundSessionMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const resolveTelegramConversationRouteMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./conversation-route.js", async () => {
@@ -22,12 +21,6 @@ const configuredBindingRuntime = {
     ensureConfiguredBindingRouteReadyMock(...args),
 } as NonNullable<
   import("./bot-message-context.types.js").BuildTelegramMessageContextParams["runtime"]
->;
-
-const configuredBindingSessionRuntime = {
-  recordInboundSession: (...args: unknown[]) => recordInboundSessionMock(...args),
-} as NonNullable<
-  import("./bot-message-context.types.js").BuildTelegramMessageContextParams["sessionRuntime"]
 >;
 
 function createConfiguredTelegramBinding() {
@@ -151,7 +144,6 @@ describe("buildTelegramMessageContext ACP configured bindings", () => {
 
   beforeEach(() => {
     ensureConfiguredBindingRouteReadyMock.mockReset();
-    recordInboundSessionMock.mockClear();
     resolveTelegramConversationRouteMock.mockReset();
     resolveTelegramConversationRouteMock.mockReturnValue(createConfiguredTelegramRoute());
     ensureConfiguredBindingRouteReadyMock.mockResolvedValue({ ok: true });
@@ -161,7 +153,6 @@ describe("buildTelegramMessageContext ACP configured bindings", () => {
     const ctx = await buildTelegramMessageContextForTest({
       accountId: "work",
       runtime: configuredBindingRuntime,
-      sessionRuntime: configuredBindingSessionRuntime,
       message: {
         chat: { id: -1001234567890, type: "supergroup", title: "OpenClaw", is_forum: true },
         message_thread_id: 42,
@@ -180,7 +171,6 @@ describe("buildTelegramMessageContext ACP configured bindings", () => {
     const ctx = await buildTelegramMessageContextForTest({
       accountId: "work",
       runtime: configuredBindingRuntime,
-      sessionRuntime: configuredBindingSessionRuntime,
       message: {
         chat: { id: -1001234567890, type: "supergroup", title: "OpenClaw", is_forum: true },
         message_thread_id: 42,
@@ -201,7 +191,6 @@ describe("buildTelegramMessageContext ACP configured bindings", () => {
     const ctx = await buildTelegramMessageContextForTest({
       accountId: "work",
       runtime: configuredBindingRuntime,
-      sessionRuntime: configuredBindingSessionRuntime,
       message: {
         chat: { id: -1001234567890, type: "supergroup", title: "OpenClaw", is_forum: true },
         message_thread_id: 42,
@@ -231,7 +220,6 @@ describe("buildTelegramMessageContext ACP configured bindings", () => {
     const ctx = await buildTelegramMessageContextForTest({
       accountId: "work",
       runtime: configuredBindingRuntime,
-      sessionRuntime: configuredBindingSessionRuntime,
       message: {
         chat: { id: -1001234567890, type: "supergroup", title: "OpenClaw", is_forum: true },
         message_thread_id: 42,

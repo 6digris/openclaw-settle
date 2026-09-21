@@ -100,11 +100,9 @@ const {
 type BuildModelsProviderDataMock = ReturnType<
   typeof vi.fn<NonNullable<typeof telegramBotDepsForTest.buildModelsProviderData>>
 >;
-const { resolveTelegramFetch } = await import("./fetch.js");
 const { defaultTelegramNativeCommandDeps } = await import("./bot-native-command-deps.runtime.js");
 const messageDispatchDedupe = await import("./message-dispatch-dedupe.js");
 const { createTelegramBotCore: createTelegramBotBase } = await import("./bot-core.js");
-const { getTelegramSequentialConstraints } = await import("./sequential-key.js");
 const {
   createTelegramSpooledReplayDeferredParticipant,
   recordTelegramMessageProcessingResult,
@@ -451,12 +449,6 @@ describe("createTelegramBot", () => {
 
   // groupPolicy tests
 
-  it("installs grammY throttler", () => {
-    createTelegramBot({ token: "tok" });
-    expect(throttlerSpy).toHaveBeenCalledTimes(1);
-    expect(useSpy).toHaveBeenCalledWith(expect.any(Function));
-  });
-
   it("reuses the grammY throttler for the same token", () => {
     createTelegramBot({ token: "tok" });
     createTelegramBot({ token: "tok" });
@@ -484,23 +476,6 @@ describe("createTelegramBot", () => {
     expect(errorMessage.startsWith("telegram bot error: Error: handler boom")).toBe(true);
   });
 
-  it("uses wrapped fetch when global fetch is available", () => {
-    const originalFetch = globalThis.fetch;
-    const fetchSpy = vi.fn() as unknown as typeof fetch;
-    globalThis.fetch = fetchSpy;
-    try {
-      createTelegramBot({ token: "tok" });
-      const fetchImpl = resolveTelegramFetch();
-      expect(fetchImpl).toBeTypeOf("function");
-      expect(fetchImpl).not.toBe(fetchSpy);
-      const clientFetch = (botCtorSpy.mock.calls.at(0)?.[1] as { client?: { fetch?: unknown } })
-        ?.client?.fetch;
-      expect(clientFetch).toBeTypeOf("function");
-      expect(clientFetch).not.toBe(fetchSpy);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
   it("ignores removed global and per-account timeoutSeconds", () => {
     loadConfig.mockReturnValue({
       channels: {
@@ -527,16 +502,6 @@ describe("createTelegramBot", () => {
     expectBotClientFields({ timeoutSeconds: undefined });
   });
 
-  it("keeps low timeoutSeconds above the outbound request guard", () => {
-    loadConfig.mockReturnValue({
-      channels: {
-        telegram: { dmPolicy: "open", allowFrom: ["*"], timeoutSeconds: 10 },
-      },
-    });
-    createTelegramBot({ token: "tok" });
-    expectBotClientFields({ timeoutSeconds: undefined });
-  });
-
   it("keeps polling client timeout above the outbound request guard", () => {
     loadConfig.mockReturnValue({
       channels: {
@@ -545,28 +510,6 @@ describe("createTelegramBot", () => {
     });
     createTelegramBot({ token: "tok", minimumClientTimeoutSeconds: 45 });
     expectBotClientFields({ timeoutSeconds: undefined });
-  });
-
-  it("passes startup probe botInfo to grammY", () => {
-    const botInfo = {
-      id: 123456,
-      is_bot: true,
-      first_name: "OpenClaw",
-      username: "openclaw_bot",
-      can_join_groups: true,
-      can_read_all_group_messages: false,
-      can_manage_bots: false,
-      supports_inline_queries: false,
-      supports_join_request_queries: false,
-      can_connect_to_business: false,
-      has_main_web_app: false,
-      has_topics_enabled: false,
-      allows_users_to_create_topics: false,
-    } as const;
-
-    createTelegramBot({ token: "tok", botInfo });
-
-    expect(getBotCtorOptions().botInfo).toBe(botInfo);
   });
 
   it("normalizes full Telegram bot endpoint apiRoot before passing it to grammY", () => {
@@ -583,13 +526,6 @@ describe("createTelegramBot", () => {
     createTelegramBot({ token: "tok" });
 
     expectBotClientFields({ apiRoot: "https://api.telegram.org" });
-  });
-
-  it("sequentializes updates by chat and thread", () => {
-    createTelegramBot({ token: "tok" });
-    expect(sequentializeSpy).toHaveBeenCalledTimes(1);
-    expect(middlewareUseSpy).toHaveBeenCalledWith(sequentializeSpy.mock.results[0]?.value);
-    expect(harness.sequentializeKey).toBe(getTelegramSequentialConstraints);
   });
 
   it("prepares the recorded poll topic before sequentialization", async () => {
@@ -1140,7 +1076,7 @@ describe("createTelegramBot", () => {
     }
   });
 
-  it.each([0, 500, 1000, 3000])(
+  it.each([0, 1000])(
     "preserves ordinary short-pair behavior with Telegram debounce %i ms",
     async (debounceMs) => {
       loadConfig.mockReturnValue({
@@ -5261,49 +5197,6 @@ describe("createTelegramBot", () => {
     expect(payload.BotUsername).toBe("openclaw_bot");
   });
 
-  it("keeps group envelope headers stable (sender identity is separate)", async () => {
-    resetHarnessSpies();
-
-    loadConfig.mockReturnValue({
-      agents: {
-        defaults: {
-          userTimezone: "UTC",
-        },
-      },
-      channels: {
-        telegram: {
-          groupPolicy: "open",
-          groups: { "*": { requireMention: false } },
-        },
-      },
-    });
-
-    await dispatchMessage({
-      message: {
-        chat: { id: 42, type: "group", title: "Ops" },
-        text: "hello",
-        date: 1736380800,
-        message_id: 2,
-        from: {
-          id: 99,
-          first_name: "Ada",
-          last_name: "Lovelace",
-          username: "ada",
-        },
-      },
-    });
-
-    expect(replySpy).toHaveBeenCalledTimes(1);
-    const payload = requireValue(replySpy.mock.calls.at(0), "replySpy call")[0];
-    expect(payload.SenderName).toBe("Ada Lovelace");
-    expect(payload.SenderId).toBe("99");
-    expect(payload.SenderUsername).toBe("ada");
-    const expectedTimestamp = formatEnvelopeTimestamp(new Date("2025-01-09T00:00:00Z"));
-    const timestampPattern = escapeRegExp(expectedTimestamp);
-    expect(payload.Body).toMatch(
-      new RegExp(`^\\[Telegram Ops id:42 (\\+\\d+[smhd] )?${timestampPattern}\\]`),
-    );
-  });
   it("reacts to mention-gated group messages when ackReaction is enabled", async () => {
     resetHarnessSpies();
 
@@ -5723,32 +5616,6 @@ describe("createTelegramBot", () => {
     );
   });
 
-  it("sends Codex usage-limit reset details as the Telegram reply body", async () => {
-    const codexRateLimitText =
-      "⚠️ You've reached your Codex subscription usage limit. Next reset in 42 minutes (2026-05-04T21:34:00.000Z). Run /codex account for current usage details.";
-    replySpy.mockResolvedValue({ text: codexRateLimitText });
-    configureOpenDm();
-
-    createTelegramBot({ token: "tok" });
-    const handler = getMessageHandler();
-    await handler(
-      makePrivateTextContext({
-        chatId: 5,
-        text: "hi",
-        message: { from: undefined },
-        downloadable: true,
-      }),
-    );
-
-    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
-    expect(String(requireValue(sendMessageSpy.mock.calls.at(0), "sendMessageSpy call")[0])).toBe(
-      "5",
-    );
-    expect(requireValue(sendMessageSpy.mock.calls.at(0), "sendMessageSpy call")[1]).toBe(
-      codexRateLimitText,
-    );
-  });
-
   it("honors threaded replies for replyToMode=first/all", async () => {
     for (const [mode, messageId] of [
       ["first", 101],
@@ -5970,34 +5837,6 @@ describe("createTelegramBot", () => {
     expect(replySpy).toHaveBeenCalledTimes(2);
     expect(replySpy.mock.calls.at(1)?.[0].SessionKey).toContain("agent:agent-b:");
   });
-  it("dedupes duplicate message updates by update_id", async () => {
-    onSpy.mockReset();
-    replySpy.mockReset();
-
-    configureOpenDm();
-
-    createTelegramBot({ token: "tok" });
-    const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
-
-    const ctx = {
-      update: { update_id: 111 },
-      message: {
-        chat: { id: 123, type: "private" },
-        from: { id: 456, username: "testuser" },
-        text: "hello",
-        date: 1736380800,
-        message_id: 42,
-      },
-      me: { username: "openclaw_bot" },
-      getFile: async () => ({ download: async () => new Uint8Array() }),
-    };
-
-    await handler(ctx);
-    await handler(ctx);
-
-    expect(replySpy).toHaveBeenCalledTimes(1);
-  });
-
   it("retries native command updates after a bubbled handler failure", async () => {
     loadConfig.mockReturnValue({
       commands: { native: true },

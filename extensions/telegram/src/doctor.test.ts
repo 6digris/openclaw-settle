@@ -466,6 +466,7 @@ describe("telegram doctor", () => {
     expect(warnings).toContain(
       "- Telegram allowFrom contains 4 invalid sender entries (e.g. @top); Telegram authorization requires positive numeric sender user IDs.",
     );
+    expect(warnings[1]).toContain(DOCTOR_FIX_COMMAND);
   });
 
   it("formats group-policy and empty-allowlist warnings", () => {
@@ -578,15 +579,6 @@ describe("telegram doctor", () => {
       "- Telegram account inactive: failed to inspect bot token (configured but unavailable in this command path).",
       "- Telegram allowFrom contains @username entries, but configured Telegram bot credentials are unavailable in this command path; cannot auto-resolve.",
     ]);
-  });
-
-  it("formats invalid allowFrom warnings", async () => {
-    const warnings = await collectPreviewWarnings({
-      channels: { telegram: { allowFrom: ["@top"] } },
-    } as unknown as OpenClawConfig);
-
-    expect(warnings[0]).toContain("invalid sender entries");
-    expect(warnings[1]).toContain(DOCTOR_FIX_COMMAND);
   });
 
   it("warns only when a selected webhook account uses the reserved health path", async () => {
@@ -812,34 +804,6 @@ describe("telegram doctor", () => {
     } as unknown as OpenClawConfig);
 
     expect(warnings.join("\n")).toContain("selected quote replies");
-  });
-
-  it("wires apiRoot preview warnings and repair through the doctor adapter", async () => {
-    const cfg = {
-      channels: {
-        telegram: {
-          apiRoot: "https://api.telegram.org/bot123456:ABC",
-        },
-      },
-    } as unknown as OpenClawConfig;
-
-    expect(
-      await telegramDoctor.collectPreviewWarnings?.({
-        cfg,
-        doctorFixCommand: "openclaw doctor --fix",
-      }),
-    ).toContain(
-      "- channels.telegram.apiRoot points at a full Telegram bot endpoint; apiRoot must be the Bot API root only. This can make startup calls like deleteWebhook, deleteMyCommands, and setMyCommands fail with 404 even when direct curl commands work.",
-    );
-
-    const repaired = await telegramDoctor.repairConfig?.({
-      cfg,
-      doctorFixCommand: "openclaw doctor --fix",
-    });
-    expect(repaired?.config.channels?.telegram?.apiRoot).toBe("https://api.telegram.org");
-    expect(repaired?.changes).toEqual([
-      "- channels.telegram.apiRoot: removed trailing /bot<TOKEN> from Telegram apiRoot.",
-    ]);
   });
 
   it("warns when default env fallback token is missing after migration", async () => {

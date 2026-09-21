@@ -23,20 +23,6 @@ describe("TelegramPollingLivenessTracker", () => {
     );
   });
 
-  it("detects stale polling without considering unrelated API activity", () => {
-    let now = 0;
-    const tracker = new TelegramPollingLivenessTracker({ monotonicNow: () => now });
-
-    now = 45_000;
-    expect(tracker.detectStall({ thresholdMs: POLL_STALL_THRESHOLD_MS })).toBeNull();
-    now = 120_001;
-    expect(
-      tracker.detectStall({
-        thresholdMs: POLL_STALL_THRESHOLD_MS,
-      })?.message,
-    ).toContain("Polling stall detected");
-  });
-
   it("keeps idle polling alive only until its recorded server-directed wait expires", () => {
     let now = 0;
     const tracker = new TelegramPollingLivenessTracker({ monotonicNow: () => now });

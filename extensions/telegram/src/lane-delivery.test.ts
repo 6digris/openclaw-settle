@@ -68,31 +68,6 @@ describe("createLaneTextDeliverer", () => {
     expect(harness.lanes.answer.finalized).toBe(true);
   });
 
-  it("streams block and final text through the same lane", async () => {
-    const harness = createHarness({ answerMessageId: 999 });
-
-    const blockResult = await harness.deliverLaneText({
-      laneName: "answer",
-      text: "working",
-      payload: { text: "working" },
-      infoKind: "block",
-    });
-    const finalResult = await deliverFinalAnswer(harness, "done");
-
-    expect(blockResult.kind).toBe("preview-updated");
-    const delivery = expectPreviewFinalized(finalResult);
-    expect(delivery.content).toBe("done");
-    expect(delivery.messageId).toBe(999);
-    expect(delivery.receipt.primaryPlatformMessageId).toBe("999");
-    expect(harness.answer?.update).toHaveBeenNthCalledWith(1, "working");
-    expect(harness.answer?.update).toHaveBeenNthCalledWith(2, "done");
-    expect(harness.flushDraftLane).toHaveBeenCalledTimes(1);
-    expect(harness.stopDraftLane).toHaveBeenCalledTimes(1);
-    expect(harness.sendPayload).not.toHaveBeenCalled();
-    expect(harness.markDelivered).toHaveBeenCalledTimes(2);
-    expect(harness.lanes.answer.finalized).toBe(true);
-  });
-
   it("keeps reasoning block text in an updatable draft lane", async () => {
     const harness = createHarness();
     harness.reasoning.setMessageId(777);
@@ -258,54 +233,6 @@ describe("createLaneTextDeliverer", () => {
     expect(harness.lanes.answer.finalized).toBe(true);
   });
 
-  it("keeps a longer delivered stream preview when transcript lookup misses", async () => {
-    const fullAnswer =
-      "Ja. Hier nochmal sauber Schritt fuer Schritt. Einen API Key kopiert man aus der Google Cloud Console. Danach pruefst du die Projekt- und API-Einstellungen.";
-    const truncatedFinal =
-      "Ja. Hier nochmal sauber Schritt fuer Schritt. Einen API Key kopiert man...";
-    const answer = createTestDraftStream({ messageId: 999 });
-    answer.lastDeliveredText.mockReturnValue(fullAnswer);
-    answer.currentMessageSnapshot.mockReturnValue({ text: fullAnswer, sourceText: fullAnswer });
-    const harness = createHarness({ answerStream: answer });
-    harness.lanes.answer.lastPartialText = fullAnswer;
-    harness.lanes.answer.hasStreamedMessage = true;
-
-    const result = await deliverFinalAnswer(harness, truncatedFinal);
-
-    const delivery = expectPreviewFinalized(result);
-    expect(delivery.content).toBe(fullAnswer);
-    expect(answer.update).not.toHaveBeenCalledWith(truncatedFinal);
-    expect(harness.sendPayload).not.toHaveBeenCalled();
-    expect(harness.markDelivered).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps a longer pending partial preview before it is delivered", async () => {
-    const fullAnswer =
-      "Ja. Hier nochmal sauber Schritt fuer Schritt. Einen API Key kopiert man aus der Google Cloud Console. Danach pruefst du die Projekt- und API-Einstellungen.";
-    const truncatedFinal =
-      "Ja. Hier nochmal sauber Schritt fuer Schritt. Einen API Key kopiert man...";
-    let deliveredText = "";
-    const answer = createTestDraftStream({
-      messageId: 999,
-      onStop: () => {
-        deliveredText = fullAnswer;
-      },
-    });
-    answer.lastDeliveredText.mockImplementation(() => deliveredText);
-    const harness = createHarness({ answerStream: answer });
-
-    answer.update(fullAnswer);
-    harness.lanes.answer.lastPartialText = fullAnswer;
-    harness.lanes.answer.hasStreamedMessage = true;
-    const result = await deliverFinalAnswer(harness, truncatedFinal);
-
-    const delivery = expectPreviewFinalized(result);
-    expect(delivery.content).toBe(fullAnswer);
-    expect(answer.update).not.toHaveBeenCalledWith(truncatedFinal);
-    expect(harness.stopDraftLane).toHaveBeenCalledTimes(1);
-    expect(harness.markDelivered).toHaveBeenCalledTimes(1);
-  });
-
   it("materializes a pending retained preview before reading the message id", async () => {
     const fullAnswer =
       "Ja. Hier nochmal sauber Schritt fuer Schritt. Einen API Key kopiert man aus der Google Cloud Console. Danach pruefst du die Projekt- und API-Einstellungen.";
@@ -429,37 +356,6 @@ describe("createLaneTextDeliverer", () => {
     expectSentPayload(harness, { text: HELLO_FINAL }, true);
     expect(harness.clearDraftLane).not.toHaveBeenCalled();
     expect(harness.lanes.answer.finalized).toBe(true);
-  });
-
-  it("keeps streamed final text in place when late media arrives", async () => {
-    const harness = createHarness({ answerMessageId: 999 });
-    harness.lanes.answer.hasStreamedMessage = true;
-
-    const result = await harness.deliverLaneText({
-      laneName: "answer",
-      text: "photo",
-      payload: { text: "photo", mediaUrl: "https://example.com/a.png" },
-      infoKind: "final",
-    });
-
-    const delivery = expectPreviewFinalized(result);
-    expect(delivery.content).toBe("photo");
-    expect(delivery.messageId).toBe(999);
-    expect(harness.clearDraftLane).not.toHaveBeenCalled();
-    expect(harness.answer?.clear).not.toHaveBeenCalled();
-    expect(harness.answer?.update).toHaveBeenCalledWith("photo");
-    expect(harness.stopDraftLane).toHaveBeenCalledTimes(1);
-    expectSentPayload(
-      harness,
-      {
-        mediaUrl: "https://example.com/a.png",
-      },
-      true,
-    );
-    expect(harness.sendPayload).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.objectContaining({ afterAcceptedDraft: true }),
-    );
   });
 
   it("preserves a finalized preview when the late media send fails", async () => {
@@ -850,41 +746,6 @@ describe("createLaneTextDeliverer", () => {
     }
   });
 
-  it("records retained overflow pages before the exact active final preview", async () => {
-    const answer = createTestDraftStream({ messageId: 999 });
-    answer.currentMessageSnapshot.mockReturnValue({
-      text: "visible chunk2",
-      sourceText: "source chunk2",
-    });
-    const harness = createHarness({ answerStream: answer });
-    harness.lanes.answer.hasStreamedMessage = true;
-    harness.lanes.answer.retainedPromptContextPages = [
-      { messageId: 997, text: "chunk0" },
-      { messageId: 998, text: "chunk1" },
-    ];
-
-    await deliverProjectedFinalAnswer(harness, "chunk0chunk1source chunk2");
-
-    expectRecordedPreview(harness.recordPromptContextPreview, 0, {
-      messageId: 997,
-      text: "chunk0",
-      partIndex: 0,
-      finalPart: false,
-    });
-    expectRecordedPreview(harness.recordPromptContextPreview, 1, {
-      messageId: 998,
-      text: "chunk1",
-      partIndex: 1,
-      finalPart: false,
-    });
-    expectRecordedPreview(harness.recordPromptContextPreview, 2, {
-      text: "visible chunk2",
-      partIndex: 2,
-      finalPart: true,
-    });
-    expect(harness.sendPayload).not.toHaveBeenCalled();
-  });
-
   it("does not carry unbound retained pages into a later projected final", async () => {
     const harness = createHarness({ answerMessageId: 999 });
     harness.lanes.answer.retainedPromptContextPages = [{ messageId: 997, text: "unbound page" }];
@@ -991,30 +852,6 @@ describe("createLaneTextDeliverer", () => {
     expect(harness.sendPayload).not.toHaveBeenCalled();
     expect(harness.markDelivered).toHaveBeenCalledTimes(1);
     expect(harness.lanes.answer.finalized).toBe(true);
-  });
-
-  it("attaches buttons to the stream message without sending a second reply", async () => {
-    const harness = createHarness({ answerMessageId: 999 });
-    const buttons = [[{ text: "OK", callback_data: "ok" }]];
-
-    const result = await harness.deliverLaneText({
-      laneName: "answer",
-      text: HELLO_FINAL,
-      payload: { text: HELLO_FINAL, channelData: { telegram: { buttons } } },
-      infoKind: "final",
-      buttons,
-    });
-
-    const delivery = expectPreviewFinalized(result);
-    expect(delivery.content).toBe(HELLO_FINAL);
-    expect(delivery.messageId).toBe(999);
-    expect(harness.editStreamMessage).toHaveBeenCalledWith({
-      laneName: "answer",
-      messageId: 999,
-      text: HELLO_FINAL,
-      buttons,
-    });
-    expect(harness.sendPayload).not.toHaveBeenCalled();
   });
 
   it("waits for a concrete streamed tool message before attaching buttons", async () => {

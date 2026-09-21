@@ -535,7 +535,7 @@ export function expectDraftStreamParams(expected: Record<string, unknown>) {
   return expectRecordFields(mockCallArg(createTelegramDraftStream), expected);
 }
 
-export function telegramProgressPreview(_plainText: string, html: string) {
+export function telegramProgressPreview(html: string) {
   return {
     text: html.replaceAll("\n", "<br>"),
     parseMode: "HTML" as const,

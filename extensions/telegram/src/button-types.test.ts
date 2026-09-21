@@ -7,13 +7,97 @@ import {
   resolveTelegramInlineButtons,
   type TelegramButtonBuildOptions,
 } from "./button-types.js";
-import { describeTelegramInteractiveButtonBehavior } from "./button-types.test-helpers.js";
 import {
   buildTelegramOpaqueCallbackData,
   parseTelegramOpaqueCallbackData,
 } from "./native-command-callback-data.js";
 
-describeTelegramInteractiveButtonBehavior();
+describe("buildTelegramInteractiveButtons", () => {
+  it("maps shared buttons and selects into Telegram inline rows", () => {
+    expect(
+      resolveTelegramInlineButtons({
+        interactive: {
+          blocks: [
+            {
+              type: "buttons",
+              buttons: [
+                { label: "Approve", value: "approve", style: "success" },
+                { label: "Docs", url: "https://example.com/docs", style: "primary" },
+                { label: "Reject", value: "reject", style: "danger" },
+                { label: "Launch", webApp: { url: "https://example.com/app" } },
+                { label: "Later", value: "later" },
+                { label: "Archive", value: "archive" },
+              ],
+            },
+            {
+              type: "select",
+              options: [{ label: "Alpha", value: "alpha" }],
+            },
+          ],
+        },
+      }),
+    ).toEqual([
+      [
+        { text: "Approve", callback_data: "approve", style: "success" },
+        { text: "Docs", url: "https://example.com/docs", style: "primary" },
+        { text: "Reject", callback_data: "reject", style: "danger" },
+      ],
+      [
+        { text: "Later", callback_data: "later", style: undefined },
+        { text: "Archive", callback_data: "archive", style: undefined },
+      ],
+      [{ text: "Alpha", callback_data: "alpha", style: undefined }],
+    ]);
+  });
+});
+
+describe("resolveTelegramInlineButtons", () => {
+  it("derives buttons from raw interactive payloads", () => {
+    expect(
+      resolveTelegramInlineButtons({
+        interactive: {
+          blocks: [
+            {
+              type: "buttons",
+              buttons: [
+                { label: "Retry", value: "retry", style: "primary" },
+                { label: "Docs", value: "docs", url: "https://example.com/docs" },
+              ],
+            },
+          ],
+        },
+      }),
+    ).toEqual([
+      [
+        { text: "Retry", callback_data: "retry", style: "primary" },
+        { text: "Docs", url: "https://example.com/docs", style: undefined },
+      ],
+    ]);
+  });
+
+  it("prefers legacy interactive buttons over generic presentation buttons", () => {
+    expect(
+      resolveTelegramInlineButtons({
+        presentation: {
+          blocks: [
+            {
+              type: "buttons",
+              buttons: [{ label: "Generic", value: "generic" }],
+            },
+          ],
+        },
+        interactive: {
+          blocks: [
+            {
+              type: "buttons",
+              buttons: [{ label: "Legacy", value: "legacy" }],
+            },
+          ],
+        },
+      }),
+    ).toEqual([[{ text: "Legacy", callback_data: "legacy", style: undefined }]]);
+  });
+});
 
 function questionButtonOptions(
   questions: ReadonlyArray<{ questionId: string; optionValues: readonly string[] }>,
@@ -125,29 +209,6 @@ describe("buildTelegramPresentationButtons", () => {
     ]);
   });
 
-  it("encodes question buttons by record id and option index", () => {
-    const questionId = "ask_0123456789abcdef0123456789abcdef";
-    expect(
-      buildTelegramPresentationButtons(
-        {
-          blocks: [
-            {
-              type: "buttons",
-              buttons: ["Staging", "Production"].map((label) => ({
-                label,
-                action: { type: "question" as const, questionId, optionValue: label },
-              })),
-            },
-          ],
-        },
-        questionButtonOptions([{ questionId, optionValues: ["Staging", "Production"] }]),
-      ),
-    ).toEqual([
-      [{ text: "Staging", callback_data: `tgq1:${questionId}:0`, style: undefined }],
-      [{ text: "Production", callback_data: `tgq1:${questionId}:1`, style: undefined }],
-    ]);
-  });
-
   it("puts full question choices on separate Telegram rows", () => {
     const questionId = "ask_0123456789abcdef0123456789abcdef";
     const optionValues = ["Use the safe deployment target", "Deploy directly to production"];
@@ -200,30 +261,6 @@ describe("buildTelegramPresentationButtons", () => {
     ]);
   });
 
-  it("drops question buttons when authoritative Gateway option order is unavailable", () => {
-    const questionId = "ask_0123456789abcdef0123456789abcdef";
-
-    expect(
-      buildTelegramPresentationButtons({
-        blocks: [
-          {
-            type: "buttons",
-            buttons: [
-              {
-                label: "Production",
-                action: {
-                  type: "question" as const,
-                  questionId,
-                  optionValue: "Production",
-                },
-              },
-            ],
-          },
-        ],
-      }),
-    ).toBeUndefined();
-  });
-
   it("keeps question option indices independent and stable across presentation blocks", () => {
     const firstQuestionId = "ask_0123456789abcdef0123456789abcdef";
     const secondQuestionId = "ask_fedcba9876543210fedcba9876543210";
@@ -274,55 +311,6 @@ describe("buildTelegramPresentationButtons", () => {
       [`tgq1:${secondQuestionId}:1`],
       [`tgq1:${firstQuestionId}:0`],
       [`tgq1:${firstQuestionId}:2`],
-    ]);
-  });
-
-  it("maps repeated rendered question values to their canonical Gateway option indices", () => {
-    const questionId = "ask_0123456789abcdef0123456789abcdef";
-    const button = (label: string) => ({
-      label,
-      action: { type: "question" as const, questionId, optionValue: label },
-    });
-
-    const rows = buildTelegramPresentationButtons(
-      {
-        blocks: [
-          { type: "buttons", buttons: [button("A"), button("A")] },
-          { type: "buttons", buttons: [button("B"), button("C")] },
-        ],
-      },
-      questionButtonOptions([{ questionId, optionValues: ["A", "B", "C"] }]),
-    );
-
-    expect(rows?.flatMap((row) => row.map((entry) => entry.callback_data))).toEqual([
-      `tgq1:${questionId}:0`,
-      `tgq1:${questionId}:0`,
-      `tgq1:${questionId}:1`,
-      `tgq1:${questionId}:2`,
-    ]);
-  });
-
-  it("normalizes repeated question values with the Gateway trim and lowercase contract", () => {
-    const questionId = "ask_0123456789abcdef0123456789abcdef";
-    const questionButton = (optionValue: string) => ({
-      label: optionValue,
-      action: { type: "question" as const, questionId, optionValue },
-    });
-
-    const rows = buildTelegramPresentationButtons(
-      {
-        blocks: [
-          { type: "buttons", buttons: [questionButton(" Deploy "), questionButton("deploy")] },
-          { type: "buttons", buttons: [questionButton("Production")] },
-        ],
-      },
-      questionButtonOptions([{ questionId, optionValues: [" Deploy ", "Production"] }]),
-    );
-
-    expect(rows?.flatMap((row) => row.map((entry) => entry.callback_data))).toEqual([
-      `tgq1:${questionId}:0`,
-      `tgq1:${questionId}:0`,
-      `tgq1:${questionId}:1`,
     ]);
   });
 
@@ -732,21 +720,6 @@ describe("buildTelegramPresentationButtons", () => {
         },
       ],
     ]);
-  });
-
-  it("skips Web App actions unless a direct target was confirmed", () => {
-    expect(
-      buildTelegramPresentationButtons({
-        blocks: [
-          {
-            type: "buttons",
-            buttons: [
-              { label: "App", action: { type: "web-app", url: "https://example.com/app" } },
-            ],
-          },
-        ],
-      }),
-    ).toBeUndefined();
   });
 
   it("records Web App gating separately from callback overflow", () => {

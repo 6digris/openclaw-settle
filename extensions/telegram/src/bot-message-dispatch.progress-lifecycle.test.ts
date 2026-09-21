@@ -1,5 +1,4 @@
 import { expect, it, vi } from "vitest";
-import { expectWindowRetiredAfterFinal } from "./bot-message-dispatch.progress-window.test-helpers.js";
 import {
   describeTelegramDispatch,
   emitToolStart,
@@ -101,40 +100,6 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
 
     expect(answerDraftStream.rotateToNewMessageDeferringDelete).not.toHaveBeenCalled();
     expect(answerDraftStream.clear).toHaveBeenCalledTimes(1);
-  });
-
-  it("uses one stationary window message across a multi-boundary turn (commentary→tool→commentary→tool→final)", async () => {
-    const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
-    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
-      async ({ dispatcherOptions, replyOptions }) => {
-        await replyOptions?.onItemEvent?.({ kind: "preamble", itemId: "c1", progressText: "Look" });
-        await emitToolStart(replyOptions, { name: "exec", phase: "start", toolCallId: "exec-1" });
-        await replyOptions?.onItemEvent?.({ kind: "preamble", itemId: "c2", progressText: "Now" });
-        await emitToolStart(replyOptions, { name: "read", toolCallId: "read-1", phase: "start" });
-        await dispatcherOptions.deliver({ text: "Final answer" }, { kind: "final" });
-        return { queuedFinal: true };
-      },
-    );
-
-    await dispatchWithContext({
-      context: createContext(),
-      streamMode: "progress",
-      telegramCfg: {
-        streaming: { mode: "progress", progress: { toolProgress: true, commentary: true } },
-      },
-    });
-
-    const windowMessageIds = new Set(
-      answerDraftStream.updatePreview.mock.calls
-        .map(() => answerDraftStream.messageId())
-        .filter((id) => id != null),
-    );
-    expect(windowMessageIds).toEqual(new Set([2001]));
-    expect(answerDraftStream.updatePreview.mock.calls.length).toBeGreaterThan(1);
-    expect(answerDraftStream.clear).not.toHaveBeenCalled();
-    expect(answerDraftStream.rotateToNewMessageDeferringDelete).toHaveBeenCalledTimes(1);
-    expectDeliveredReply(0, { text: "Final answer" });
-    expectWindowRetiredAfterFinal(answerDraftStream, deliverReplies);
   });
 
   it("keeps verbose CLI commentary bounded in the progress window so the final wins", async () => {
@@ -263,9 +228,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
       const lastUpdate = answerDraftStream.updatePreview.mock.calls.at(-1)?.[0];
       expect(lastUpdate?.text).not.toContain("install dependencies");
       expect(lastUpdate?.text).not.toContain("completed");
-      expect(lastUpdate).toEqual(
-        telegramProgressPreview("Shelling\n\n🛠️ Exec", "<b>Shelling</b>\n<b>🛠️ Exec</b>"),
-      );
+      expect(lastUpdate).toEqual(telegramProgressPreview("<b>Shelling</b>\n<b>🛠️ Exec</b>"));
     } finally {
       vi.useRealTimers();
     }
@@ -291,10 +254,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     });
 
     expect(answerDraftStream.updatePreview).toHaveBeenCalledWith(
-      telegramProgressPreview(
-        "Cracking\n\n🛠️ Exec running",
-        "<b>Cracking</b>\n<b>🛠️ Exec</b> <i>running</i>",
-      ),
+      telegramProgressPreview("<b>Cracking</b>\n<b>🛠️ Exec</b> <i>running</i>"),
     );
     expect(answerDraftStream.update).toHaveBeenCalledTimes(1);
     expect(answerDraftStream.update).toHaveBeenNthCalledWith(
@@ -338,7 +298,6 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
     );
     expect(answerDraftStream.updatePreview).toHaveBeenLastCalledWith(
       telegramProgressPreview(
-        "Shelling\n\n🛠️ Exec\n🔎 Web Search: docs lookup",
         "<b>Shelling</b>\n<b>🛠️ Exec</b> <i>running</i>\n<b>🔎 Web Search</b> docs lookup",
       ),
     );
@@ -370,7 +329,6 @@ describeTelegramDispatch("dispatchTelegramMessage progress-lifecycle", () => {
 
       expect(answerDraftStream.updatePreview).toHaveBeenLastCalledWith(
         telegramProgressPreview(
-          "Shelling\n\n🌐 API: GET /v1/users\n🌐 API: POST /v1/jobs",
           "<b>Shelling</b>\n<b>🌐 API</b> GET /v1/users\n<b>🌐 API</b> POST /v1/jobs",
         ),
       );

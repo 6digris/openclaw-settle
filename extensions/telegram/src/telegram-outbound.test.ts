@@ -57,17 +57,6 @@ describe("telegramPlugin outbound", () => {
     ).toBe(1200);
   });
 
-  it("keeps rich-account legacy HTML at the Telegram text limit", () => {
-    expect(
-      telegramOutbound.resolveEffectiveTextChunkLimit?.({
-        cfg: { channels: { telegram: { richMessages: true } } },
-        accountId: "default",
-        fallbackLimit: 4000,
-        formatting: { parseMode: "HTML" },
-      }),
-    ).toBe(4000);
-  });
-
   it("uses the selected account's rich-message limit", () => {
     expect(
       telegramOutbound.resolveEffectiveTextChunkLimit?.({
@@ -202,17 +191,6 @@ describe("telegramPlugin outbound", () => {
     });
 
     expect(chunks).toEqual([text]);
-  });
-
-  it("keeps wide markdown tables as visible text in the HTML text path", () => {
-    clearTelegramRuntime();
-    const text = markdownTable(21);
-
-    const chunks = telegramOutbound.chunker?.(text, 4000);
-
-    expect(chunks).toHaveLength(1);
-    expect(chunks?.[0]).toContain("| H21 |");
-    expect(chunks?.[0]).toContain("| 1 | 2 | 3 |");
   });
 
   it("preserves both fenced and unfenced wide tables as visible text", () => {

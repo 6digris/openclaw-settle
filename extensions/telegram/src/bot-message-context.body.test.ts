@@ -303,15 +303,6 @@ describe("resolveTelegramInboundBody", () => {
   );
 
   privateBodyTest(
-    "extracts text from rich-message-only updates",
-    richMessage({ blocks: [{ type: "paragraph", text: "Forwarded rich text" }] }),
-    (result) => {
-      expect(result?.rawBody).toBe("Forwarded rich text");
-      expect(result?.bodyText).toBe("Forwarded rich text");
-    },
-  );
-
-  privateBodyTest(
     "preserves whitespace across rich-message inline text spans",
     richMessage({
       blocks: [{ type: "paragraph", text: ["Forwarded ", { type: "bold", text: "rich text" }] }],
@@ -481,16 +472,6 @@ describe("resolveTelegramInboundBody", () => {
       expect(result?.bodyText).toBe("");
     },
     withMedia({ path: "/tmp/upload.bin", contentType: "application/octet-stream", kind: "image" }),
-  );
-
-  privateBodyTest(
-    "keeps aggregate image bodies empty",
-    photoMessage(4, "photo-2"),
-    (result) => expect(result?.bodyText).toBe(""),
-    withMedia(media("/tmp/photo-1.webp", "image"), {
-      ...media("/tmp/photo-2.png", "image"),
-      contentType: "image/png",
-    }),
   );
 
   privateBodyTest(

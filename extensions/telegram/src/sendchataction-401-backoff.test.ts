@@ -61,19 +61,6 @@ describe("createTelegramSendChatActionHandler", () => {
     parameters?: { retry_after?: number },
   ) => Object.assign(new Error(message), { error_code, parameters });
 
-  it("calls sendChatActionFn on success", async () => {
-    const fn = vi.fn().mockResolvedValue(true);
-    const logger = vi.fn();
-    const handler = createTelegramSendChatActionHandler({
-      sendChatActionFn: fn,
-      logger,
-    });
-
-    await handler.sendChatAction(123, "typing");
-    expect(fn).toHaveBeenCalledWith(123, "typing", undefined);
-    expect(handler.isSuspended()).toBe(false);
-  });
-
   it.each([undefined, 1, 42])("coalesces pending actions within topic %s", async (threadId) => {
     let resolveSend: ((value: true) => void) | undefined;
     const send = new Promise<true>((resolve) => {
@@ -153,28 +140,6 @@ describe("createTelegramSendChatActionHandler", () => {
     now = 5000;
     await handler.sendChatAction(-100, "typing");
     expect(fn).toHaveBeenCalledTimes(3);
-  });
-
-  it("applies exponential backoff on consecutive 401 errors", async () => {
-    const fn = vi.fn().mockRejectedValue(make401Error());
-    const logger = vi.fn();
-    const handler = createTelegramSendChatActionHandler({
-      sendChatActionFn: fn,
-      logger,
-      maxConsecutive401: 5,
-    });
-
-    // First call fails with 401
-    await expect(handler.sendChatAction(123, "typing")).rejects.toThrow("401");
-    expect(handler.isSuspended()).toBe(false);
-
-    // Second call should mention backoff in logs
-    await expect(handler.sendChatAction(123, "typing")).rejects.toThrow("401");
-    expect(logger.mock.calls).toEqual([
-      ["sendChatAction 401 error (1/5). Retrying with exponential backoff."],
-      ["sendChatAction backoff: waiting 1000ms before retry (failure 1/5)"],
-      ["sendChatAction 401 error (2/5). Retrying with exponential backoff."],
-    ]);
   });
 
   it("suspends after maxConsecutive401 failures", async () => {

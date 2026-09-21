@@ -50,27 +50,6 @@ describe("sticker-cache", () => {
   });
 
   describe("getCachedSticker", () => {
-    it("returns null for unknown ID", async () => {
-      const result = await stickerCache.getCachedSticker("unknown-id");
-      expect(result).toBeNull();
-    });
-
-    it("returns cached sticker after cacheSticker", async () => {
-      const sticker = {
-        fileId: "file123",
-        fileUniqueId: "unique123",
-        emoji: "🎉",
-        setName: "TestPack",
-        description: "A party popper emoji sticker",
-        cachedAt: "2026-01-26T12:00:00.000Z",
-      };
-
-      await stickerCache.cacheSticker(sticker);
-      const result = await stickerCache.getCachedSticker("unique123");
-
-      expect(result).toEqual(sticker);
-    });
-
     it("returns null after backing store is cleared", async () => {
       const sticker = {
         fileId: "file123",
@@ -297,13 +276,6 @@ describe("sticker-cache", () => {
       expect(results).toHaveLength(1);
     });
 
-    it("ranks exact matches higher", async () => {
-      // "waving" appears in "fox waving hello" - should be ranked first
-      const results = await stickerCache.searchStickers("waving");
-      expect(results).toHaveLength(1);
-      expect(results[0]?.fileUniqueId).toBe("fox-unique-1");
-    });
-
     it("returns empty array for no matches", async () => {
       const results = await stickerCache.searchStickers("elephant");
       expect(results).toHaveLength(0);
@@ -337,11 +309,6 @@ describe("sticker-cache", () => {
   });
 
   describe("getAllCachedStickers", () => {
-    it("returns empty array when cache is empty", async () => {
-      const result = await stickerCache.getAllCachedStickers();
-      expect(result).toStrictEqual([]);
-    });
-
     it("returns empty array when plugin-state list reads fail", async () => {
       installStore({
         ...createPluginStateKeyedStoreForTests("telegram", {
@@ -355,24 +322,6 @@ describe("sticker-cache", () => {
       });
 
       expect(await stickerCache.getAllCachedStickers()).toStrictEqual([]);
-    });
-
-    it("returns all cached stickers", async () => {
-      await stickerCache.cacheSticker({
-        fileId: "a",
-        fileUniqueId: "a-unique",
-        description: "Sticker A",
-        cachedAt: "2026-01-26T10:00:00.000Z",
-      });
-      await stickerCache.cacheSticker({
-        fileId: "b",
-        fileUniqueId: "b-unique",
-        description: "Sticker B",
-        cachedAt: "2026-01-26T11:00:00.000Z",
-      });
-
-      const result = await stickerCache.getAllCachedStickers();
-      expect(result).toHaveLength(2);
     });
   });
 

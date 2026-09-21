@@ -2,7 +2,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { describe, expect, it } from "vitest";
 import { resolveTelegramInlineButtons } from "./button-types.js";
-import { describeTelegramInteractiveButtonBehavior } from "./button-types.test-helpers.js";
 import {
   isTelegramInlineButtonsEnabled,
   resolveTelegramInlineButtonsScope,
@@ -44,27 +43,7 @@ describe("resolveTelegramTargetChatType", () => {
   });
 });
 
-describeTelegramInteractiveButtonBehavior();
-
 describe("buildTelegramInteractiveButtons callback rewrites", () => {
-  it("drops shared buttons whose callback data exceeds Telegram's limit", () => {
-    expect(
-      resolveTelegramInlineButtons({
-        interactive: {
-          blocks: [
-            {
-              type: "buttons",
-              buttons: [
-                { label: "Keep", value: "keep" },
-                { label: "Too long", value: `a${"b".repeat(64)}` },
-              ],
-            },
-          ],
-        },
-      }),
-    ).toEqual([[{ text: "Keep", callback_data: "keep", style: undefined }]]);
-  });
-
   it("rewrites /approve allow-always callbacks to always so plugin IDs fit Telegram limits", () => {
     const pluginApprovalId = `plugin:${"a".repeat(36)}`;
     expect(

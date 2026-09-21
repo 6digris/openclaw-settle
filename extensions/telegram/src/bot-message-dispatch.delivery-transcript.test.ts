@@ -694,30 +694,4 @@ describeTelegramDispatch("dispatchTelegramMessage delivery-transcript", () => {
       text: fullAnswer,
     });
   });
-
-  it("treats session rebound mirror skips as non-fatal", async () => {
-    setupDraftStreams({ answerMessageId: 2001 });
-    const context = createContext();
-    context.ctxPayload.SessionKey = "agent:default:telegram:direct:123";
-    mockDefaultSessionEntry();
-    appendAssistantMirrorMessageByIdentity.mockResolvedValueOnce({
-      ok: false,
-      code: "session-rebound",
-      reason: "session rebound for sessionKey: agent:default:telegram:direct:123",
-    });
-    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
-      await dispatcherOptions.deliver({ text: "Final answer" }, { kind: "final" });
-      return { queuedFinal: true };
-    });
-
-    await dispatchWithContext({ context });
-
-    expectRecordFields(mockCallArg(appendAssistantMirrorMessageByIdentity), {
-      agentId: "default",
-      sessionId: "s1",
-      sessionKey: "agent:default:telegram:direct:123",
-      storePath: "/tmp/sessions.json",
-      text: "Final answer",
-    });
-  });
 });

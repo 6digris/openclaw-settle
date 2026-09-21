@@ -1,10 +1,5 @@
 // Telegram tests cover channel.message adapter plugin behavior.
-import {
-  verifyChannelMessageAdapterCapabilityProofs,
-  verifyChannelMessageLiveCapabilityAdapterProofs,
-  verifyChannelMessageLiveFinalizerProofs,
-  verifyChannelMessageReceiveAckPolicyAdapterProofs,
-} from "openclaw/plugin-sdk/channel-outbound";
+import { verifyChannelMessageAdapterCapabilityProofs } from "openclaw/plugin-sdk/channel-outbound";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sendMessageTelegramMock = vi.fn();
@@ -217,26 +212,6 @@ describe("telegram channel message adapter", () => {
     });
   });
 
-  it("backs declared live capabilities with adapter proofs", async () => {
-    const adapter = requireTelegramMessageAdapter();
-
-    await verifyChannelMessageLiveCapabilityAdapterProofs({
-      adapterName: "telegramMessageAdapter",
-      adapter,
-      proofs: {
-        draftPreview: () => {
-          expect(adapter.receive?.defaultAckPolicy).toBe("after_agent_dispatch");
-        },
-        previewFinalization: () => {
-          expect(adapter.durableFinal?.capabilities?.text).toBe(true);
-        },
-        progressUpdates: () => {
-          expect(adapter.live?.capabilities?.draftPreview).toBe(true);
-        },
-      },
-    });
-  });
-
   it("normalizes the full media list before forwarding implicit reply ownership", async () => {
     const adapter = requireTelegramMessageAdapter();
     sendMessageTelegramMock.mockResolvedValueOnce({ messageId: "tg-media-2", chatId: "12345" });
@@ -264,45 +239,5 @@ describe("telegram channel message adapter", () => {
         replyToMode: "first",
       }),
     );
-  });
-
-  it("backs declared live preview finalizer capabilities with adapter proofs", async () => {
-    const adapter = requireTelegramMessageAdapter();
-
-    await verifyChannelMessageLiveFinalizerProofs({
-      adapterName: "telegramMessageAdapter",
-      adapter,
-      proofs: {
-        finalEdit: () => {
-          expect(adapter.live?.capabilities?.previewFinalization).toBe(true);
-        },
-        normalFallback: () => {
-          expect(adapter.durableFinal?.capabilities?.text).toBe(true);
-        },
-        previewReceipt: () => {
-          expect(adapter.live?.finalizer?.capabilities?.previewReceipt).toBe(true);
-        },
-        retainOnAmbiguousFailure: () => {
-          expect(adapter.live?.finalizer?.capabilities?.retainOnAmbiguousFailure).toBe(true);
-        },
-      },
-    });
-  });
-
-  it("backs declared receive ack policies with adapter proofs", async () => {
-    const adapter = requireTelegramMessageAdapter();
-
-    await verifyChannelMessageReceiveAckPolicyAdapterProofs({
-      adapterName: "telegramMessageAdapter",
-      adapter,
-      proofs: {
-        after_receive_record: () => {
-          expect(adapter.receive?.supportedAckPolicies).toContain("after_receive_record");
-        },
-        after_agent_dispatch: () => {
-          expect(adapter.receive?.defaultAckPolicy).toBe("after_agent_dispatch");
-        },
-      },
-    });
   });
 });

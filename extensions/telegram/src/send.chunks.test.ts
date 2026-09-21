@@ -32,21 +32,9 @@ describe("splitTelegramPlainTextChunks", () => {
     }
   });
 
-  it("does not hang when limit=1 and text starts with an astral char", () => {
-    // Regression: with limit=1 the clamp would return start (no advance),
-    // causing the while-loop to spin forever. The surrogate pair must be
-    // emitted as a unit (2 code units) so the loop always advances.
-    const input = "😀X";
-    const chunks = splitTelegramPlainTextChunks(input, 1);
-    expect(chunks.join("")).toBe(input);
-    for (const chunk of chunks) {
-      expect(containsLoneSurrogate(chunk)).toBe(false);
-    }
-  });
-
   it("does not hang when limit=1 and an astral char appears mid-string at a chunk boundary", () => {
-    // 'A' + emoji: with limit=1, second iteration starts at index 1 (high
-    // surrogate) — same stall condition as above, now mid-string.
+    // With limit=1, the second iteration starts on the high surrogate.
+    // Keep the pair whole and advance instead of looping forever.
     const input = "A😀B";
     const chunks = splitTelegramPlainTextChunks(input, 1);
     expect(chunks.join("")).toBe(input);

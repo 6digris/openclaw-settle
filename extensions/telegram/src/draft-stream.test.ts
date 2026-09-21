@@ -187,14 +187,6 @@ describe("createTelegramDraftStream", () => {
     expect(api.editMessageText).not.toHaveBeenCalled();
   });
 
-  it("sends stream preview message with message_thread_id when provided", async () => {
-    const api = createMockDraftApi();
-    const stream = createForumDraftStream(api);
-
-    stream.update("Hello");
-    await expectInitialForumSend(api);
-  });
-
   it("edits existing stream preview message on subsequent updates", async () => {
     const api = createMockDraftApi();
     const stream = createForumDraftStream(api);
@@ -311,25 +303,6 @@ describe("createTelegramDraftStream", () => {
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
     expectPreviewSend(api, "Hello");
     expect(warn).toHaveBeenCalledWith("telegram stream preview failed: temporary send failure");
-  });
-
-  it("keeps allow_sending_without_reply on message previews that target a reply", async () => {
-    const api = createMockDraftApi();
-    const stream = createDraftStream(api, {
-      thread: { id: 42, scope: "dm" },
-      replyToMessageId: 411,
-    });
-
-    stream.update("Hello");
-    await stream.flush();
-
-    expectPreviewSend(api, "Hello", {
-      message_thread_id: 42,
-      reply_parameters: {
-        message_id: 411,
-        allow_sending_without_reply: true,
-      },
-    });
   });
 
   it("converts <br> joins to newlines before parse_mode=HTML transport", async () => {
@@ -1096,27 +1069,6 @@ describe("createTelegramDraftStream", () => {
     expect(warn).toHaveBeenCalledWith("telegram stream preview failed: read ECONNRESET");
   });
 
-  it("supports rendered previews with HTML parse mode", async () => {
-    const api = createMockDraftApi();
-    const stream = createTelegramDraftStream({
-      api: api as unknown as Bot["api"],
-      chatId: 123,
-      renderText: (text) => ({ text: `<i>${text}</i>`, parseMode: "HTML" }),
-    });
-
-    stream.update("hello");
-    await stream.flush();
-    expect(api.sendMessage).toHaveBeenCalledWith(123, "<i>hello</i>", {
-      parse_mode: "HTML",
-    });
-
-    stream.update("hello again");
-    await stream.flush();
-    expect(api.editMessageText).toHaveBeenCalledWith(123, 17, "<i>hello again</i>", {
-      parse_mode: "HTML",
-    });
-  });
-
   it("sends caller-provided HTML previews through standard text transport", async () => {
     const api = createMockDraftApi();
     const stream = createDraftStream(api);
@@ -1142,36 +1094,6 @@ describe("createTelegramDraftStream", () => {
       123,
       17,
       "<b>Shelling</b>\n<b>🛠️ Exec</b>\n<i>Checking files</i>",
-      { parse_mode: "HTML" },
-    );
-    expect(api.raw.editMessageText).not.toHaveBeenCalled();
-  });
-
-  it("sends marked progress HTML previews through HTML text transport", async () => {
-    const api = createMockDraftApi();
-    const stream = createDraftStream(api);
-
-    stream.updatePreview({
-      text: "<b>Shelling</b>\n<b>🛠️ Exec</b>",
-      parseMode: "HTML",
-    });
-    await stream.flush();
-
-    expect(api.sendMessage).toHaveBeenCalledWith(123, "<b>Shelling</b>\n<b>🛠️ Exec</b>", {
-      parse_mode: "HTML",
-    });
-    expect(api.raw.sendRichMessage).not.toHaveBeenCalled();
-
-    stream.updatePreview({
-      text: "<b>Shelling</b>\n<b>🛠️ Exec</b>\n<b>Update</b> <code>Checking files</code>",
-      parseMode: "HTML",
-    });
-    await stream.flush();
-
-    expect(api.editMessageText).toHaveBeenCalledWith(
-      123,
-      17,
-      "<b>Shelling</b>\n<b>🛠️ Exec</b>\n<b>Update</b> <code>Checking files</code>",
       { parse_mode: "HTML" },
     );
     expect(api.raw.editMessageText).not.toHaveBeenCalled();
@@ -1566,24 +1488,6 @@ describe("createTelegramDraftStream", () => {
     expectPreviewEdit(api, "Hello world foo bar");
     expect(onSupersededPreview).not.toHaveBeenCalled();
     expect(stream.lastDeliveredText?.()).toBe("Hello world foo bar");
-  });
-
-  it("does not retain non-final overflow preview pages", async () => {
-    const api = createMockDraftApi();
-    const onSupersededPreview = vi.fn();
-    const stream = createDraftStream(api, {
-      maxChars: 20,
-      onRetainedPage: onSupersededPreview,
-    });
-
-    stream.update("Hello world");
-    await stream.flush();
-    stream.update("Hello world foo bar baz qux");
-    await stream.flush();
-
-    expect(api.sendMessage).toHaveBeenCalledTimes(1);
-    expectPreviewEdit(api, "Hello world foo bar");
-    expect(onSupersededPreview).not.toHaveBeenCalled();
   });
 
   it("continues in a new message when a final rendered preview crosses maxChars", async () => {
@@ -1983,17 +1887,6 @@ describe("draft stream initial message debounce", () => {
 
       expectPreviewSend(api, "Y");
     });
-
-    it("sends immediately on stop() with short sentence", async () => {
-      const api = createMockApi();
-      const stream = createDebouncedStream(api);
-
-      stream.update("Ok.");
-      await stream.stop();
-      await stream.flush();
-
-      expectPreviewSend(api, "Ok.");
-    });
   });
 
   describe("minInitialChars threshold", () => {
@@ -2059,16 +1952,6 @@ describe("draft stream initial message debounce", () => {
       const stream = createDebouncedStream(api);
 
       stream.update("I am processing your request..");
-      await stream.flush();
-
-      expect(api.sendMessage).toHaveBeenCalled();
-    });
-
-    it("works with longer text above threshold", async () => {
-      const api = createMockApi();
-      const stream = createDebouncedStream(api);
-
-      stream.update("I am processing your request, please wait a moment");
       await stream.flush();
 
       expect(api.sendMessage).toHaveBeenCalled();

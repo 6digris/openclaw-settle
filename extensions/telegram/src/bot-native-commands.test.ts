@@ -82,27 +82,6 @@ describe("registerTelegramNativeCommands", () => {
     pluginCommandHandler.mockClear();
   });
 
-  it("scopes skill commands when account binding exists", () => {
-    const cfg: OpenClawConfig = {
-      agents: {
-        list: [{ id: "main", default: true }, { id: "butler" }],
-      },
-      bindings: [
-        {
-          agentId: "butler",
-          match: { channel: "telegram", accountId: "bot-a" },
-        },
-      ],
-    };
-
-    registerTelegramNativeCommands(createNativeCommandTestParams(cfg, { accountId: "bot-a" }));
-
-    expect(listSkillCommandsForAgents).toHaveBeenCalledWith({
-      cfg,
-      agentIds: ["butler"],
-    });
-  });
-
   it("scopes skill commands to default agent without a matching binding (#15599)", () => {
     const cfg: OpenClawConfig = {
       agents: {
@@ -252,49 +231,9 @@ describe("registerTelegramNativeCommands", () => {
     );
   });
 
-  it("normalizes hyphenated native command names for Telegram registration", async () => {
-    const setMyCommands = vi.fn().mockResolvedValue(undefined);
-    const command = vi.fn();
-
-    registerTelegramNativeCommands({
-      ...createNativeCommandTestParams({}),
-      bot: {
-        api: {
-          setMyCommands,
-          sendMessage: vi.fn().mockResolvedValue(undefined),
-        },
-        command,
-      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
-    });
-
-    const registeredCommands = await waitForRegisteredCommands(setMyCommands);
-    const registeredCommandNames = registeredCommands.map((entry) => entry.command);
-    expect(registeredCommandNames).toContain("export_session");
-    expect(registeredCommandNames).not.toContain("export-session");
-
-    const registeredHandlers = command.mock.calls.map(([name]) => name);
-    expect(registeredHandlers).toContain("export_session");
-    expect(registeredHandlers).not.toContain("export-session");
-  });
-
-  it("resolves plugin commands from one registry-bound runtime", () => {
-    const cfg: OpenClawConfig = {
-      commands: { native: true },
-      channels: {
-        telegram: {
-          dmPolicy: "open",
-        },
-      },
-    };
-
-    registerTestPluginCommand({ name: "plug", description: "Plugin command" });
-    const { bot, commandHandlers } = createCommandBot();
-    registerTelegramNativeCommands(createNativeCommandTestParams(cfg, { bot }));
-    expect(commandHandlers.has("plug")).toBe(true);
-  });
-
   it("registers only Telegram-safe command names across native, custom, and plugin sources", async () => {
     const setMyCommands = vi.fn().mockResolvedValue(undefined);
+    const command = vi.fn();
 
     registerTestPluginCommand({ name: "plugin-status", description: "Plugin status" });
 
@@ -305,7 +244,7 @@ describe("registerTelegramNativeCommands", () => {
           setMyCommands,
           sendMessage: vi.fn().mockResolvedValue(undefined),
         },
-        command: vi.fn(),
+        command,
       } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
       telegramCfg: {
         customCommands: [
@@ -329,6 +268,10 @@ describe("registerTelegramNativeCommands", () => {
     expect(registeredCommandNames).toContain("plugin_status");
     expect(registeredCommandNames).not.toContain("plugin-status");
     expect(registeredCommandNames).not.toContain("custom-bad");
+
+    const registeredHandlers = command.mock.calls.map(([name]) => name);
+    expect(registeredHandlers).toContain("export_session");
+    expect(registeredHandlers).not.toContain("export-session");
   });
 
   it("prefixes native command menu callback data so callback handlers can preserve native routing", async () => {

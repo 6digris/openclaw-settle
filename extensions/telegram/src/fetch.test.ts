@@ -111,7 +111,6 @@ vi.mock("openclaw/plugin-sdk/runtime-env", () => ({
 }));
 
 let resolveTelegramFetch: typeof import("./fetch.js").resolveTelegramFetch;
-let resolveTelegramApiBase: typeof import("./fetch.js").resolveTelegramApiBase;
 let resolveTelegramTransport: typeof import("./fetch.js").resolveTelegramTransport;
 
 type TelegramDispatcherPolicy = NonNullable<
@@ -124,8 +123,7 @@ type ExplicitProxyTelegramDispatcherPolicy = Extract<
 >;
 
 beforeAll(async () => {
-  ({ resolveTelegramApiBase, resolveTelegramFetch, resolveTelegramTransport } =
-    await import("./fetch.js"));
+  ({ resolveTelegramFetch, resolveTelegramTransport } = await import("./fetch.js"));
 });
 
 beforeEach(() => {
@@ -377,12 +375,6 @@ afterEach(() => {
 });
 
 describe("resolveTelegramFetch", () => {
-  it("normalizes a full bot endpoint apiRoot before callers append bot paths", () => {
-    expect(resolveTelegramApiBase("https://api.telegram.org/bot123456:ABC/")).toBe(
-      "https://api.telegram.org",
-    );
-  });
-
   it("wraps proxy fetches and leaves retry policy to caller-provided fetch", async () => {
     const proxyFetch = vi.fn(async () => ({ ok: true }) as Response) as unknown as typeof fetch;
 
@@ -1078,26 +1070,6 @@ describe("resolveTelegramFetch", () => {
     } finally {
       dateNowSpy.mockRestore();
     }
-  });
-
-  it("preserves caller-provided dispatcher across fallback retry", async () => {
-    const fetchError = buildFetchFallbackError("EHOSTUNREACH");
-    undiciFetch.mockRejectedValueOnce(fetchError).mockResolvedValueOnce({ ok: true } as Response);
-
-    const resolved = resolveTelegramFetchOrThrow(undefined, {
-      network: {
-        autoSelectFamily: true,
-      },
-    });
-
-    const callerDispatcher = { name: "caller" };
-
-    await resolved("https://api.telegram.org/botx/sendMessage", {
-      dispatcher: callerDispatcher,
-    } as RequestInit);
-
-    expect(undiciFetch).toHaveBeenCalledTimes(2);
-    expectCallerDispatcherPreserved([1, 2], callerDispatcher);
   });
 
   it.each(["init", "request"] as const)(

@@ -50,12 +50,11 @@ describe("telegram actions contract", () => {
   });
 
   it("routes registered message actions through the gateway", () => {
-    expect(telegramPlugin.actions?.resolveExecutionMode?.({ action: "send" as never })).toBe(
-      "gateway",
-    );
-    expect(telegramPlugin.actions?.resolveExecutionMode?.({ action: "read" as never })).toBe(
-      "gateway",
-    );
+    for (const action of ["send", "poll", "react", "delete", "edit", "read"] as const) {
+      expect(telegramPlugin.actions?.resolveExecutionMode?.({ action: action as never })).toBe(
+        "gateway",
+      );
+    }
   });
 
   it.each([
@@ -188,21 +187,6 @@ describe("telegram actions contract", () => {
 
     expect(hints?.text_markup).toBe("markdown");
     expect(hints?.rules.join(" ")).toContain("Telegram rich OFF");
-  });
-
-  it("does not resolve Telegram credentials while checking inbound formatting hints", () => {
-    expect(() =>
-      telegramPlugin.agentPrompt?.inboundFormattingHints?.({
-        cfg: {
-          channels: {
-            telegram: {
-              tokenFile: "/definitely/missing/telegram-token",
-              richMessages: true,
-            },
-          },
-        } as OpenClawConfig,
-      }),
-    ).not.toThrow();
   });
 
   it("uses the configured default Telegram account for inbound formatting hints", () => {

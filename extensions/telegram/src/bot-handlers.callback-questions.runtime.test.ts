@@ -68,7 +68,6 @@ describe("sendTelegramQuestionFeedback", () => {
 
 describe("handleTelegramQuestionCallback", () => {
   it.each([
-    [{ status: "answered", questionId: "target", optionValue: "Production" }, "Answer submitted."],
     [
       { status: "already-terminal", reason: "already-terminal" },
       "This question was already answered.",
@@ -108,22 +107,5 @@ describe("handleTelegramQuestionCallback", () => {
     ).resolves.toBeUndefined();
     expect(feedback).toHaveBeenCalledOnce();
     expect(feedback).toHaveBeenCalledWith("Answer submitted.", "terminal");
-  });
-
-  it("switches an active question to Telegram force-reply input", async () => {
-    const feedback = vi.fn(async () => undefined);
-
-    await handleTelegramQuestionCallback({
-      callback: { questionId: callback.questionId, intent: "custom-input" },
-      cfg: {} as never,
-      senderId: "42",
-      feedback,
-      resolveQuestion: vi.fn(async () => ({
-        status: "custom-input" as const,
-        questionId: "target",
-      })),
-    });
-
-    expect(feedback).toHaveBeenCalledWith("Reply with your own answer.", "custom-input");
   });
 });

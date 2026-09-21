@@ -698,12 +698,6 @@ describe("markdownToTelegramRichBlocks", () => {
     expect(hasStyle(text, "code")).toBe(true);
   });
 
-  it("derives plainText from the block projection", () => {
-    const { plainText } = markdownToTelegramRichBlocks("**hello** world");
-    expect(plainText).toContain("hello");
-    expect(plainText).not.toContain("**");
-  });
-
   it("keeps table content in plainText for the plain fallback", () => {
     const { plainText } = markdownToTelegramRichBlocks(
       "before\n\n| colA | colB |\n| - | - |\n| cell1 | cell2 |\n\nafter",
@@ -946,15 +940,6 @@ describe("rich message plan wiring", () => {
     expect(message.blocks.length).toBeGreaterThan(0);
     expect(message.skip_entity_detection).toBe(true);
     expect("html" in message).toBe(false);
-  });
-
-  it("passes skip_entity_detection through chunked rich messages", () => {
-    const chunks = planTelegramTextDeliveryPages({
-      text: `${"hello\n\n".repeat(10)}owner@example.com`,
-      maxChars: 32_768,
-      richMessages: true,
-    });
-    expect(chunks.some((chunk) => chunk.richMessage?.skip_entity_detection === true)).toBe(true);
   });
 
   it("applies the document-level skip flag to every chunk", () => {

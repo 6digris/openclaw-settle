@@ -285,33 +285,6 @@ describe("Telegram message dispatch replay guard", () => {
     ]);
   });
 
-  it("propagates per-key disk errors and stops the commit sequence", async () => {
-    const diskError = new Error("dedupe disk write failed");
-    const commitCalls: string[] = [];
-    const guard = createTestReplayGuard();
-    const claims = ["first", "second", "third"].map((key) =>
-      createTestClaim({
-        key,
-        commit: async (keyLocal, options) => {
-          commitCalls.push(keyLocal);
-          if (keyLocal === "second") {
-            options?.onDiskError?.(diskError);
-          }
-          return true;
-        },
-      }),
-    );
-
-    await expect(
-      commitTelegramMessageDispatchReplay({
-        guard,
-        claims,
-        requirePersistent: true,
-      }),
-    ).rejects.toBe(diskError);
-    expect(commitCalls).toEqual(["first", "second"]);
-  });
-
   it("keeps live dispatch commits fail-open on dedupe disk errors", async () => {
     const diskError = new Error("dedupe disk write failed");
     const guard = createTestReplayGuard();

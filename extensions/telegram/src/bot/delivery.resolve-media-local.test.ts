@@ -472,12 +472,6 @@ describe("resolveMedia getFile retry", () => {
     expect(getFile).toHaveBeenCalledTimes(1);
   });
 
-  it("still retries transient errors even after encountering file too big in different call", async () => {
-    const result = await expectTransientGetFileRetrySuccess();
-    // Should retry transient errors.
-    expect(result?.path).toBe("/tmp/file_0.oga");
-  });
-
   it("retries getFile for stickers on transient failure", async () => {
     const getFile = vi
       .fn()

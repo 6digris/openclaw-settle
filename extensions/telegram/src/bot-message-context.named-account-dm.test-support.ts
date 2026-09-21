@@ -1,14 +1,10 @@
 // Telegram plugin module implements bot message context.named account dm support behavior.
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
-  getRecordedUpdateLastRoute,
-  loadTelegramMessageContextRouteHarness,
-  recordInboundSessionMock,
-} from "./bot-message-context.route-test-support.js";
-
-let buildTelegramMessageContextForTest: typeof import("./bot-message-context.test-harness.js").buildTelegramMessageContextForTest;
-let clearRuntimeConfigSnapshot: typeof import("openclaw/plugin-sdk/runtime-config-snapshot").clearRuntimeConfigSnapshot;
-let setRuntimeConfigSnapshot: typeof import("openclaw/plugin-sdk/runtime-config-snapshot").setRuntimeConfigSnapshot;
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "openclaw/plugin-sdk/runtime-config-snapshot";
+import { afterEach, describe, expect, it } from "vitest";
+import { buildTelegramMessageContextForTest } from "./bot-message-context.test-harness.js";
 
 describe("buildTelegramMessageContext named-account DM fallback", () => {
   const baseCfg = {
@@ -20,19 +16,6 @@ describe("buildTelegramMessageContext named-account DM fallback", () => {
   afterEach(() => {
     clearRuntimeConfigSnapshot();
   });
-
-  beforeAll(async () => {
-    ({ clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot, buildTelegramMessageContextForTest } =
-      await loadTelegramMessageContextRouteHarness());
-  });
-
-  beforeEach(() => {
-    recordInboundSessionMock.mockClear();
-  });
-
-  function getLastUpdateLastRoute(): { sessionKey?: string } | undefined {
-    return getRecordedUpdateLastRoute() as { sessionKey?: string } | undefined;
-  }
 
   function buildNamedAccountDmMessage(messageId = 1) {
     return {
@@ -53,37 +36,13 @@ describe("buildTelegramMessageContext named-account DM fallback", () => {
     });
   }
 
-  it("allows DM through for a named account with no explicit binding", async () => {
-    setRuntimeConfigSnapshot(baseCfg);
-
-    const ctx = await buildTelegramMessageContextForTest({
-      cfg: baseCfg,
-      accountId: "atlas",
-      message: {
-        message_id: 1,
-        chat: { id: 814912386, type: "private" },
-        date: 1700000000,
-        text: "hello",
-        from: { id: 814912386, first_name: "Alice" },
-      },
-    });
-
-    expect(ctx).not.toBeNull();
-    expect(ctx?.route.matchedBy).toBe("default");
-    expect(ctx?.route.accountId).toBe("atlas");
-  });
-
-  it("uses a per-account session key for named-account DMs", async () => {
-    const ctx = await buildNamedAccountDmContext();
-
-    expect(ctx?.ctxPayload?.SessionKey).toBe("agent:main:telegram:atlas:direct:814912386");
-  });
-
   it("keeps named-account fallback lastRoute on the isolated DM session", async () => {
     const ctx = await buildNamedAccountDmContext();
 
     expect(ctx?.ctxPayload?.SessionKey).toBe("agent:main:telegram:atlas:direct:814912386");
-    expect(getLastUpdateLastRoute()?.sessionKey).toBe("agent:main:telegram:atlas:direct:814912386");
+    expect(ctx?.turn.record.updateLastRoute?.sessionKey).toBe(
+      "agent:main:telegram:atlas:direct:814912386",
+    );
   });
 
   it("isolates sessions between named accounts that share the default agent", async () => {
@@ -91,6 +50,8 @@ describe("buildTelegramMessageContext named-account DM fallback", () => {
     const skynet = await buildNamedAccountDmContext("skynet", 2);
 
     expect(atlas?.ctxPayload?.SessionKey).toBe("agent:main:telegram:atlas:direct:814912386");
+    expect(atlas?.route.matchedBy).toBe("default");
+    expect(atlas?.route.accountId).toBe("atlas");
     expect(skynet?.ctxPayload?.SessionKey).toBe("agent:main:telegram:skynet:direct:814912386");
     expect(atlas?.ctxPayload?.SessionKey).not.toBe(skynet?.ctxPayload?.SessionKey);
   });
@@ -190,6 +151,6 @@ describe("buildTelegramMessageContext named-account DM fallback", () => {
     });
 
     expect(ctx?.ctxPayload?.SessionKey).toBe("agent:main:main");
-    expect(getLastUpdateLastRoute()?.sessionKey).toBe("agent:main:main");
+    expect(ctx?.turn.record.updateLastRoute?.sessionKey).toBe("agent:main:main");
   });
 });

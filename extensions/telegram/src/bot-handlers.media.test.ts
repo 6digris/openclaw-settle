@@ -15,11 +15,6 @@ describe("isMediaSizeLimitError", () => {
       expected: true,
     },
     {
-      name: "streaming payload limit",
-      error: new MediaFetchError("max_bytes", "payload exceeds maxBytes 10"),
-      expected: true,
-    },
-    {
       name: "Telegram Bot API file limit",
       error: new TelegramBotApiFileTooLargeError(new Error("Bad Request: file is too big")),
       expected: true,

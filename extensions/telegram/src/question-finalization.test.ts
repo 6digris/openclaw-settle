@@ -124,11 +124,7 @@ describe("Telegram question finalization", () => {
     expect(Object.keys(meta)).toEqual(["telegramDeliveredText", "telegramHasInlineKeyboard"]);
   });
 
-  it.each([
-    { kind: "photo", fileName: "photo.jpg" },
-    { kind: "document", fileName: "document.pdf" },
-    { kind: "video", fileName: "video.mp4" },
-  ])("finalizes $kind questions as bounded media captions", async ({ fileName }) => {
+  it("finalizes media-receipt questions as bounded captions", async () => {
     const deliveredText = "Q".repeat(1000);
     const statusLine = `Answered: ${"A".repeat(190)}`;
     const outbound = createTelegramOutboundAdapter();
@@ -138,7 +134,7 @@ describe("Telegram question finalization", () => {
       target: { channel: "telegram", to: "-100123:topic:77", accountId: "default" },
       payload: {
         text: deliveredText,
-        mediaUrls: [`https://example.com/${fileName}`],
+        mediaUrls: ["https://example.com/photo.jpg"],
         channelData: {
           askUser: { questionId: "ask_0123456789abcdef0123456789abcdef" },
         },

@@ -19,27 +19,12 @@ describe("telegramMessageActions", () => {
     });
   });
 
-  it("executes message actions in the gateway when a gateway is available", () => {
-    for (const action of ["send", "poll", "react", "delete", "edit"] as const) {
-      expect(telegramMessageActions.resolveExecutionMode?.({ action })).toBe("gateway");
-    }
-  });
-
   it("classifies provider-native mutation actions", () => {
     for (const action of ["sendMessage", "editMessage", "deleteMessage", "react", "topic-edit"]) {
       expect(telegramMessageActions.isToolDeliveryAction?.({ args: { action } })).toBe(true);
     }
     for (const action of ["searchSticker", "stickerCacheStats", "emoji-list"]) {
       expect(telegramMessageActions.isToolDeliveryAction?.({ args: { action } })).toBe(false);
-    }
-  });
-
-  it("classifies Telegram message ids as resources rather than delivery targets", () => {
-    for (const action of ["react", "edit", "delete"] as const) {
-      expect(telegramMessageActions.messageActionTargetAliases?.[action]).toEqual({
-        aliases: ["messageId"],
-        deliveryTargetAliases: [],
-      });
     }
   });
 

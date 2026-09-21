@@ -114,23 +114,6 @@ describe("resolveTelegramAccount", () => {
     expect(account.token).toBe("");
   });
 
-  it("formats debug logs with inspect-style output when debug env is enabled", () => {
-    withEnv({ TELEGRAM_BOT_TOKEN: "", OPENCLAW_DEBUG_TELEGRAM_ACCOUNTS: "1" }, () => {
-      const cfg: OpenClawConfig = {
-        channels: {
-          telegram: { accounts: { work: { botToken: "tok-work" } } },
-        },
-      };
-
-      expect(listTelegramAccountIds(cfg)).toEqual(["work"]);
-      resolveTelegramAccount({ cfg, accountId: "work" });
-    });
-
-    const lines = warnMock.mock.calls.map(([line]) => String(line));
-    expect(lines).toContain("listTelegramAccountIds [ 'work' ]");
-    expect(lines).toContain("resolve { accountId: 'work', enabled: true, tokenSource: 'config' }");
-  });
-
   it("does not resolve disabled account tokens when listing enabled accounts", () => {
     const cfg = {
       channels: {
@@ -320,20 +303,6 @@ describe("resolveDefaultTelegramAccountId", () => {
       channels: {
         telegram: {
           accounts: { default: { botToken: "tok-default" }, work: { botToken: "tok-work" } },
-        },
-      },
-    };
-
-    resolveDefaultTelegramAccountId(cfg);
-    expectNoMissingDefaultWarning();
-  });
-
-  it("does not warn when defaultAccount is explicitly set", () => {
-    const cfg: OpenClawConfig = {
-      channels: {
-        telegram: {
-          defaultAccount: "work",
-          accounts: { work: { botToken: "tok-work" } },
         },
       },
     };

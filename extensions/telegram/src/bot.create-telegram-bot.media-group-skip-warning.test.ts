@@ -239,10 +239,11 @@ describe("createTelegramBot media-group skip warning (#55216)", () => {
       );
       const warningText = String(sendMessageSpy.mock.calls[0]?.[1]);
       expect(warningText).toContain("1 could not be fetched and was skipped");
-      expect(replySpy).toHaveBeenCalled();
+      expect(replySpy).toHaveBeenCalledTimes(1);
+      expect(replySpy.mock.calls[0]?.[0]?.Body).toContain("album caption");
       expect(replySpy.mock.calls[0]?.[0]?.media).toEqual([
         expect.objectContaining({ path: "/tmp/p1.jpg", contentType: "image/png" }),
-        expect.objectContaining({ kind: "image" }),
+        expect.objectContaining({ kind: "image", path: undefined }),
       ]);
     } finally {
       setTimeoutSpy.mockRestore();
@@ -275,46 +276,6 @@ describe("createTelegramBot media-group skip warning (#55216)", () => {
         expect.objectContaining({ kind: "image" }),
       ]);
       expect(replySpy.mock.calls[0]?.[0]?.media?.every((fact) => !fact.path)).toBe(true);
-    } finally {
-      setTimeoutSpy.mockRestore();
-    }
-  });
-
-  it("pluralizes correctly for 2+ skipped", async () => {
-    setOpenChannelPostConfig();
-    saveRemoteMedia.mockImplementation(async (...args: unknown[]) => {
-      const url = urlOf(args);
-      if (url.includes("photos/p1.jpg")) {
-        return {
-          id: "p1.jpg",
-          path: "/tmp/p1.jpg",
-          size: 4,
-          contentType: "image/png",
-        } satisfies SavedRemoteMedia;
-      }
-      throw new MediaFetchError("fetch_failed", `Failed to fetch media from ${url}`);
-    });
-
-    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
-    try {
-      const handler = getChannelPostHandler();
-      await queueChannelPostAlbum(handler, {
-        baseMessageId: 800,
-        caption: "plural album",
-        mediaGroupId: "skip-warn-album-3",
-        photoFileIds: ["p1", "p2", "p3"],
-      });
-      await flushChannelPostMediaGroup(setTimeoutSpy);
-
-      expect(sendMessageSpy).toHaveBeenCalledTimes(1);
-      const warningText = String(sendMessageSpy.mock.calls[0]?.[1]);
-      expect(warningText).toContain("1 of 3 images");
-      expect(warningText).toContain("2 could not be fetched and were skipped");
-      expect(replySpy.mock.calls[0]?.[0]?.media).toEqual([
-        expect.objectContaining({ path: "/tmp/p1.jpg", contentType: "image/png" }),
-        expect.objectContaining({ kind: "image" }),
-        expect.objectContaining({ kind: "image" }),
-      ]);
     } finally {
       setTimeoutSpy.mockRestore();
     }

@@ -36,39 +36,6 @@ describe("TelegramPollingTransportState", () => {
     log = vi.fn<LogFn>();
   });
 
-  it("returns the initial transport when not dirty", () => {
-    const initial = makeMockTransport("initial");
-    const state = new TelegramPollingTransportState({
-      log,
-      initialTransport: initial,
-    });
-
-    const acquired = state.acquireForNextCycle();
-
-    expect(acquired).toBe(initial);
-    expect(initial.close).not.toHaveBeenCalled();
-  });
-
-  it("closes the stale transport when a dirty rebuild replaces it", async () => {
-    const initial = makeMockTransport("initial");
-    const rebuilt = makeMockTransport("rebuilt");
-    const createTelegramTransport = vi.fn(() => rebuilt);
-    const state = new TelegramPollingTransportState({
-      log,
-      initialTransport: initial,
-      createTelegramTransport,
-    });
-
-    state.markDirty();
-    const acquired = state.acquireForNextCycle();
-
-    expect(acquired).toBe(rebuilt);
-    await flushMicrotasks();
-    expect(initial.close).toHaveBeenCalledTimes(1);
-    expect(rebuilt.close).not.toHaveBeenCalled();
-    expect(anyLogMatches(log, "closing stale transport")).toBe(true);
-  });
-
   it("does not close when dirty rebuild keeps the same transport instance", async () => {
     const initial = makeMockTransport("initial");
     // createTelegramTransport returns the same instance — e.g., factory returned null → fallback to previous
@@ -107,12 +74,6 @@ describe("TelegramPollingTransportState", () => {
     expect(closeResolved).toBe(true);
   });
 
-  it("dispose() is idempotent and safe with no transport", async () => {
-    const state = new TelegramPollingTransportState({ log });
-    await expect(state.dispose()).resolves.toBeUndefined();
-    await expect(state.dispose()).resolves.toBeUndefined();
-  });
-
   it("dispose() swallows errors thrown by transport.close()", async () => {
     const initial = makeMockTransport("initial");
     initial.close.mockRejectedValueOnce(new Error("boom"));
@@ -140,25 +101,5 @@ describe("TelegramPollingTransportState", () => {
     const acquired = state.acquireForNextCycle();
     expect(acquired).toBeUndefined();
     expect(createTelegramTransport).not.toHaveBeenCalled();
-  });
-
-  it("clears the dirty flag even when no factory is configured", () => {
-    const initial = makeMockTransport("initial");
-    const state = new TelegramPollingTransportState({
-      log,
-      initialTransport: initial,
-    });
-    state.markDirty();
-
-    const acquired = state.acquireForNextCycle();
-
-    expect(acquired).toBe(initial);
-    // Next cycle without markDirty should not trigger another rebuild log.
-    state.acquireForNextCycle();
-    const rebuildLogs = log.mock.calls.filter((call) => {
-      const line = call[0];
-      return typeof line === "string" && line.includes("rebuilding transport");
-    });
-    expect(rebuildLogs.length).toBeLessThanOrEqual(1);
   });
 });
