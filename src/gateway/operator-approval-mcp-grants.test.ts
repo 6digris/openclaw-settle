@@ -13,6 +13,7 @@ import {
 } from "../infra/agent-run-registry.js";
 import { loadExecApprovalsReadOnly } from "../infra/exec-approvals-store.js";
 import { registerMcpToolApprovalBinding } from "../infra/mcp-tool-approval-binding.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -21,11 +22,13 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
+import { ExecApprovalManager } from "./exec-approval-manager.js";
 import { createGatewayAuxHandlers } from "./server-aux-handlers.js";
 import { createPluginApprovalHandlers } from "./server-methods/plugin-approval.js";
 import type { GatewayRequestHandlerOptions } from "./server-methods/types.js";
 
 const auxiliaries: ReturnType<typeof createGatewayAuxHandlers>[] = [];
+const pendingRequests: Promise<void>[] = [];
 let fixture: OpenClawTestState | undefined;
 const cfg: OpenClawConfig = {
   agents: { list: [{ id: "main" }, { id: "other" }] },
@@ -63,9 +66,11 @@ beforeEach(async () => {
   setRuntimeConfigSnapshot(cfg);
 });
 afterEach(async () => {
-  for (const aux of auxiliaries) {
-    await aux.stopOperatorInteractions();
-  }
+  const stopped = await Promise.allSettled(
+    auxiliaries.map((aux) => aux.stopOperatorInteractions()),
+  );
+  await Promise.all(pendingRequests);
+  pendingRequests.length = 0;
   auxiliaries.length = 0;
   resetAgentRunRegistryForTest();
   await closeOpenClawStateDatabaseAsync();
@@ -73,6 +78,11 @@ afterEach(async () => {
   clearRuntimeConfigSnapshot();
   await fixture?.cleanup();
   fixture = undefined;
+  for (const result of stopped) {
+    if (result.status === "rejected") {
+      throw result.reason;
+    }
+  }
 });
 
 async function requestGrant(
@@ -110,6 +120,7 @@ async function requestGrant(
           ...request.mcpTool,
           isActive: options.isActive ?? (() => true),
         });
+  const firstResponse = createDeferredCore<Parameters<GatewayRequestHandlerOptions["respond"]>>();
   const args = {
     req: { method: "plugin.approval.request", params: request, id: "request-1" },
     params: request,
@@ -130,7 +141,9 @@ async function requestGrant(
             },
           }),
     },
-    respond: vi.fn(),
+    respond: vi.fn((...response: Parameters<GatewayRequestHandlerOptions["respond"]>) => {
+      firstResponse.resolve(response);
+    }),
     isWebchatConnect: () => false,
     context: {
       broadcast: vi.fn(),
@@ -140,17 +153,29 @@ async function requestGrant(
       validateAgentRuntimeApprovalAuthority: () => validateAgentRunDelegatedAuthority(authority),
     },
   } as unknown as GatewayRequestHandlerOptions;
-  const pending = createPluginApprovalHandlers(aux.pluginApprovalManager)[
-    "plugin.approval.request"
-  ]!(args);
-  await vi.waitFor(() => expect(args.respond).toHaveBeenCalled());
-  releaseBinding?.();
-  const record = (await aux.pluginApprovalManager.listPendingRecords())[0];
-  if (!record) {
-    await pending;
-    throw new Error("MCP approval request did not register");
+  try {
+    const pending = Promise.resolve(
+      createPluginApprovalHandlers(aux.pluginApprovalManager)["plugin.approval.request"]!(args),
+    );
+    // Retirement releases unanswered observers; join them before closing the shared database.
+    pendingRequests.push(pending.catch(() => {}));
+    const [ok, payload, error] = await Promise.race([
+      firstResponse.promise,
+      pending.then(() => {
+        throw new Error("MCP approval request completed before acceptance");
+      }),
+    ]);
+    expect(ok).toBe(true);
+    expect(payload).toMatchObject({ status: "accepted" });
+    expect(error).toBeUndefined();
+    const record = (await aux.pluginApprovalManager.listPendingRecords())[0];
+    if (!record) {
+      throw new Error("MCP approval request did not register");
+    }
+    return { aux, authority, pending, record };
+  } finally {
+    releaseBinding?.();
   }
-  return { aux, authority, pending, record };
 }
 
 describe("gateway MCP tool grants", () => {
@@ -250,5 +275,40 @@ describe("gateway MCP tool grants", () => {
     expect(loadExecApprovalsReadOnly().agents).toEqual({});
     await aux.pluginApprovalManager.resolve(record.id, "deny");
     await pending;
+  });
+
+  it("waits for real registration before exposing a grant request", async () => {
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
+    const register = ExecApprovalManager.prototype.register;
+    const registration = vi
+      .spyOn(ExecApprovalManager.prototype, "register")
+      .mockImplementationOnce(async function (this: ExecApprovalManager, ...args) {
+        entered.resolve();
+        await release.promise;
+        return register.call(this, ...args);
+      });
+    let settled = false;
+    const request = requestGrant();
+    void request.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    try {
+      await Promise.race([entered.promise, request]);
+      expect(settled).toBe(false);
+      release.resolve();
+      const { aux, pending, record } = await request;
+      expect(await aux.pluginApprovalManager.resolve(record.id, "deny")).toBe(true);
+      await pending;
+    } finally {
+      release.resolve();
+      registration.mockRestore();
+      await request.catch(() => {});
+    }
   });
 });
