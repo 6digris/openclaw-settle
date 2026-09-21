@@ -691,6 +691,7 @@ jobs:
           set -euo pipefail
           timeout --kill-after=30s 15m docker build \
             --target runtime-assets \
+            --output=type=cacheonly \
             --build-arg OPENCLAW_EXTENSIONS="diagnostics-otel,codex" \
             .
 

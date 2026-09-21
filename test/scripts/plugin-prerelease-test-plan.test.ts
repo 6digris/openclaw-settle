@@ -1187,6 +1187,7 @@ describe("scripts/lib/plugin-prerelease-test-plan.mts", () => {
     expect(dockerPreflightStep).toBeDefined();
     expect(dockerPreflightStep?.run).toContain("docker build");
     expect(dockerPreflightStep?.run).toContain("--target runtime-assets");
+    expect(dockerPreflightStep?.run).toContain("--output=type=cacheonly");
     expect(dockerPreflightStep?.run).toContain("timeout --kill-after=30s 15m docker build");
     expect(dockerPreflightStep?.run).toContain(
       '--build-arg OPENCLAW_EXTENSIONS="diagnostics-otel,codex"',
