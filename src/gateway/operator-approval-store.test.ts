@@ -387,6 +387,8 @@ describe("operator approval store", () => {
 
   it("reads the default clock after waiting for the SQLite write lock", async () => {
     const databaseOptions = createDatabaseOptions();
+    // Worker initialization is fixture setup, not part of the contended expiry window.
+    await listPendingOperatorApprovals({ databaseOptions });
     const createdAtMs = Date.now();
     const expiresAtMs = createdAtMs + 1_500;
     await insertOperatorApproval({
