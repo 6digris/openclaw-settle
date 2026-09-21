@@ -384,6 +384,7 @@ describe("native owner content records", () => {
 
   it.each([
     ["CI helper", ".ci-harness", "cache/metadata-v1.3/registry.example/package.json"],
+    ["test scratch", ".tmp", "fixture/package.json"],
     ["Swift release", "apps/macos/.build", "arm64/release/description.json"],
     ["Swift debug", "apps/macos/.build-local", "debug/description.json"],
     ["MLX helper", "apps/macos-mlx-tts/.build", "arm64/release/description.json"],

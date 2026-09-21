@@ -57,6 +57,27 @@ it("prepares the same ordered source and installed-alias namespace as synchronou
   }
 });
 
+it("prepares compiler inputs while repository scratch is removed after enumeration", async () => {
+  const f = fixture();
+  const original = f.signature(f.snapshot());
+  f.write(".tmp/fixture/package.json", '{"type":"module"}');
+  const read = fs.promises.readdir.bind(fs.promises);
+  const reader = vi.spyOn(fs.promises, "readdir").mockImplementation(async (...args) => {
+    const entries = await read(...args);
+    if (args[0] === f.root) {
+      fs.rmSync(path.join(f.root, ".tmp"), { recursive: true });
+    }
+    return entries;
+  });
+  try {
+    const snapshot = f.snapshot();
+    await snapshot.prepare();
+    expect(f.signature(snapshot)).toBe(original);
+  } finally {
+    reader.mockRestore();
+  }
+});
+
 it("preserves signatures across checkout depths with one shared external dependency", async () => {
   const directory = roots.make("compiler-input-snapshot-portability-");
   const dependency = path.join(directory, "shared-dependency");

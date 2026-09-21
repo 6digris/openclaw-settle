@@ -236,12 +236,13 @@ describe("compiled worker content cache", () => {
     });
   });
 
-  it("reuses content after timestamp-only changes and unrelated source edits", async () => {
+  it("reuses content after timestamp-only changes and unrelated source or scratch changes", async () => {
     const f = fixture();
     const manifest = await f.seed();
     f.nextInvocation();
     fs.utimesSync(path.join(f.root, "src/value.js"), new Date(1000), new Date(1000));
     f.write("notes/unrelated.ts", 'export const unrelated = "second";\n');
+    f.write(".tmp/fixture/package.json", '{"name":"temporary-package"}');
 
     expect((await f.restore())?.outputs).toEqual(manifest.outputs);
     expect(f.observe().value).toBe("first");

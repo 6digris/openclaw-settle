@@ -24,6 +24,8 @@ function skipNamespaceEntry(id: string, name: string, installed: boolean) {
   return (
     id === ".ci-harness" ||
     id === ".worktrees" ||
+    // Test fixtures can disappear while other workers snapshot compiler inputs.
+    id === ".tmp" ||
     id === ".cache/openclaw-pnpm-store" ||
     id === ".cache/vitest" ||
     id === "apps/macos/.build" ||
