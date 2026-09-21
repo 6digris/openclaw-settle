@@ -62,6 +62,15 @@ describe("runCodexAppServerAttempt question refresh", () => {
     const directClaim = "directClaim" in scenario && scenario.directClaim;
     const uiAnswer = "uiAnswer" in scenario && scenario.uiAnswer;
     activeRunRegistrationMocks.questionWaiters.clear();
+    const questionWaitRegistered = createDeferred<void>();
+    const registerWaiter = activeRunRegistrationMocks.questionWaiters.set.bind(
+      activeRunRegistrationMocks.questionWaiters,
+    );
+    vi.spyOn(activeRunRegistrationMocks.questionWaiters, "set").mockImplementation((id, waiter) => {
+      const registered = registerWaiter(id, waiter);
+      questionWaitRegistered.resolve();
+      return registered;
+    });
     const turnStarted = createDeferred<void>();
     let notify: (notification: CodexServerNotification) => Promise<void> = async () => undefined;
     let handleRequest:
@@ -206,6 +215,9 @@ describe("runCodexAppServerAttempt question refresh", () => {
     const closeHost = refresh
       ? await bindProductionHarnessHostCapabilitiesForTest(params)
       : undefined;
+    // Protocol handoffs own these cases, not wall-clock fixture preparation.
+    // Match the neighboring refresh tests while keeping the execution budget armed.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const attemptStartedAt = performance.now();
     const run = runCodexAppServerAttempt(params);
     await turnStarted.promise;
@@ -242,7 +254,15 @@ describe("runCodexAppServerAttempt question refresh", () => {
     // Native turn acceptance precedes the asynchronous prompt handoff. Wait for
     // that handoff, not a short polling budget; surface an early terminal result.
     await Promise.race([
-      promptDelivered.promise,
+      (async () => {
+        if (!isSecret) {
+          await questionWaitRegistered.promise;
+          // The ordinary owner gives registration-time answers one timer turn
+          // before delivery. Drive that turn without spending execution time.
+          await vi.advanceTimersByTimeAsync(0);
+        }
+        await promptDelivered.promise;
+      })(),
       Promise.resolve(response).then((value) => {
         let responseShape = "other";
         if (value === undefined) {
