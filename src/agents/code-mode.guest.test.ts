@@ -797,8 +797,8 @@ describe("Code Mode guest execution", () => {
         code: 'const valid = 1;\nthrow new SyntaxError("runtime failure");',
         cause: "runtime failure",
       },
-    ].flatMap((scenario) =>
-      (["node", "quickjs"] as const).map((executor) => ({ ...scenario, executor })),
+    ].flatMap(({ name, code, cause }) =>
+      (["node", "quickjs"] as const).map((executor) => ({ name, code, cause, executor })),
     ),
   )(
     "$executor surfaces the guest $name at the submitted source line",
