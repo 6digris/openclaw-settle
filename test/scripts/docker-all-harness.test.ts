@@ -2169,6 +2169,7 @@ describe("Docker scheduler publication settlement", () => {
             });
           } else {
             expect(JSON.parse(before)).not.toHaveProperty("cleanup");
+            expect(JSON.parse(before).status).toBe("failed");
           }
           process.kill(schedulerPid, signal);
           expect(await owner.ready(handled)).toBe(schedulerPid);
@@ -2310,18 +2311,28 @@ describe("Docker scheduler publication settlement", () => {
       await runQaGatewayFixture(
         async () => {
           expect(await owner.result, owner.stderr()).toEqual({ code: 1, signal: null });
-          const summary = JSON.parse(
-            readFileSync(path.join(fixture.root, "logs", "summary.json"), "utf8"),
-          );
+          const summaryPath = path.join(fixture.root, "logs", "summary.json");
+          const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
           expect(summary).not.toHaveProperty("cleanup");
+          expect(summary.status).toBe("failed");
           expect(summary.runId).toBe("owned-publication-invocation");
           expect(summary.lanes).toEqual(
             mode === "initial log directory"
               ? []
               : [expect.objectContaining({ name: "gateway-concurrency", status: 0 })],
           );
-          if (mode === "initial log directory") {
-            expect(summary.status).toBe("failed");
+          if (mode === "staging close" || mode === "rename") {
+            for (const [script, args, expected] of [
+              ["docker-e2e.mts", ["summary", summaryPath, "Docker scheduler"], "Status: `failed`"],
+              ["docker-e2e-timings.mts", [summaryPath], "Status: failed"],
+            ] as const) {
+              const output = execFileSync(
+                process.execPath,
+                ["--import", "tsx", path.join("scripts", script), ...args],
+                { encoding: "utf8", timeout: 10_000 },
+              );
+              expect(output).toContain(expected);
+            }
           }
           expect(owner.stderr()).toContain(
             mode === "staging cleanup"

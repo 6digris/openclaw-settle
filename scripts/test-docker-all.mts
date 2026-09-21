@@ -2131,7 +2131,8 @@ async function main() {
   let summaryAttempted = false;
   const writeSummary = (summary: RunSummary) => {
     summaryAttempted = true;
-    return writeRunSummary(logDir, { ...summary, runId }, baseEnv);
+    // Only final atomic promotion may publish a passing verdict.
+    return writeRunSummary(logDir, { ...summary, status: "failed", runId }, baseEnv);
   };
   appendExtension(baseEnv, "matrix");
   appendExtension(baseEnv, "acpx");
