@@ -1,8 +1,12 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { HEARTBEAT_RESPONSE_TOOL_NAME, normalizeHeartbeatToolResponse, type HeartbeatToolResponse } from "../../auto-reply/heartbeat-tool-response.js";
+import type { AgentToolResult } from "../../../packages/agent-core/src/types.js";
+import {
+  HEARTBEAT_RESPONSE_TOOL_NAME,
+  normalizeHeartbeatToolResponse,
+  type HeartbeatToolResponse,
+} from "../../auto-reply/heartbeat-tool-response.js";
 import { isDeliveredMessagingToolResult } from "../embedded-agent-message-tool-source-reply.js";
 import { isMessagingTool, isMessagingToolSendAction } from "../embedded-agent-messaging.js";
-import type { AgentToolResult } from "../../../packages/agent-core/src/types.js";
 import type {
   MessagingToolSend,
   MessagingToolSourceReplyPayload,
@@ -23,7 +27,9 @@ export function recordAgentHarnessToolResultTelemetry(params: {
   result: AgentToolResult<unknown> | undefined;
   mediaTrustResult?: unknown;
   telemetry: AgentHarnessToolResultTelemetry;
-  extractSourceReplyPayload: (result: AgentToolResult<unknown> | undefined) => MessagingToolSourceReplyPayload | undefined;
+  extractSourceReplyPayload: (
+    result: AgentToolResult<unknown> | undefined,
+  ) => MessagingToolSourceReplyPayload | undefined;
   isError: boolean;
   signal: AbortSignal;
   autoDeliveryTtsMediaUrls?: readonly string[];
@@ -221,13 +227,14 @@ export type AgentHarnessToolMediaFacts = {
   toolAudioAsVoice?: boolean;
 };
 
-export type AgentHarnessToolResultTelemetry = AgentHarnessMessagingDeliveryFacts & AgentHarnessToolMediaFacts & {
-  toolAudioAsVoice: boolean;
-  toolAutoDeliveryMediaUrls: string[];
-  coreTtsToolResults: object[];
-  successfulCronAdds?: number;
-  heartbeatToolResponse?: HeartbeatToolResponse;
-};
+export type AgentHarnessToolResultTelemetry = AgentHarnessMessagingDeliveryFacts &
+  AgentHarnessToolMediaFacts & {
+    toolAudioAsVoice: boolean;
+    toolAutoDeliveryMediaUrls: string[];
+    coreTtsToolResults: object[];
+    successfulCronAdds?: number;
+    heartbeatToolResponse?: HeartbeatToolResponse;
+  };
 
 function readFirstString(record: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
