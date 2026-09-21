@@ -1,5 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { joinClawHubPluginCatalog } from "./catalog-discovery.js";
 import {
   emptyMetadataSnapshot,
@@ -57,6 +60,8 @@ function mockHostedOfficialCatalog(entries: unknown[]) {
     metadata: { url: "https://clawhub.ai/feed", status: 200, checksum: "hash" },
   });
 }
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("managed plugin catalog", () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -463,16 +468,23 @@ describe("managed plugin catalog", () => {
   });
 
   it("keeps installed plugins uncategorized when ClawHub enrichment is unavailable", async () => {
+    const rootDir = tempDirs.make("managed-catalog-clawhub-");
+    fs.writeFileSync(
+      path.join(rootDir, "package.json"),
+      JSON.stringify({ name: "@openclaw/community-tool", version: "1.0.0" }),
+    );
     mocks.metadata.mockReturnValue(
       metadataSnapshot({
         enabled: true,
         id: "community-tool",
         name: "Community Tool",
         origin: "global",
+        rootDir,
         packageVersion: "1.0.0",
         installRecord: {
           source: "clawhub",
           clawhubPackage: "community/tool",
+          installPath: rootDir,
           version: "1.0.0",
         },
       }),

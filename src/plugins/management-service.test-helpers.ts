@@ -23,6 +23,7 @@ export function metadataSnapshot(params: {
   id?: string;
   name?: string;
   origin?: "bundled" | "global";
+  rootDir?: string;
   installRecord?: Record<string, unknown>;
   packageBuild?: { bundledDist?: boolean };
   packageDependencies?: Record<string, string>;
@@ -36,9 +37,10 @@ export function metadataSnapshot(params: {
 }) {
   const id = params.id ?? "workboard";
   const origin = params.origin ?? "bundled";
+  const rootDir = params.rootDir ?? `/tmp/${id}`;
   const installRecord =
     params.installRecord ??
-    (origin === "global" ? { source: "path", installPath: `/tmp/${id}` } : undefined);
+    (origin === "global" ? { source: "path", installPath: rootDir } : undefined);
   const manifest: PluginManifestRecord = {
     id,
     name: params.name ?? "Workboard",
@@ -57,9 +59,9 @@ export function metadataSnapshot(params: {
     skills: [],
     hooks: [],
     origin,
-    rootDir: `/tmp/${id}`,
-    source: `/tmp/${id}/index.ts`,
-    manifestPath: `/tmp/${id}/openclaw.plugin.json`,
+    rootDir,
+    source: `${rootDir}/index.ts`,
+    manifestPath: `${rootDir}/openclaw.plugin.json`,
     ...(params.configSchema ? { configSchema: params.configSchema } : {}),
   };
   return {
@@ -72,7 +74,7 @@ export function metadataSnapshot(params: {
           ...(params.packageVersion ? { packageVersion: params.packageVersion } : {}),
           origin,
           enabled: params.enabled,
-          rootDir: `/tmp/${id}`,
+          rootDir,
           ...(params.packageBuild ? { packageBuild: params.packageBuild } : {}),
         },
       ],
