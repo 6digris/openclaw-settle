@@ -5,7 +5,7 @@ import path from "node:path";
 import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
 import { sanitizeForPlainText } from "openclaw/plugin-sdk/channel-outbound";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type { OpenAsyncKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IMessageRpcClient } from "./client.js";
@@ -83,6 +83,14 @@ function createRejectingClient(error: Error, onRequest?: () => void): IMessageRp
     }),
     stop: vi.fn(async () => {}),
   } as unknown as IMessageRpcClient;
+}
+
+function createTimedOutSendClient() {
+  const requestStarted = createDeferred<void>();
+  return {
+    client: createRejectingClient(new Error("imsg rpc timeout (send)"), requestStarted.resolve),
+    requestStarted: requestStarted.promise,
+  };
 }
 
 function getClientMocks(client: IMessageRpcClient): {
@@ -1465,7 +1473,7 @@ describe("sendMessageIMessage receipts", () => {
     const deleteGate = createDeferred<void>();
     const openSpy = vi
       .spyOn(state, "openKeyedStore")
-      .mockImplementation(<T>(options: OpenKeyedStoreOptions) => {
+      .mockImplementation(<T>(options: OpenAsyncKeyedStoreOptions) => {
         const store = openStore<T>(options);
         if (options.namespace === "imessage.sent-echoes") {
           const register = store.register.bind(store);
@@ -3531,8 +3539,9 @@ describe("sendMessageIMessage receipts", () => {
   });
 
   it("does not use the local default chat.db path for custom cliPath wrappers", async () => {
+    vi.useFakeTimers({ now: 1_000 });
     vi.stubEnv("HOME", "/Users/me");
-    const client = createRejectingClient(new Error("imsg rpc timeout (send)"));
+    const { client, requestStarted } = createTimedOutSendClient();
     const runCliJson = vi.fn();
     const resolveSentMessageGuidImpl = vi.fn(async () => null);
     const approvalText = createApprovalText("approval-remote");
@@ -3556,6 +3565,8 @@ describe("sendMessageIMessage receipts", () => {
         resolveSentMessageGuidImpl,
       }),
     ).rejects.toThrow("imsg rpc timeout (send)");
+    await requestStarted;
+    await vi.advanceTimersByTimeAsync(5_000);
     await rejection;
 
     expect(runCliJson).not.toHaveBeenCalled();
@@ -3574,11 +3585,7 @@ describe("sendMessageIMessage receipts", () => {
     fs.writeFileSync(wrapperPath, '#!/bin/sh\nexec ssh -T gateway-host imsg "$@"\n');
     await resolveIMessageRemoteHost({ cliPath: wrapperPath });
     vi.useFakeTimers({ now: 1_000 });
-    const requestStarted = createDeferred<void>();
-    const client = createRejectingClient(
-      new Error("imsg rpc timeout (send)"),
-      requestStarted.resolve,
-    );
+    const { client, requestStarted } = createTimedOutSendClient();
     const runCliJson = vi.fn();
     const resolveSentMessageGuidImpl = vi.fn(async () => null);
     const approvalText = createApprovalText("approval-ssh-wrapper");
@@ -3593,7 +3600,7 @@ describe("sendMessageIMessage receipts", () => {
           resolveSentMessageGuidImpl,
         }),
       ).rejects.toThrow("imsg rpc timeout (send)");
-      await requestStarted.promise;
+      await requestStarted;
       await vi.advanceTimersByTimeAsync(5_000);
       await rejection;
     } finally {
@@ -3630,11 +3637,7 @@ describe("sendMessageIMessage receipts", () => {
 
   it("throws the rpc timeout without resending when sent-row recovery misses", async () => {
     vi.useFakeTimers({ now: 1_000 });
-    const requestStarted = createDeferred<void>();
-    const client = createRejectingClient(
-      new Error("imsg rpc timeout (send)"),
-      requestStarted.resolve,
-    );
+    const { client, requestStarted } = createTimedOutSendClient();
     const runCliJson = vi.fn();
     const resolveSentMessageGuidImpl = vi.fn(async () => null);
     const rejection = expect(
@@ -3646,7 +3649,7 @@ describe("sendMessageIMessage receipts", () => {
         resolveSentMessageGuidImpl,
       }),
     ).rejects.toThrow("imsg rpc timeout (send)");
-    await requestStarted.promise;
+    await requestStarted;
     await vi.advanceTimersByTimeAsync(5_000);
     await rejection;
 
@@ -3656,11 +3659,7 @@ describe("sendMessageIMessage receipts", () => {
 
   it("does not stop caller-owned rpc clients after sent-row recovery misses", async () => {
     vi.useFakeTimers({ now: 1_000 });
-    const requestStarted = createDeferred<void>();
-    const client = createRejectingClient(
-      new Error("imsg rpc timeout (send)"),
-      requestStarted.resolve,
-    );
+    const { client, requestStarted } = createTimedOutSendClient();
     const runCliJson = vi.fn();
     const resolveSentMessageGuidImpl = vi.fn(async () => null);
     const rejection = expect(
@@ -3672,7 +3671,7 @@ describe("sendMessageIMessage receipts", () => {
         resolveSentMessageGuidImpl,
       }),
     ).rejects.toThrow("imsg rpc timeout (send)");
-    await requestStarted.promise;
+    await requestStarted;
     await vi.advanceTimersByTimeAsync(5_000);
     await rejection;
 
@@ -3699,11 +3698,7 @@ describe("sendMessageIMessage receipts", () => {
 
   it("throws the rpc timeout without resending when approval GUID recovery misses", async () => {
     vi.useFakeTimers({ now: 1_000 });
-    const requestStarted = createDeferred<void>();
-    const client = createRejectingClient(
-      new Error("imsg rpc timeout (send)"),
-      requestStarted.resolve,
-    );
+    const { client, requestStarted } = createTimedOutSendClient();
     const runCliJson = vi.fn();
     const resolveSentMessageGuidImpl = vi.fn(async () => null);
     const approvalText = createApprovalText();
@@ -3717,7 +3712,7 @@ describe("sendMessageIMessage receipts", () => {
         resolveSentMessageGuidImpl,
       }),
     ).rejects.toThrow("imsg rpc timeout (send)");
-    await requestStarted.promise;
+    await requestStarted;
     await vi.advanceTimersByTimeAsync(5_000);
     await rejection;
 

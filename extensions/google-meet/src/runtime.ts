@@ -98,6 +98,10 @@ export class GoogleMeetRuntime {
   readonly #voiceCallGateway: VoiceCallGateway;
   readonly #sessions: GoogleMeetSessionRuntime;
 
+  reconcileTranscriptPolicy(enabled: boolean): Promise<void> {
+    return this.#sessions.reconcileTranscriptPolicy(enabled);
+  }
+
   constructor(
     private readonly params: {
       config: GoogleMeetConfig;
@@ -230,6 +234,7 @@ export class GoogleMeetRuntime {
         await this.#speakViaTransport(session, instructions),
       durableTranscripts: {
         config: params.fullConfig.transcripts,
+        openclawConfig: params.fullConfig,
         providerId: "google-meet",
         providerName: "Google Meet",
       },

@@ -93,11 +93,13 @@ export function renderSelectedHumanMentions(
   text: string,
   mentions: readonly HumanMention[] | undefined,
   onRemove: () => void,
+  avatarUrls?: ReadonlyMap<string, string>,
 ) {
   if (!mentions?.length) {
     return nothing;
   }
-  const people = mentions.map((mention) => {
+  const recipients = new Map(mentions.map((mention) => [mention.profileId, mention]));
+  const people = [...recipients.values()].map((mention) => {
     const label = text.slice(mention.start, mention.end);
     return { profileId: mention.profileId, label, name: label.replace(/^@/u, "") };
   });
@@ -110,7 +112,7 @@ export function renderSelectedHumanMentions(
     <span class="composer-context-strip__people" aria-hidden="true" ${mentionOverflow()}>
       ${people.map(
         (person, index) => html`<span class="composer-context-strip__person" title=${person.label}>
-          ${renderChatAuthorAvatar({ id: person.profileId, name: person.name, identity: { type: "profile", id: person.profileId } })}
+          ${renderChatAuthorAvatar({ id: person.profileId, name: person.name, identity: { type: "profile", id: person.profileId }, profileAvatarUrl: avatarUrls?.get(person.profileId) })}
           <bdi class="composer-context-strip__person-name"
             >${person.name}${index < people.length - 1 ? "," : ""}</bdi
           >

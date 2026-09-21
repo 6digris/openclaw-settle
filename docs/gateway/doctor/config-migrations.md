@@ -66,9 +66,16 @@ Ordinary CLI commands, including Doctor, remain usable while that Gateway runs.
 Applied content counts as ready; only the owning Gateway, or a writable opener
 when no Gateway owns the state directory, publishes the version after the grace.
 
-Deferral does not cover agent-database migrations. Doctor reports
-`update-schema-bump-unfenced` if one is pending, if the required shared-state
-metadata table is missing, or if the content migration fails. Follow the
+Agent-database migrations are not version-deferred. During the published 2026.9.2
+updater's rollback window, Doctor validates private state copies and leaves the
+live databases and config unchanged. After package rollback is no longer possible,
+the fresh update continuation requires a verified backup covering each pending
+agent database and current update ownership before Doctor migrates the live state.
+Managed updates retain the shipped helper's original handoff record unchanged.
+
+Doctor reports `update-schema-bump-unfenced` when this handoff cannot be verified,
+backup coverage is missing, the required shared-state metadata table is absent,
+or a migration fails. Follow the
 [manual update sequence](/install/updating#updating-from-2026.9.2-across-a-schema-bump)
 from the refusal. See [Database schemas](/reference/database-schemas#schema-bumps-and-older-updaters)
 for the publication contract and the remaining risk for an old CLI stalled
@@ -135,6 +142,8 @@ model value into a different embedding model. See [llama.cpp](/plugins/llama-cpp
 
     Doctor also warns when `plugins.allow` is non-empty and tool policy uses wildcard or plugin-owned tool entries. `tools.allow: ["*"]` only matches tools from plugins that actually load; it does not bypass the exclusive plugin allowlist.
 
+    A tool policy scope with nonempty `allow` and `alsoAllow` lists fails validation. `doctor --fix` merges the lists only when the effective profile grants remain unchanged for every agent and provider that inherits the extras. It retains `alsoAllow: []` as an explicit override so inherited extras cannot reappear. If the extras may extend a profile or grant Gateway configuration-read access, Doctor leaves the conflicting scope untouched and reports the exact keys and values to review manually. This applies at the root `tools` policy, per-agent and per-provider policies, and channel or gateway tool policies. Sandbox lists remain untouched because `allow` and `alsoAllow` inherit independently; conflicting sandbox lists still require manual repair. Plugin-owned `plugins.entries.*.config` is left to the owning plugin's doctor contract. Gateway startup uses the same permission-preserving repair; unresolved conflicts still require operator guidance before the config can validate.
+
     `doctor --fix` removes `workspace: null` from `agents.entries.<id>` so normal workspace resolution can apply. It also removes invalid `heartbeat.activeHours` windows from agent entries and `agents.defaults`, preserving other heartbeat settings. Reconfigure a valid window if needed; without an explicit or inherited window, heartbeat hours are unrestricted. These repairs also apply after migrating a legacy `agents.list` roster.
 
   </Accordion>
@@ -144,6 +153,8 @@ model value into a different embedding model. See [llama.cpp](/plugins/llama-cpp
     Older Git updaters can keep an in-memory config snapshot and write it after Doctor exits. When that parent marks the update in progress without advertising support for Doctor config writes, Doctor preserves the config and defers importing retired plugin install records, including with `--fix`. The first fresh Gateway startup then performs the complete migration. Existing canonical plugin install records keep precedence; missing records from the legacy config are imported before that config is rewritten. Startup also handles records restored after the same build previously completed its migration checkpoint.
 
     Gateway startup automatically applies deterministic, prompt-free legacy config migrations when an otherwise invalid single-file config can be fully migrated. It uses the same migration transforms as `openclaw doctor --fix`, validates the complete result including plugin config before writing, and reports the applied changes. The write runs under the startup migration lease and preserves the previous config in the five-slot `openclaw.json.bak` / `.bak.1` through `.bak.4` backup ring.
+
+    Startup checks the authored config revision, included files, and environment-resolved values before migration writes. Runtime path expansion (such as `~/.openclaw/wiki` on Windows) does not count as an input change. A real change reports whether the config path, file contents, included files, or resolved values changed; restart so migrations can validate the new inputs.
 
     Startup does not migrate configs using `$include`, configs in Nix mode, or configs last written by a newer OpenClaw version. It also skips automatic config migration while an update is in progress and plugin validation is deferred; the post-update doctor run owns that repair. If any validation or legacy-key issue remains after migration, startup leaves the config unchanged, refuses to start, and prints the `openclaw doctor --fix` hint. An interactive terminal can still offer to run doctor and retry once for configs that need other repairs; headless services stop with the hint.
 
@@ -177,6 +188,7 @@ model value into a different embedding model. See [llama.cpp](/plugins/llama-cpp
 
     | Legacy key                                                                                    | Current key                                                                 |
     | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+    | `tools.codeMode.languages`, `agents.entries.*.tools.codeMode.languages`                         | removed (Code Mode executes JavaScript; activation and limits are preserved) |
     | `routing.allowFrom`                                                                              | `channels.whatsapp.allowFrom`                                                |
     | `routing.groupChat.requireMention`                                                               | `channels.whatsapp/telegram/imessage.groups."*".requireMention`             |
     | `routing.groupChat.historyLimit`                                                                 | `messages.groupChat.historyLimit`                                            |

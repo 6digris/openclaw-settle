@@ -47,7 +47,6 @@ const publications: Record<string, string | symbol> = {
   "src/agents/subagents/registry/subagent-registry.ts": Symbol.for(
     "openclaw.subagentRegistryTestApi",
   ),
-  "src/agents/subagents/spawn/subagent-spawn.ts": Symbol.for("openclaw.subagentSpawnTestApi"),
   "src/agents/subagents/swarm/swarm-scheduler.ts": Symbol.for("openclaw.swarmSchedulerTestApi"),
   "src/agents/tool-search.ts": Symbol.for("openclaw.toolSearchTestApi"),
   "src/agents/tools/agent-step.ts": Symbol.for("openclaw.agentStepTestApi"),
@@ -93,8 +92,6 @@ const publications: Record<string, string | symbol> = {
   "src/media/playback-transcode.ts": Symbol.for("openclaw.playbackTranscodeTestApi"),
   "src/model-catalog/remote-overlay.ts": Symbol.for("openclaw.remoteModelCatalogOverlayTestApi"),
   "src/node-host/plugin-node-host.ts": Symbol.for("openclaw.nodeHostPluginTestApi"),
-  "src/plugin-state/plugin-state-store.sqlite.ts": Symbol.for("openclaw.pluginStateSqliteTestApi"),
-  "src/plugin-state/plugin-state-store.ts": Symbol.for("openclaw.pluginStateStoreTestApi"),
   "src/plugins/memory-runtime.ts": Symbol.for("openclaw.memoryRuntimeTestApi"),
   "src/sessions/session-lifecycle-admission.ts": Symbol.for(
     "openclaw.sessionLifecycleAdmissionTestApi",

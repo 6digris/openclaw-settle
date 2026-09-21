@@ -1,11 +1,10 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
-import { isTaskFlowCancellationPending } from "./task-cancellation-state.js";
-import { isTerminalTaskFlow } from "./task-flow-registry.types.js";
 import {
   getTaskFlowById,
   updateFlowRecordByIdExpectedRevision,
 } from "./task-flow-runtime-internal.js";
+import { buildManagedFlowCancellationPatch } from "./task-initial-flow.rules.js";
 import { clearTaskActivity, flushTaskActivity } from "./task-registry-activity.js";
 import { ensureLinkedTaskFlowRegistryReady } from "./task-registry-flow-link.js";
 import { listTasksForFlowId } from "./task-registry-query.js";
@@ -31,7 +30,7 @@ import {
   deleteParentFlowIdIndex,
   addRelatedSessionKeyIndex,
   deleteRelatedSessionKeyIndex,
-  rebuildRunIdIndex,
+  updateRunIdIndex,
   recordTaskRegistryProjectionWrite,
 } from "./task-registry.process-state.js";
 import { tryPersistTaskDeliveryStateUpsert, tryPersistTaskUpsert } from "./task-registry.store.js";
@@ -47,50 +46,42 @@ function syncManagedFlowCancellationFromTask(task: TaskRecord): void {
     return;
   }
   let flow = getTaskFlowById(flowId);
-  if (
-    !flow ||
-    flow.syncMode !== "managed" ||
-    flow.cancelRequestedAt == null ||
-    isTerminalTaskFlow(flow)
-  ) {
-    return;
-  }
-  if (listTasksForFlowId(flowId).some(isTaskFlowCancellationPending)) {
-    return;
-  }
-  const endedAt = task.endedAt ?? task.lastEventAt ?? Date.now();
+  const now = Date.now();
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    const patch = buildManagedFlowCancellationPatch(
+      task,
+      flow,
+      () => listTasksForFlowId(flowId),
+      now,
+    );
+    if (!flow || !patch) {
+      return;
+    }
     const result = updateFlowRecordByIdExpectedRevision({
       flowId,
       expectedRevision: flow.revision,
-      patch: {
-        status: "cancelled",
-        blockedTaskId: null,
-        blockedSummary: null,
-        waitJson: null,
-        endedAt,
-        updatedAt: endedAt,
-      },
+      patch,
     });
     if (result.applied || result.reason === "not_found") {
       return;
     }
     flow = result.current;
-    if (
-      !flow ||
-      flow.syncMode !== "managed" ||
-      flow.cancelRequestedAt == null ||
-      isTerminalTaskFlow(flow)
-    ) {
-      return;
-    }
-    if (listTasksForFlowId(flowId).some(isTaskFlowCancellationPending)) {
-      return;
-    }
   }
 }
 
 export function updateTask(taskId: string, patch: Partial<TaskRecord>): TaskRecord | null {
+  return updateTaskWithPublication(taskId, patch)?.task ?? null;
+}
+
+type TaskRecordPublication = {
+  task: TaskRecord;
+  isCurrent: () => boolean;
+};
+
+export function updateTaskWithPublication(
+  taskId: string,
+  patch: Partial<TaskRecord>,
+): TaskRecordPublication | null {
   return withTaskRegistryMutation(
     () => {
       const current = tasks.get(taskId);
@@ -121,8 +112,10 @@ export function publishTaskRecordUpdate(
   current: TaskRecord,
   next: TaskRecord,
   persisted: boolean,
-): TaskRecord {
+): TaskRecordPublication {
   const taskId = next.taskId;
+  // Flow synchronization and observers can replace this row before the call returns.
+  const published = persisted ? next : current;
   const becomesTerminal =
     !isTerminalTaskStatus(current.status) && isTerminalTaskStatus(next.status);
   const sessionIndexChanged =
@@ -133,15 +126,14 @@ export function publishTaskRecordUpdate(
       normalizeOptionalString(next.childSessionKey);
   const parentFlowIndexChanged = current.parentFlowId?.trim() !== next.parentFlowId?.trim();
   if (persisted) {
+    const indexedCurrent = tasks.get(taskId);
     tasks.set(taskId, next);
     recordTaskRegistryProjectionWrite("task", taskId);
     bumpTaskRegistryRevision();
     if (becomesTerminal) {
       clearTaskActivity(taskId);
     }
-    if (next.runId && next.runId !== current.runId) {
-      rebuildRunIdIndex();
-    }
+    updateRunIdIndex(indexedCurrent, next);
     if (sessionIndexChanged) {
       deleteOwnerKeyIndex(taskId, current);
       addOwnerKeyIndex(taskId, next);
@@ -169,7 +161,7 @@ export function publishTaskRecordUpdate(
     task: cloneTaskRecordForObserver(next),
     previous: cloneTaskRecordForObserver(current),
   }));
-  return cloneTaskRecord(next);
+  return { task: cloneTaskRecord(next), isCurrent: () => tasks.get(taskId) === published };
 }
 
 export function upsertTaskDeliveryState(state: TaskDeliveryState): TaskDeliveryState {

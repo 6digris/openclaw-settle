@@ -380,6 +380,7 @@ export async function prepareGatewayLifecycle(params: {
     params.pluginMetadata.beginClose();
     const notice = resolveGatewayShutdownNotice(options);
     lifecycle.closePreludeStarted = true;
+    void runtimeState.maintenance?.stopPeriodicTasks();
     // Publish the exact cancellation before withdrawing capabilities or running
     // disposal callbacks; startup can otherwise fail before restart marking.
     runtime.connectionWork.beginClose(
@@ -417,6 +418,7 @@ export async function prepareGatewayLifecycle(params: {
       stopMediaCleanupForClose(),
       runtimeState.stopGatewayUpdateCheck(),
       stopConfigReloaderForClose().catch(() => {}),
+      runtimeState.maintenance?.stopPeriodicTasks().catch(() => {}),
       runtimeState.controlUiSessionPullRequests?.stop(),
       healthWork.drain(),
     ]);
@@ -463,6 +465,7 @@ export async function prepareGatewayLifecycle(params: {
         getRuntimeSnapshot,
         getEventLoopHealth: readinessEventLoopHealth.snapshot,
         getConfigReloaderHotReloadStatus: kernel.getConfigReloaderHotReloadStatus,
+        getSessionRowProjection: runtime.getSessionRowProjection,
       }),
     );
   };
@@ -585,8 +588,7 @@ export async function prepareGatewayLifecycle(params: {
         );
       }
       await requestEntryLifetime.sealAndJoin();
-      const { waitForPluginCacheRetirement } = await import("../plugins/plugin-cache.js");
-      await waitForPluginCacheRetirement();
+      await shutdownRuntime.waitForPluginCacheRetirement();
     };
   };
   const closeStepOwner = {

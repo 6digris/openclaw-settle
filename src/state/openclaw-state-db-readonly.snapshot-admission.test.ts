@@ -55,12 +55,11 @@ vi.mock("../infra/sqlite-readonly-location-cleanup.js", async (importOriginal) =
 }));
 
 vi.mock("./openclaw-state-db-read-connection.js", () => ({
-  openOpenClawStateReadConnection: mocks.forbiddenNative,
+  openOpenClawStateReadOnlyLocation: mocks.forbiddenNative,
   withOpenClawStateReadOnlyLocation: mocks.forbiddenNative,
 }));
 vi.mock("../infra/state-database-coordinator.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/state-database-coordinator.js")>()),
-  prepareStateDatabaseCanonicalMutation: () => undefined,
   hasStateDatabaseSourceExclusion: () => false,
 }));
 vi.mock("./openclaw-state-read-worker.js", () => ({
@@ -68,7 +67,6 @@ vi.mock("./openclaw-state-read-worker.js", () => ({
     read: mocks.read,
     validateFresh: async () => {},
     close: async () => {},
-    readFailure: async () => undefined,
   }),
 }));
 

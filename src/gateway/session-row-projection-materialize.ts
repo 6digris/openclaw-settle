@@ -1,12 +1,21 @@
 import { resolveUtilityModelRefForAgent } from "../agents/utility-model.js";
+import { projectGatewaySessionEntry } from "../config/sessions/combined-store-gateway.js";
 import { readCommittedSessionEntryCache } from "../config/sessions/session-accessor.sqlite-entry-cache.js";
 import { readExactSessionEntryRow } from "../config/sessions/session-accessor.sqlite-entry-read.js";
+import { resolveSessionKeyBySessionId } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { listSessionMembers } from "../config/sessions/session-sharing-store.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
+import { listOpenIncognitoAgentDatabases } from "../state/openclaw-agent-db.js";
+import {
+  isIncognitoOpenClawAgentSqlitePath,
+  resolveIncognitoOpenClawAgentSqlitePath,
+} from "../state/openclaw-agent-db.paths.js";
 import { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
-import type * as records from "./session-row-projection-record.js";
+import { readSessionListSelectionFacts } from "./session-list-target.js";
+import * as records from "./session-row-projection-record.js";
+import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
 import { deriveSessionTitle, type SessionChildLink } from "./session-utils-core.js";
 import { materializeSessionRow, readSessionRowInputs } from "./session-utils-row.js";
@@ -125,4 +134,78 @@ export function readSessionRowEntry(row: records.Row) {
     { agentId: row.storeTarget.agentId, path: row.storeTarget.storePath },
   );
   return result.found ? result.value : undefined;
+}
+
+/** Exact incognito acquisition never admits an ephemeral store to the resident roster. */
+function readIncognitoSessionRow(params: {
+  cfg: records.Inputs["cfg"];
+  key: string;
+  agentId: string;
+}) {
+  const { cfg, key, agentId } = params;
+  const ephemeralPath = resolveIncognitoOpenClawAgentSqlitePath({ agentId });
+  if (!listOpenIncognitoAgentDatabases().some((store) => store.storePath === ephemeralPath)) {
+    return undefined;
+  }
+  const row = records.create({ key, agentId, storeTarget: { agentId, storePath: ephemeralPath } });
+  const storedEntry = readSessionRowEntry(row);
+  if (!storedEntry) {
+    return undefined;
+  }
+  const entry = projectGatewaySessionEntry(cfg, storedEntry);
+  return Object.assign(row, {
+    storedEntry,
+    entry,
+    selection: readSessionListSelectionFacts(key, entry),
+  });
+}
+
+/** Resident identities use indexes; private identities remain exact process-local reads. */
+export function findSessionRowById(
+  query: { sessionId: string; agentId?: string; storePath?: string },
+  owner: {
+    disposed: boolean;
+    lookup: (query: records.Lookup) => records.Row | undefined;
+    matching: (query: records.Query, kind?: string) => records.Row[];
+  },
+) {
+  if (
+    !query.agentId ||
+    !query.storePath ||
+    !isIncognitoOpenClawAgentSqlitePath(query.storePath, { agentId: query.agentId })
+  ) {
+    return owner.matching({ ...query, key: query.sessionId }, "id");
+  }
+  const key = !owner.disposed && resolveSessionKeyBySessionId(query);
+  const row = key ? owner.lookup({ ...query, agentId: query.agentId, key }) : undefined;
+  return row?.entry?.sessionId === query.sessionId ? [row] : [];
+}
+
+export function lookupSessionRow(
+  query: records.Lookup,
+  owner: {
+    disposed: boolean;
+    cfg: records.Inputs["cfg"];
+    matching: (query: records.Query) => records.Row[];
+    storePaths: Iterable<string>;
+  },
+) {
+  if (owner.disposed) {
+    return undefined;
+  }
+  const { agentId } = query;
+  const exact = owner.matching(query).filter((row) => row.agentId === agentId);
+  if (exact.length) {
+    return records.first(exact, owner.storePaths);
+  }
+  const key = resolveStoredSessionKeyForAgentStore({
+    cfg: owner.cfg,
+    sessionKey: query.key,
+    agentId,
+  });
+  if (isIncognitoSessionKey(key)) {
+    return readIncognitoSessionRow({ cfg: owner.cfg, key, agentId });
+  }
+  const candidates = owner.matching({ ...query, key }).filter((row) => row.agentId === agentId);
+  return records.first(candidates, owner.storePaths);
 }

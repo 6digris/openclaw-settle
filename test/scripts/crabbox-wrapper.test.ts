@@ -25,6 +25,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { getSystemErrorMap } from "node:util";
 import { build, type BuildOptions } from "esbuild";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -34,6 +35,7 @@ import {
 } from "../../scripts/crabbox-wrapper-providers.mts";
 import { pnpmLockfileDocuments } from "../../scripts/lib/pnpm-lockfile-documents.mjs";
 import { resolvePnpmRunner } from "../../scripts/pnpm-runner.mts";
+import { spawnTerminalPty } from "../../src/process/terminal-pty.js";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { isProcessAlive } from "../helpers/process-wait.js";
 import { makeTempDir, useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -243,6 +245,15 @@ async function main() {
     return;
   }
   const bundlePath = ".openclaw-crabbox-changed-gate.bundle";
+  if (process.env.OPENCLAW_FAKE_CRABBOX_NATIVE_SYNC_CAPTURE) {
+    const git = (args) => execFileSync("git", args, { encoding: "utf8" }).trim();
+    const changed = git(["diff", "--name-only", "--no-renames", "main"]).split("\n").filter(Boolean);
+    fs.writeFileSync(process.env.OPENCLAW_FAKE_CRABBOX_NATIVE_SYNC_CAPTURE, JSON.stringify({
+      base: git(["rev-parse", "main"]), source: git(["rev-parse", "HEAD"]),
+      head: fs.readFileSync(".git/HEAD", "utf8").trim(),
+      changed,
+    }));
+  }
   if (process.env.OPENCLAW_FAKE_CRABBOX_COPY_CHANGED_GATE_BUNDLE_TO) fs.copyFileSync(bundlePath, process.env.OPENCLAW_FAKE_CRABBOX_COPY_CHANGED_GATE_BUNDLE_TO);
   process.stdout.write(JSON.stringify({ args, cwd: process.cwd(), scriptContent }) + "\n");
 }
@@ -398,6 +409,9 @@ function makeFakeGit(
   const gitPath = path.join(binDir, "git");
   const script = String.raw`
 const fs = require("node:fs"); const path = require("node:path"); const args = process.argv.slice(2);
+if (args[0] === "rev-parse" && args[1] === "--show-toplevel") {
+  process.stdout.write(fs.realpathSync(process.cwd()) + "\n"); process.exit(0);
+}
 if (args[0] === "worktree" && args[1] === "add") {
   fs.mkdirSync(args[3], { recursive: true });
   process.exit(0);
@@ -553,7 +567,7 @@ type ParsedWrapperRun = {
 };
 
 function expectSuccessfulWrapperRun(result: ReturnType<typeof runWrapper>): ParsedWrapperRun {
-  expect(result.status).toBe(0);
+  expect(result.status, result.stderr).toBe(0);
   const output = parseFakeCrabboxOutput(result);
   const remoteCommand = normalizeShellLineEndings(output.args.at(-1) ?? "");
   return { output, remoteCommand, result };
@@ -607,9 +621,13 @@ function normalizeShellLineEndings(value: string): string {
   return value.replace(/\r\n/g, "\n");
 }
 
-async function waitForCondition(predicate: () => boolean, timeoutMs = 8_000): Promise<void> {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
+async function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs = 8_000,
+  now = Date.now,
+): Promise<void> {
+  const started = now();
+  while (now() - started < timeoutMs) {
     if (predicate()) {
       return;
     }
@@ -635,12 +653,14 @@ async function waitForProcessClose(
 
 type WrapperCleanupProof =
   | { kind: "signal"; entrypoint: "node" | "pnpm"; repeated: boolean; cooperative?: boolean }
+  | { kind: "readiness" }
   | { kind: "preparation"; cleanupFails?: boolean }
   | { kind: "stdin"; target: "macos" | "capsule" }
   | { kind: "escaped" }
   | { kind: "removal"; target: "script" | "source"; exitCode: 0 | 23 };
 
 type WrapperFixtureIdentity = { pid: number; parentPid: number; cwd: string };
+type WrapperReadinessPhase = { phase: string; at: number; pid?: number };
 
 async function runWrapperCleanupProof(proof: WrapperCleanupProof): Promise<void> {
   const entrypoint = proof.kind === "signal" ? proof.entrypoint : "node";
@@ -649,7 +669,8 @@ async function runWrapperCleanupProof(proof: WrapperCleanupProof): Promise<void>
   const preparationCleanupFailure = proof.kind === "preparation" && proof.cleanupFails;
   const readsStdin = proof.kind === "stdin" || scriptRemoval;
   const blacksmith = !readsStdin;
-  const hasDescendant = proof.kind === "signal" || proof.kind === "escaped";
+  const hasDescendant =
+    proof.kind === "signal" || proof.kind === "escaped" || proof.kind === "readiness";
   await withShimFixture(
     "scripts/crabbox-wrapper.mjs",
     async ({ checkoutRoot: producer, fixtureRoot, implementationPath, wrapperPath }) => {
@@ -667,22 +688,44 @@ async function runWrapperCleanupProof(proof: WrapperCleanupProof): Promise<void>
       const runSpawnedPath = path.join(fixtureRoot, "run.spawned");
       const removalFailurePath = path.join(fixtureRoot, "removal.json");
       const releasePath = path.join(fixtureRoot, "escaped.release");
-      const wrapperPidPath = path.join(fixtureRoot, "wrapper.pid");
       const wrapperExitPath = path.join(fixtureRoot, "wrapper-exit.json");
+      const terminalCommandPidPath = path.join(fixtureRoot, "terminal-command.pid");
+      const phasesPath = path.join(fixtureRoot, "readiness-phases.json");
       const ownerPreload = path.join(fixtureRoot, "owner.cjs");
       writeFileSync(
         ownerPreload,
         `
 const fs = require("node:fs");
 const path = require("node:path");
-if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath)}) {
-  fs.writeFileSync(${JSON.stringify(wrapperPidPath)}, String(process.pid));
+const entry = path.resolve(process.argv[1] || ".");
+const phasesPath = ${JSON.stringify(phasesPath)};
+const phases = fs.existsSync(phasesPath) ? JSON.parse(fs.readFileSync(phasesPath, "utf8")) : [];
+const phase = (name) => {
+  phases.push({ phase: name, at: Date.now(), pid: process.pid });
+  const temporary = phasesPath + "." + process.pid;
+  fs.writeFileSync(temporary, JSON.stringify(phases));
+  fs.renameSync(temporary, phasesPath);
+};
+if (entry === ${JSON.stringify(wrapperPath)}) phase("entrypoint started");
+if (entry === ${JSON.stringify(implementationPath)}) {
+  phase("loading wrapper");
+  // Stall at phase publication; teardown must already own this PID.
+  if (${proof.kind === "readiness"}) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   process.once("exit", (code) => fs.writeFileSync(${JSON.stringify(wrapperExitPath)}, JSON.stringify({ code })));
   const childProcess = require("node:child_process");
   const spawn = childProcess.spawn;
   childProcess.spawn = (command, args, options) => {
-    if (args?.[0] === "run" && args[1] !== "--help") fs.writeFileSync(${JSON.stringify(runSpawnedPath)}, "spawned");
+    if (args?.[0] === "--version") phase("wrapper loaded; probing Crabbox version");
+    if (args?.[0] === "run" && args[1] !== "--help") {
+      phase("starting Crabbox run");
+      fs.writeFileSync(${JSON.stringify(runSpawnedPath)}, "spawned");
+    }
     return spawn(command, args, options);
+  };
+  const spawnSync = childProcess.spawnSync;
+  childProcess.spawnSync = (command, args, options) => {
+    if (args?.[0] === "sync-plan") phase("preparing source capsule");
+    return spawnSync(command, args, options);
   };
   if (${proof.kind === "stdin"}) {
     const readFile = fs.readFileSync;
@@ -706,7 +749,7 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
         ? fs.existsSync(${JSON.stringify(preparationPath)}) && target === path.dirname(JSON.parse(fs.readFileSync(${JSON.stringify(preparationPath)}, "utf8")).cwd)
         : ${scriptRemoval}
           ? path.dirname(target) === ${JSON.stringify(scriptTmpRoot)} && path.basename(target).startsWith("openclaw-crabbox-source-script-")
-          : path.dirname(target) === ${JSON.stringify(syncRoot)} && path.basename(target).startsWith("openclaw-crabbox-sync-");
+          : (path.basename(target) === "payload" && path.dirname(path.dirname(target)) === ${JSON.stringify(syncRoot)} && path.basename(path.dirname(target)).startsWith("openclaw-crabbox-sync-")) || (path.dirname(target) === ${JSON.stringify(syncRoot)} && path.basename(target).startsWith("openclaw-crabbox-sync-"));
       if (selected) {
         fs.writeFileSync(${JSON.stringify(removalFailurePath)}, JSON.stringify({ path: target }));
         throw Object.assign(new Error("fixture removal denied"), { code: "EACCES", path: target });
@@ -720,6 +763,7 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
       );
       const capturePath = ".crabbox/captures/signal.txt";
       const captureBytes = Buffer.from("cancellation diagnostic\n");
+      const nodeExecPath = resolveTestNodeExecPath();
       const env = {
         ...process.env,
         ...testHomeEnv(home),
@@ -736,7 +780,11 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
             "corepack",
           ),
         NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --require ${JSON.stringify(ownerPreload)}`,
-        PATH: [makeFakeCrabbox(defaultProviderHelp), process.env.PATH ?? ""].join(path.delimiter),
+        PATH: [
+          makeFakeCrabbox(defaultProviderHelp),
+          path.dirname(nodeExecPath),
+          process.env.PATH ?? "",
+        ].join(path.delimiter),
         GIT_CONFIG_GLOBAL: "/dev/null",
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_AUTHOR_NAME: "Signal fixture",
@@ -804,32 +852,116 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
       let output = "";
       let stop: (() => void) | undefined;
       let forceStop: (() => void) | undefined;
+      let entrypointClosed: Promise<unknown> | undefined;
+      let finishTerminal: (() => Promise<void>) | undefined;
       let entrypointPid = 0;
       let identity: WrapperFixtureIdentity | undefined;
       let preparationIdentity: WrapperFixtureIdentity | undefined;
       let descendantPid = 0;
       let failure: Error | undefined;
+      let readinessFailure: Error | undefined;
+      const readinessTimeoutMs = 8_000;
+      const waitForReadiness = async (file: string) => {
+        try {
+          let deliberatelyStalled = false;
+          await waitForCondition(
+            () => {
+              if (proof.kind === "readiness") {
+                const phases: WrapperReadinessPhase[] = JSON.parse(
+                  readFileSync(phasesPath, "utf8"),
+                );
+                deliberatelyStalled = phases.some(({ phase }) => phase === "loading wrapper");
+              }
+              return existsSync(file);
+            },
+            readinessTimeoutMs,
+            // Startup stays real; expire only after the fixture publishes its deliberate hang.
+            () => Date.now() + (deliberatelyStalled ? readinessTimeoutMs : 0),
+          );
+        } catch (cause) {
+          const phases: WrapperReadinessPhase[] = JSON.parse(readFileSync(phasesPath, "utf8"));
+          const startedAt = phases[0]!.at;
+          readinessFailure = new Error(
+            `wrapper readiness not observed within ${readinessTimeoutMs / 1000} s; last observed phase ${phases.at(-1)!.phase}\n${phases.map(({ phase, at }) => `+${at - startedAt} ms: ${phase}`).join("\n")}\n${output}`,
+            { cause },
+          );
+          throw readinessFailure;
+        }
+      };
+      writeFileSync(
+        phasesPath,
+        JSON.stringify([{ phase: "entrypoint spawn requested", at: Date.now() }]),
+      );
       try {
         let exited: Promise<{ status: number | null; signal: NodeJS.Signals | null }>;
         if (entrypoint === "pnpm") {
-          const { spawn: spawnPty } = await import("@lydell/node-pty");
           const command = resolvePnpmRunner({
             cwd: producer,
             env,
             pnpmArgs: ["crabbox:run", "--", ...args],
           });
-          const terminal = spawnPty(command.command, command.args, { cwd: producer, env });
+          const terminalOwnerPath = path.join(fixtureRoot, "terminal.cjs");
+          writeFileSync(
+            terminalOwnerPath,
+            `
+const fs = require("node:fs");
+const { spawn } = require("node:child_process");
+const { constants } = require("node:os");
+process.on("SIGINT", () => {});
+setInterval(() => {}, 1000);
+const child = spawn(${JSON.stringify(command.command)}, ${JSON.stringify(command.args)}, { stdio: "inherit" });
+if (child.pid) {
+  fs.writeFileSync(${JSON.stringify(terminalCommandPidPath + ".tmp")}, String(child.pid));
+  fs.renameSync(${JSON.stringify(terminalCommandPidPath + ".tmp")}, ${JSON.stringify(terminalCommandPidPath)});
+}
+child.once("error", (error) => { console.error(error); process.exit(1); });
+child.once("exit", (code, signal) => {
+  const status = signal ? 128 + constants.signals[signal] : code;
+  process.stdout.write("\\nopenclaw-pnpm-exit:" + status + "\\n");
+});
+`,
+          );
+          // A terminal session outlives its foreground command; PNPM exit must not hang up cleanup.
+          const terminal = await spawnTerminalPty({
+            file: nodeExecPath,
+            args: [terminalOwnerPath],
+            cwd: producer,
+            env: Object.fromEntries(
+              Object.entries(env).filter(
+                (entry): entry is [string, string] => entry[1] !== undefined,
+              ),
+            ),
+            cols: 80,
+            rows: 24,
+          });
           entrypointPid = terminal.pid;
+          let reportExit!: (result: {
+            status: number | null;
+            signal: NodeJS.Signals | null;
+          }) => void;
+          exited = new Promise((resolve) => {
+            reportExit = resolve;
+          });
           terminal.onData((data) => {
             output += data;
+            const receipt = /\r?\nopenclaw-pnpm-exit:(\d+)\r?\n/u.exec(output);
+            if (receipt) {
+              output = output.replace(receipt[0], "");
+              reportExit({ status: Number(receipt[1]), signal: null });
+            }
           });
-          exited = new Promise((resolve) => {
-            terminal.onExit(({ exitCode, signal }) =>
-              resolve({ status: signal ? 128 + signal : exitCode, signal: null }),
-            );
+          entrypointClosed = new Promise<void>((resolve) => {
+            terminal.onExit(({ exitCode, signal }) => {
+              reportExit({ status: signal ? 128 + signal : exitCode, signal: null });
+              resolve();
+            });
           });
           stop = () => terminal.write("\x03");
           forceStop = () => terminal.kill("SIGKILL");
+          finishTerminal = async () => {
+            forceStop!();
+            await entrypointClosed;
+          };
         } else {
           const runner = spawn(process.execPath, [wrapperPath, "run", ...args], {
             cwd: producer,
@@ -844,6 +976,7 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
             output += data;
           });
           exited = waitForProcessClose(runner, 20_000);
+          entrypointClosed = exited;
           stop = () => {
             runner.kill(proof.kind === "stdin" ? "SIGINT" : "SIGTERM");
           };
@@ -855,20 +988,18 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
           }
         }
         if (proof.kind === "preparation") {
-          await waitForCondition(() => existsSync(preparationPath));
+          await waitForReadiness(preparationPath);
           preparationIdentity = JSON.parse(readFileSync(preparationPath, "utf8"));
           expect(existsSync(path.join(preparationIdentity!.cwd, "fixture.txt"))).toBe(true);
           stop();
         } else if (proof.kind === "stdin") {
-          await waitForCondition(() => existsSync(stdinReadyPath));
+          await waitForReadiness(stdinReadyPath);
           if (proof.target === "capsule") {
             expect(readdirSync(syncRoot)).toHaveLength(1);
           }
           stop();
         } else if (hasDescendant) {
-          await waitForCondition(() => existsSync(descendantPidPath)).catch((cause: unknown) => {
-            throw new Error(`wrapper did not publish descendant readiness:\n${output}`, { cause });
-          });
+          await waitForReadiness(descendantPidPath);
           descendantPid = Number.parseInt(readFileSync(descendantPidPath, "utf8"), 10);
           identity = JSON.parse(readFileSync(identityPath, "utf8"));
           expect(isProcessAlive(descendantPid)).toBe(true);
@@ -883,6 +1014,11 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
           }
         }
         const result = await exited;
+        if (cooperative) {
+          expect(isProcessAlive(entrypointPid), "terminal session still owns cleanup output").toBe(
+            true,
+          );
+        }
         const expectedStatus =
           proof.kind === "escaped"
             ? 1
@@ -892,7 +1028,8 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
                 ? 130
                 : 143;
         expect(result, output).toEqual({ status: expectedStatus, signal: null });
-        const wrapperPid = Number.parseInt(readFileSync(wrapperPidPath, "utf8"), 10);
+        const phases: WrapperReadinessPhase[] = JSON.parse(readFileSync(phasesPath, "utf8"));
+        const wrapperPid = phases.find(({ phase }) => phase === "loading wrapper")!.pid!;
         // A pnpm interruption status is not the implementation's cleanup receipt.
         await waitForCondition(() => !isProcessAlive(wrapperPid), 12_000);
         expect(JSON.parse(readFileSync(wrapperExitPath, "utf8")), output).toEqual({
@@ -907,9 +1044,10 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
           expect(existsSync(identityPath)).toBe(false);
           expect(existsSync(claimPath)).toBe(false);
           if (preparationCleanupFailure) {
-            const allocation = path.dirname(preparationIdentity!.cwd);
+            const payload = path.dirname(preparationIdentity!.cwd);
+            const allocation = path.dirname(payload);
             expect(JSON.parse(readFileSync(removalFailurePath, "utf8"))).toEqual({
-              path: allocation,
+              path: payload,
             });
             expect(readdirSync(syncRoot)).toEqual([path.basename(allocation)]);
             expect(readFileSync(path.join(preparationIdentity!.cwd, "fixture.txt"), "utf8")).toBe(
@@ -968,7 +1106,7 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
             expect(output).toContain("fixture removal denied");
             if (proof.target === "source") {
               expect(output).toContain(`temporary checkout cleanup failed at ${identity!.cwd}`);
-              expect(readdirSync(syncRoot)).toEqual([path.basename(failedPath)]);
+              expect(readdirSync(syncRoot)).toEqual([path.basename(path.dirname(failedPath))]);
               expect(readFileSync(path.join(identity!.cwd, "fixture.txt"), "utf8")).toBe(
                 "original source\n",
               );
@@ -985,6 +1123,9 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
         }
         expect(readFileSync(path.join(producer, "fixture.txt"), "utf8")).toBe("original source\n");
         expect(git("ls-files", "--stage", "-z")).toBe(sourceIndex);
+        if (finishTerminal) {
+          await finishTerminal();
+        }
       } catch (error) {
         failure =
           error instanceof Error ? error : new Error("signal proof failed", { cause: error });
@@ -1006,9 +1147,8 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
             }
           }
         }
-        const wrapperPid = existsSync(wrapperPidPath)
-          ? Number.parseInt(readFileSync(wrapperPidPath, "utf8"), 10)
-          : 0;
+        const phases: WrapperReadinessPhase[] = JSON.parse(readFileSync(phasesPath, "utf8"));
+        const wrapperPid = phases.find(({ phase }) => phase === "loading wrapper")?.pid ?? 0;
         identity ??= existsSync(identityPath)
           ? JSON.parse(readFileSync(identityPath, "utf8"))
           : undefined;
@@ -1018,9 +1158,14 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
         descendantPid ||= existsSync(descendantPidPath)
           ? Number.parseInt(readFileSync(descendantPidPath, "utf8"), 10)
           : 0;
+        const terminalCommandPid = existsSync(terminalCommandPidPath)
+          ? Number.parseInt(readFileSync(terminalCommandPidPath, "utf8"), 10)
+          : 0;
         const ownedPids = new Set([
+          // The atomic phase record owns its PID even before later readiness receipts.
+          ...phases.map(({ pid }) => pid),
           entrypointPid,
-          wrapperPid,
+          terminalCommandPid,
           identity?.pid,
           preparationIdentity?.pid,
           descendantPid,
@@ -1046,12 +1191,15 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
             }
           }
         }
+        await entrypointClosed;
         await waitForCondition(() => [...ownedPids].every((pid) => !pid || !isProcessAlive(pid)));
         const runReceiptRequired =
           hasDescendant || proof.kind === "removal" || existsSync(runSpawnedPath);
         if (
           failure !== undefined &&
+          readinessFailure === undefined &&
           (!wrapperPid ||
+            (entrypoint === "pnpm" && !terminalCommandPid) ||
             (runReceiptRequired && !identity) ||
             (hasDescendant && !descendantPid) ||
             (proof.kind === "preparation" && !preparationIdentity) ||
@@ -1063,13 +1211,19 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
         throw Object.assign(
           new AggregateError(
             failure === undefined ? [cause] : [failure, cause],
-            "fixture writers did not settle",
+            readinessFailure
+              ? `${readinessFailure.message}\nfixture teardown could not be verified`
+              : "fixture writers did not settle",
             { cause: failure ?? cause },
           ),
           { processTreeState: "indeterminate" },
         );
       }
       if (failure !== undefined) {
+        // A startup timeout cannot certify writers whose ownership receipts never arrived.
+        if (readinessFailure) {
+          Object.assign(failure, { processTreeState: "indeterminate" });
+        }
         throw failure;
       }
     },
@@ -1186,17 +1340,12 @@ function withSparseSyncRoot(
   env: Record<string, string>,
   check: (fixture: { result: ReturnType<typeof runWrapper>; syncRoot: string }) => void,
 ): void {
-  const syncRoot = path.join(repoRoot, name);
-  rmSync(syncRoot, { recursive: true, force: true });
-  try {
-    const result = runDefaultWrapper(["run", "--provider", "aws", "--", "echo ok"], {
-      ...cleanSparseSyncOptions,
-      env: { ...env, OPENCLAW_CRABBOX_SYNC_TMPDIR: syncRoot },
-    });
-    check({ result, syncRoot });
-  } finally {
-    rmSync(syncRoot, { recursive: true, force: true });
-  }
+  const syncRoot = path.join(artifactTempDirs.make("openclaw-crabbox-sparse-sync-"), name);
+  const result = runDefaultWrapper(["run", "--provider", "aws", "--", "echo ok"], {
+    ...cleanSparseSyncOptions,
+    env: { ...env, OPENCLAW_CRABBOX_SYNC_TMPDIR: syncRoot },
+  });
+  check({ result, syncRoot });
 }
 
 function runSparseShell(shellScript: string) {
@@ -1280,7 +1429,7 @@ describe("scripts/crabbox-wrapper", () => {
         const directory = fs.mkdtempSync(path.join(syncRoot,"openclaw-crabbox-sync-"));
         const bundlePath = ".openclaw-crabbox-changed-gate.bundle";
         fs.writeFileSync(path.join(directory,bundlePath), "fixture capsule");
-        return {directory,bundlePath,sourceSha:"d".repeat(40),baseSha:base === "origin/main" ? process.env.OPENCLAW_FAKE_GIT_BASE_SHA || "abc123" : base,tree:"e".repeat(40),carrier:"f".repeat(40),digest:"a".repeat(64),cleanup(){fs.rmSync(directory,{recursive:true,force:true});}};
+        return {directory,bundlePath,staging:{admitted(){},settled(){},preserved(){},hold(){}},sourceSha:"d".repeat(40),baseSha:base === "origin/main" ? process.env.OPENCLAW_FAKE_GIT_BASE_SHA || "abc123" : base,tree:"e".repeat(40),carrier:"f".repeat(40),digest:"a".repeat(64),cleanup(){fs.rmSync(directory,{recursive:true,force:true});}};
       }
     `,
     );
@@ -4112,11 +4261,10 @@ process.on("uncaughtExceptionMonitor", (error) => {
       writeFileSync(path.join(deletionReferent, "canary.txt"), "private referent\n");
       const fakeBin = makeFakeCrabbox(defaultProviderHelp);
       const home = path.join(root, "home");
+      const nodeExecPath = resolveTestNodeExecPath();
       const env = {
         ...testHomeEnv(home),
-        PATH: [fakeBin, path.dirname(process.execPath), process.env.PATH ?? ""].join(
-          path.delimiter,
-        ),
+        PATH: [fakeBin, path.dirname(nodeExecPath), process.env.PATH ?? ""].join(path.delimiter),
         GIT_CONFIG_GLOBAL: "/dev/null",
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_OPTIONAL_LOCKS: "0",
@@ -4128,6 +4276,8 @@ process.on("uncaughtExceptionMonitor", (error) => {
         OPENCLAW_CRABBOX_SYNC_TMPDIR: path.join(root, "sync"),
         OPENCLAW_CRABBOX_SYNC_MIN_FREE_BYTES: "0",
         OPENCLAW_FAKE_CRABBOX_COPY_CHANGED_GATE_BUNDLE_TO: capturedBundle,
+        OPENCLAW_FAKE_CRABBOX_NATIVE_SYNC_CAPTURE:
+          provider === "blacksmith-testbox" ? path.join(root, "native-sync.json") : "",
         OPENCLAW_FAKE_CRABBOX_PRIVACY_PATHS: JSON.stringify([
           "private-canary.txt",
           "protected-deleted.ignored",
@@ -4280,6 +4430,16 @@ process.on("uncaughtExceptionMonitor", (error) => {
         );
         expect(result.status, failureDetail(result)).toBe(0);
         const run = expectSuccessfulWrapperRun(result);
+        let changed: string[] = [];
+        if (provider === "blacksmith-testbox") {
+          const native = JSON.parse(
+            readFileSync(env.OPENCLAW_FAKE_CRABBOX_NATIVE_SYNC_CAPTURE, "utf8"),
+          );
+          const source = git(producer, ["rev-parse", "HEAD"]);
+          expect(native).toMatchObject({ base, source, head: source });
+          expect(native.changed).toContain(".openclaw-crabbox-changed-gate.bundle");
+          changed = native.changed;
+        }
         expect(existsSync(run.output.cwd)).toBe(false);
         expect(readdirSync(path.join(root, "sync"))).toEqual([]);
         return {
@@ -4291,6 +4451,7 @@ process.on("uncaughtExceptionMonitor", (error) => {
             ? run.output.args.slice(run.output.args.indexOf("--") + 1)
             : [],
           bundle: readFileSync(capturedBundle),
+          changed,
         };
       };
       const receive = (
@@ -4762,6 +4923,8 @@ process.on("uncaughtExceptionMonitor", (error) => {
 
       writeFileSync(path.join(producer, "owner.txt"), "committed\n");
       git(producer, ["add", "owner.txt"]);
+      writeFileSync(path.join(producer, "committed-only.txt"), "committed source\n");
+      git(producer, ["add", "committed-only.txt"]);
       if (replacedHistory) {
         rmSync(path.join(producer, "removed-kind.ignored"));
         mkdirSync(path.join(producer, "removed-kind.ignored"));
@@ -4866,6 +5029,23 @@ process.on("uncaughtExceptionMonitor", (error) => {
         ? readFileSync(path.join(producer, ".git", "shallow"))
         : undefined;
       const candidate = runSender();
+      if (provider === "blacksmith-testbox") {
+        expect(candidate.changed).toEqual(
+          expect.arrayContaining([
+            "committed-only.txt",
+            "owner.txt",
+            "deleted.txt",
+            "rename-before.txt",
+            "renamed.txt",
+            "staged.ignored",
+            "untracked.txt",
+          ]),
+        );
+        expect(candidate.changed).not.toContain("unchanged.bin");
+        for (const file of privatePaths) {
+          expect(candidate.changed).not.toContain(file);
+        }
+      }
       // A change must not resend the unchanged, incompressible base blob.
       expect(candidate.bundle.length).toBeLessThan(unchanged.length);
       expect(git(producer, ["rev-parse", "HEAD"])).toBe(headBefore);
@@ -5137,6 +5317,90 @@ process.on("uncaughtExceptionMonitor", (error) => {
       // Shared receiver failure paths need one full real-Git fixture; provider/history
       // variants above retain independent successful source identity checks.
       if (provider === "blacksmith-testbox" && !shallow) {
+        const errnoFor = (code: string) =>
+          [...getSystemErrorMap()].find(([, [name]]) => name === code)?.[0];
+        const gitText = {
+          ref: "fatal: couldn't find remote ref fixture\n",
+          object: "fatal: pack has bad object at offset 12\n",
+          dns: "fatal: unable to access 'https://private.invalid/repo': Could not resolve host: private.invalid\n",
+          connection:
+            "fatal: unable to access 'https://private.invalid/repo': Failed to connect to private.invalid port 443\n",
+          auth: "fatal: Authentication failed for 'https://private.invalid/repo'\n",
+          nearAuth: "warning: authentication failed later PRIVATE_SENTINEL\n",
+          nearRef: "fatal: couldn't find remote reference PRIVATE_SENTINEL\n",
+        };
+        const fetchFailures = [
+          ["base-fetch", "no-space", "ENOSPC"],
+          ["capsule-fetch", "permission-denied", "EACCES"],
+          ["base-fetch", "permission-denied", "EPERM"],
+          ["capsule-fetch", "command-unavailable", "ENOENT"],
+          ["base-fetch", "output-limit", "ENOBUFS"],
+          ["capsule-fetch", "terminated", undefined, "SIGTERM"],
+          ["base-fetch", "remote-ref-missing", undefined, undefined, gitText.ref],
+          ["capsule-fetch", "invalid-object-data", undefined, undefined, gitText.object],
+          ["base-fetch", "dns", undefined, undefined, gitText.dns],
+          ["capsule-fetch", "connection", undefined, undefined, gitText.connection],
+          ["base-fetch", "auth", undefined, undefined, gitText.auth],
+          ["capsule-fetch", "unknown", undefined, undefined, gitText.nearAuth],
+          ["base-fetch", "unknown", undefined, undefined, gitText.nearRef],
+        ] as const;
+        for (const [index, [phase, cause, code, signal, stderr]] of fetchFailures.entries()) {
+          const preload = path.join(root, `fetch-failure-${index}.cjs`);
+          const errno = code ? errnoFor(code) : undefined;
+          writeFileSync(
+            preload,
+            `const cp = require("node:child_process");
+const original = cp.spawnSync;
+const fault = ${JSON.stringify({ phase, code, errno, signal, stderr })};
+cp.spawnSync = (command, args, options) => {
+  const fetchIndex = args.indexOf("fetch");
+  if (command !== "git" || fetchIndex < 0 || args.slice(fetchIndex + 1).includes("origin") !== (fault.phase === "base-fetch"))
+    return original(command, args, options);
+  return { status: fault.code || fault.signal ? null : 128, signal: fault.signal ?? null,
+    stdout: Buffer.alloc(0), stderr: Buffer.from(fault.stderr ?? "PRIVATE_SENTINEL\\n"),
+    error: fault.code ? Object.assign(new Error("PRIVATE_ERROR_MESSAGE"), { code: fault.code, errno: fault.errno }) : undefined };
+};\n`,
+          );
+          const argvPath = path.join(root, `fetch-failure-${index}.json`);
+          let priorIndex: Buffer | undefined;
+          const rejected = receive(
+            `fetch-failure-${index}`,
+            candidate.remoteCommand,
+            candidate.bundle,
+            origin,
+            { NODE_OPTIONS: `--require=${preload}`, TRANSPORT_FIXTURE_ARGV: argvPath },
+            true,
+            [],
+            (receiver) => {
+              priorIndex = readFileSync(path.join(receiver, ".git", "index"));
+            },
+          );
+          const prefix = "[crabbox] source verification failed: source Git operation failed: ";
+          const line = rejected.result.stderr.split("\n").find((entry) => entry.startsWith(prefix));
+          expect(line, failureDetail(rejected.result)).toBeDefined();
+          expect(JSON.parse(line!.slice(prefix.length))).toEqual({
+            phase,
+            baseSha: base,
+            status: code || signal ? null : 128,
+            signal: signal ?? null,
+            spawnError: Boolean(code),
+            code: code ?? null,
+            errno: errno ?? null,
+            cause,
+          });
+          expect(rejected.result.status, failureDetail(rejected.result)).toBe(2);
+          expect(rejected.result.stdout).toBe("");
+          expect(rejected.result.stderr).not.toMatch(/PRIVATE_|private\.invalid/u);
+          expect(existsSync(argvPath)).toBe(false);
+          expect(git(rejected.receiver, ["rev-parse", "HEAD"])).toBe(base);
+          expect(readFileSync(path.join(rejected.receiver, ".git", "index"))).toEqual(priorIndex);
+          expect(readFileSync(path.join(rejected.receiver, "owner.txt"), "utf8")).toBe(
+            "native stale bytes\n",
+          );
+          expect(
+            readdirSync(rejected.receiver).filter((file) => file.startsWith(".openclaw-source-")),
+          ).toEqual([]);
+        }
         for (const [fault, file, message] of [
           ["bytes", "newer-source.txt", "source bytes mismatch"],
           ["mode", "newer-source.txt", "source mode mismatch"],
@@ -5720,6 +5984,20 @@ process.on("uncaughtExceptionMonitor", (error) => {
     });
   });
 
+  it("keeps overlapping sparse-sync fixtures from deleting each other's files", () => {
+    const name = ".crabbox-test-isolation-sync-root";
+    withSparseSyncRoot(name, {}, ({ result, syncRoot }) => {
+      expectSuccessfulWrapperRun(result);
+      const marker = path.join(syncRoot, "active-fixture.txt");
+      writeFileSync(marker, "owned by the outer fixture");
+      withSparseSyncRoot(name, {}, ({ result: innerResult }) => {
+        expectSuccessfulWrapperRun(innerResult);
+        expect(readFileSync(marker, "utf8")).toBe("owned by the outer fixture");
+      });
+      expect(readFileSync(marker, "utf8")).toBe("owned by the outer fixture");
+    });
+  });
+
   it("fails sparse-sync full checkout early when the sync root is too low on disk", () => {
     withSparseSyncRoot(
       ".crabbox-test-low-disk-sync-root",
@@ -5769,6 +6047,49 @@ process.on("uncaughtExceptionMonitor", (error) => {
     "terminates Crabbox descendants before parent signal exit through %s",
     async (entrypoint) => {
       await runWrapperCleanupProof({ kind: "signal", entrypoint, repeated: false });
+    },
+    25_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "reports the readiness deadline and last phase without inventing a writer failure",
+    async () => {
+      let failure: Error | undefined;
+      try {
+        await runWrapperCleanupProof({ kind: "readiness" });
+      } catch (error) {
+        if (!(error instanceof Error)) {
+          throw error;
+        }
+        failure = error;
+      }
+      if (!failure) {
+        throw new Error("held wrapper unexpectedly became ready");
+      }
+      const retained = /retained fixture (.+) and output /u.exec(failure.message)?.[1];
+      expect(retained).toBeDefined();
+      if (!retained) {
+        throw failure;
+      }
+      try {
+        expect(failure.message).toContain(
+          "wrapper readiness not observed within 8 s; last observed phase loading wrapper",
+        );
+        expect(failure.message).not.toContain("fixture teardown could not be verified");
+        expect(failure.message).not.toContain("fixture writers did not settle");
+        expect(failure.message).not.toContain("fixture ownership receipts are incomplete");
+        expect(existsSync(path.join(retained, "run.spawned"))).toBe(false);
+      } finally {
+        // This injected preload cannot spawn children; join both recorded owners before disposal.
+        const phases: WrapperReadinessPhase[] = JSON.parse(
+          readFileSync(path.join(retained, "readiness-phases.json"), "utf8"),
+        );
+        expect(phases.at(-1)?.phase).toBe("loading wrapper");
+        expect(phases.filter(({ pid }) => pid).every(({ pid }) => !isProcessAlive(pid!))).toBe(
+          true,
+        );
+        rmSync(retained, { recursive: true, force: true });
+      }
     },
     25_000,
   );

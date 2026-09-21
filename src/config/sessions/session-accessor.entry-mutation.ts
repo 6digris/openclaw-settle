@@ -1,10 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
-import type { MsgContext } from "../../auto-reply/templating.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import type { ChannelRouteRef } from "../../plugin-sdk/channel-route.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
-import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import {
   resolveAccessStorePath,
   loadSessionEntry,
@@ -12,15 +9,8 @@ import {
 } from "./session-accessor.entry.js";
 import { applySessionEntryLifecycleMutation } from "./session-accessor.lifecycle.js";
 import { readSessionCreationSnapshot } from "./session-accessor.sqlite-creation-read.js";
-import {
-  recordInboundSessionMeta,
-  updateSessionLastRoute,
-} from "./session-accessor.sqlite-entry.js";
-import {
-  forkSessionEntryFromParentTarget,
-  forkSessionTranscriptFromParent,
-  resolveSessionParentForkDecision,
-} from "./session-accessor.sqlite-parent-session.js";
+import "./session-accessor.sqlite-entry.js";
+import { forkSessionTranscriptFromParent } from "./session-accessor.sqlite-parent-session.js";
 import {
   resolveSqliteTranscriptScope,
   runExclusiveSqliteSessionWrite,
@@ -42,20 +32,21 @@ import type {
   SessionEntryCreateWithTranscriptOptions,
 } from "./session-accessor.types.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
-import type { GroupKeyResolution, InternalSessionEntry as SessionEntry } from "./types.js";
+import type { InternalSessionEntry as SessionEntry } from "./types.js";
+export {
+  recordInboundSessionMeta,
+  updateSessionLastRoute,
+} from "./session-accessor.sqlite-entry.js";
+export {
+  forkSessionEntryFromParentTarget,
+  resolveSessionParentForkDecision,
+} from "./session-accessor.sqlite-parent-session.js";
 
 export async function forkSessionFromParentTranscript(
   params: ForkSessionFromParentTranscriptParams,
 ): Promise<ForkSessionFromParentTranscriptResult> {
   return await forkSessionTranscriptFromParent(params);
 }
-
-export {
-  forkSessionEntryFromParentTarget,
-  recordInboundSessionMeta,
-  resolveSessionParentForkDecision,
-  updateSessionLastRoute,
-};
 
 /**
  * Creates or updates one session entry and initializes its transcript header as
@@ -246,44 +237,6 @@ export async function updateSessionEntry(
 ): Promise<SessionEntry | null> {
   return await patchSessionEntryCore(scope, update, options);
 }
-
-export type RecordInboundSessionMetaParams = {
-  /** Set false to only patch existing entries; missing sessions stay absent. */
-  createIfMissing?: boolean;
-  /** Inbound message context whose stable metadata is derived and persisted. */
-  ctx: MsgContext;
-  /** Group routing resolution for group-owned session keys. */
-  groupResolution?: GroupKeyResolution | null;
-  /** Canonical or alias session key for the inbound conversation. */
-  sessionKey: string;
-  /** Explicit store target for file-backed stores and SQLite migration adapters. */
-  storePath: string;
-};
-
-export type UpdateSessionLastRouteParams = {
-  /** Account owning the delivery route when the channel is multi-account. */
-  accountId?: string;
-  /** Delivery channel id persisted as the last route channel. */
-  channel?: string;
-  /** Set false to only patch existing entries; missing sessions stay absent. */
-  createIfMissing?: boolean;
-  /** Optional inbound context whose session metadata is derived alongside the route. */
-  ctx?: MsgContext;
-  /** Explicit delivery context merged over the persisted session fallback. */
-  deliveryContext?: DeliveryContext;
-  /** Group routing resolution for group-owned session keys. */
-  groupResolution?: GroupKeyResolution | null;
-  /** Canonical channel route persisted as the session route slot. */
-  route?: ChannelRouteRef;
-  /** Canonical or alias session key for the routed conversation. */
-  sessionKey: string;
-  /** Explicit store target for file-backed stores and SQLite migration adapters. */
-  storePath: string;
-  /** Thread/topic id for the delivery route, when the transport has one. */
-  threadId?: string | number;
-  /** Delivery target persisted as the last route recipient. */
-  to?: string;
-};
 
 /** Resolves one abort target identity without exposing the mutable store. */
 export function resolveSessionAbortTarget(

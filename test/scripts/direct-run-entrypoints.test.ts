@@ -121,13 +121,14 @@ function runShimFixture(
     checkoutRoot: string;
     fixtureRoot: string;
   }) => ModulesEnv = () => ({}),
+  nodeArgs: readonly string[] = [],
 ) {
   return withShimFixture(
     wrapper,
     ({ checkoutRoot, fixtureRoot, implementationPath, wrapperPath, runNode }) => {
       writeFileSync(
         implementationPath,
-        'import { value } from "shim-dependency";\nprocess.stdout.write(JSON.stringify({ loader: process.env.OPENCLAW_TSX_FIXTURE_LOADER, dependency: value, args: process.argv.slice(2) }));\n',
+        'import { value } from "shim-dependency";\nprocess.stdout.write(JSON.stringify({ loader: process.env.OPENCLAW_TSX_FIXTURE_LOADER, dependency: value, args: process.argv.slice(2), execArgv: process.execArgv }));\n',
       );
       writeTsxFixture(path.join(checkoutRoot, "node_modules"), "checkout");
       const modulesEnv = configureModules({ checkoutRoot, fixtureRoot });
@@ -138,22 +139,64 @@ function runShimFixture(
       delete env.PNPM_CONFIG_MODULES_DIR;
       delete env.npm_config_modules_dir;
       Object.assign(env, modulesEnv);
-      return runNode([wrapperPath, "--hydrated-proof"], env, fixtureRoot);
+      return runNode(
+        [...nodeArgs, wrapperPath, "--hydrated-proof", "--no-maglev"],
+        env,
+        fixtureRoot,
+      );
     },
   );
 }
 
-function expectShimLoader(result: Awaited<ReturnType<typeof runShimFixture>>, loader: string) {
+function expectShimLoader(
+  result: Awaited<ReturnType<typeof runShimFixture>>,
+  loader: string,
+  nodeArgs: readonly string[] = [],
+) {
   expect(result.error, formatShimResult(result)).toBeUndefined();
   expect(result.status, formatShimResult(result)).toBe(0);
   expect(JSON.parse(result.stdout)).toEqual({
     loader,
     dependency: "loaded",
-    args: ["--hydrated-proof"],
+    args: ["--hydrated-proof", "--no-maglev"],
+    execArgv: ["--import", expect.stringMatching(/^file:.*\/scripts\/tsx\.mjs$/u), ...nodeArgs],
   });
 }
 
 describe("script direct-run entrypoints", () => {
+  it.skipIf(process.platform === "win32")(
+    "lets the Vitest implementation finish cleanup beyond the shim force-kill window",
+    async () => {
+      await withShimFixture("scripts/run-vitest.mjs", async (fixture) => {
+        const { checkoutRoot, fixtureRoot, implementationPath, wrapperPath, runNode } = fixture;
+        const ownerPath = path.join(fixtureRoot, "owner.pid");
+        const settledPath = path.join(fixtureRoot, "cleanup-settled");
+        writeTsxFixture(path.join(checkoutRoot, "node_modules"), "checkout");
+        writeFileSync(
+          implementationPath,
+          `import fs from "node:fs";
+const keepAlive = setInterval(() => {}, 1000);
+process.once("SIGTERM", () => {
+  setTimeout(() => {
+    fs.writeFileSync(${JSON.stringify(settledPath)}, "settled");
+    clearInterval(keepAlive);
+    process.exitCode = 143;
+  }, 5500);
+});
+fs.writeFileSync(${JSON.stringify(ownerPath)}, String(process.ppid));
+`,
+        );
+        const completion = runNode([wrapperPath], process.env, fixtureRoot);
+        const owner = await waitForPidFile(ownerPath, 10_000);
+        process.kill(owner, "SIGTERM");
+        const result = await completion;
+        expect(result.status, formatShimResult(result)).toBe(143);
+        expect(readFileSync(settledPath, "utf8")).toBe("settled");
+        expect(isProcessAlive(owner)).toBe(false);
+      });
+    },
+  );
+
   it.each(["wrapper", "preload"])(
     "loads compiled ESM through require from the %s with import-only dependencies",
     async (entrypoint) => {
@@ -484,20 +527,51 @@ process.stdout.write(response + "\n");
   );
 
   it.each([
-    { envKey: "PNPM_CONFIG_MODULES_DIR", mode: "absolute", wrapper: TSX_SHIM_WRAPPERS[0] },
-    { envKey: "npm_config_modules_dir", mode: "relative", wrapper: TSX_SHIM_WRAPPERS[1] },
-    { envKey: "PNPM_CONFIG_MODULES_DIR", mode: "relative", wrapper: TSX_SHIM_WRAPPERS[2] },
-    { envKey: "npm_config_modules_dir", mode: "absolute", wrapper: TSX_SHIM_WRAPPERS[3] },
-  ] as const)("boots $wrapper from a $mode $envKey", async ({ envKey, mode, wrapper }) => {
-    const result = await runShimFixture(wrapper, ({ checkoutRoot, fixtureRoot }) => {
-      const modulesDir = path.join(fixtureRoot, "hydrated-modules");
-      writeTsxFixture(modulesDir, "hydrated");
-      const configuredDir =
-        mode === "absolute" ? modulesDir : path.relative(checkoutRoot, modulesDir);
-      return { [envKey]: configuredDir };
-    });
-    expectShimLoader(result, "hydrated");
-  });
+    {
+      envKey: "PNPM_CONFIG_MODULES_DIR",
+      mode: "absolute",
+      wrapper: TSX_SHIM_WRAPPERS[0],
+      nodeArgs: [],
+      inherited: [],
+    },
+    {
+      envKey: "npm_config_modules_dir",
+      mode: "relative",
+      wrapper: TSX_SHIM_WRAPPERS[1],
+      nodeArgs: ["--no-maglev", "--no-concurrent-sparkplug"],
+      inherited: ["--no-maglev", "--no-concurrent-sparkplug"],
+    },
+    {
+      envKey: "PNPM_CONFIG_MODULES_DIR",
+      mode: "relative",
+      wrapper: TSX_SHIM_WRAPPERS[2],
+      nodeArgs: ["--no-maglev", "--maglev", "--no-concurrent-sparkplug"],
+      inherited: ["--no-maglev", "--maglev", "--no-concurrent-sparkplug"],
+    },
+    {
+      envKey: "npm_config_modules_dir",
+      mode: "absolute",
+      wrapper: TSX_SHIM_WRAPPERS[3],
+      nodeArgs: ["--title=--no-maglev", "--no-concurrent-sparkplug"],
+      inherited: ["--no-concurrent-sparkplug"],
+    },
+  ] as const)(
+    "boots $wrapper from a $mode $envKey",
+    async ({ envKey, mode, wrapper, nodeArgs, inherited }) => {
+      const result = await runShimFixture(
+        wrapper,
+        ({ checkoutRoot, fixtureRoot }) => {
+          const modulesDir = path.join(fixtureRoot, "hydrated-modules");
+          writeTsxFixture(modulesDir, "hydrated");
+          const configuredDir =
+            mode === "absolute" ? modulesDir : path.relative(checkoutRoot, modulesDir);
+          return { [envKey]: configuredDir };
+        },
+        nodeArgs,
+      );
+      expectShimLoader(result, "hydrated", inherited);
+    },
+  );
 
   it("prefers PNPM_CONFIG_MODULES_DIR over npm_config_modules_dir", async () => {
     const result = await runShimFixture(TSX_SHIM_WRAPPERS[2], ({ fixtureRoot }) => {

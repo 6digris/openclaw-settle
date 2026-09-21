@@ -12,7 +12,7 @@ import {
   openOpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
-import { mutateUserPreference, selectUserPreferenceValues } from "./user-preferences.store.js";
+import { deleteUserPreference, selectUserPreferenceValues } from "./user-preferences.store.js";
 import { selectResolvedUserProfileMetadataById, userProfilesDb } from "./user-profiles-internal.js";
 import { ensureUserProfilesSchema, UserProfileOwnerError } from "./user-profiles-schema.js";
 
@@ -212,7 +212,7 @@ export function prepareUserProfileGitHubMerge(
   for (const sourceProfileId of sourceProfileIds) {
     const sourceIdentity = identities.get(sourceProfileId)?.primary;
     if (!sourceIdentity || sourceIdentity.accountId !== survivingAccountId) {
-      mutateUserPreference(db, sourceProfileId, GIT_COAUTHOR_PREFERENCE_KEY);
+      deleteUserPreference(db, sourceProfileId, GIT_COAUTHOR_PREFERENCE_KEY);
     }
   }
   executeSqliteQuerySync(
@@ -228,6 +228,7 @@ export function applyVerifiedGitHubIdentity(params: {
   db: DatabaseSync;
   alias: { kind: "email"; email: string } | { kind: "github-login"; subject: string };
   identity: { accountId: number; login: string };
+  preserveEmailProfile?: boolean;
   createProfile: () => string;
   mergeProfiles: (sourceProfileId: string, targetProfileId: string) => void;
 }): { profileId: string; changed: boolean } {
@@ -276,6 +277,21 @@ export function applyVerifiedGitHubIdentity(params: {
   const aliasGitHubIdentity = aliasProfileId
     ? selectStoredGitHubIdentities(db, [aliasProfileId]).get(aliasProfileId)
     : undefined;
+  const existingProfileId = existing
+    ? selectResolvedUserProfileMetadataById(db, existing.profile_id)?.id
+    : undefined;
+  if (
+    params.preserveEmailProfile &&
+    ((existingProfileId && existingProfileId !== aliasProfileId) ||
+      (aliasGitHubIdentity &&
+        !aliasGitHubIdentity.accounts.some(
+          (account) => account.accountId === params.identity.accountId,
+        )))
+  ) {
+    throw new Error(
+      "GitHub identity requires explicit linking to this email; ask an administrator to use users.linkEmail",
+    );
+  }
   const reusableAliasProfileId =
     aliasProfileId &&
     (aliasGitHubIdentity === undefined ||
@@ -284,13 +300,8 @@ export function applyVerifiedGitHubIdentity(params: {
       ))
       ? aliasProfileId
       : undefined;
-  const currentProfileId =
-    reusableAliasProfileId ??
-    (existing ? selectResolvedUserProfileMetadataById(db, existing.profile_id)?.id : undefined) ??
-    params.createProfile();
-  const targetProfileId = existing
-    ? (selectResolvedUserProfileMetadataById(db, existing.profile_id)?.id ?? currentProfileId)
-    : currentProfileId;
+  const currentProfileId = reusableAliasProfileId ?? existingProfileId ?? params.createProfile();
+  const targetProfileId = existingProfileId ?? currentProfileId;
   // An email linked by older code must not turn shared owner attribution into a person.
   if (
     aliasIdentity?.profile_id === GATEWAY_OWNER_PROFILE_ID ||
@@ -305,10 +316,11 @@ export function applyVerifiedGitHubIdentity(params: {
       ? aliasGitHubIdentity
       : selectStoredGitHubIdentities(db, [currentProfileId]).get(currentProfileId);
   if (
+    !params.preserveEmailProfile &&
     targetProfileId === currentProfileId &&
     !currentIdentity?.accounts.some((account) => account.accountId === params.identity.accountId)
   ) {
-    mutateUserPreference(db, targetProfileId, GIT_COAUTHOR_PREFERENCE_KEY);
+    deleteUserPreference(db, targetProfileId, GIT_COAUTHOR_PREFERENCE_KEY);
   }
 
   if (currentProfileId !== targetProfileId) {

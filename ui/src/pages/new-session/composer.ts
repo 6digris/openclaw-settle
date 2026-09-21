@@ -233,10 +233,13 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
       mentionMenu.close();
     } else {
       mentionMenu.update(
-        target.value,
-        target.selectionStart,
+        target,
         options.requestUpdate,
-        event?.inputType === "insertText" && event.data?.includes("@") === true,
+        !event
+          ? "selection"
+          : event.inputType === "insertText" && event.data?.includes("@") === true
+            ? "trigger"
+            : "input",
       );
     }
     updateEmojiMenu(target);
@@ -245,6 +248,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
     const target = event.currentTarget;
     if (target instanceof HTMLTextAreaElement) {
       if (event.type === "keyup") {
+        mentionMenu.update(target, options.requestUpdate);
         updateEmojiMenu(target);
       } else {
         updateMenus(target);
@@ -255,9 +259,14 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
     emojiMenu.close();
   }
   const attachmentProps = {
+    attachmentReads: options.attachmentReads,
     attachmentLimits: options.attachmentLimits,
     attachments: options.attachments,
-    disabled: composerLocked,
+    get disabled() {
+      return (
+        options.submitting || options.messageLocked === true || options.dictationActive === true
+      );
+    },
     getAttachments: options.getAttachments,
     draft: options.message,
     getDraft: () => options.message,
@@ -265,6 +274,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
     onDraftChange: options.onInput,
     onPendingReadsChange: options.onPendingReadsChange,
     onOpenImage: options.onOpenImage,
+    onOpenSidebar: options.onOpenSidebar,
     readSignal: options.readSignal,
   };
   const attachmentDropHandlers = createChatAttachmentDropHandlers({
@@ -342,8 +352,11 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
         ${mentionMenu.render(mentionMenuHost, options.requestUpdate)}
         ${emojiMenu.render("new-session", options.textareaController.getTextarea(), options.requestUpdate)}
         ${options.nativeTerminal ? nothing : renderChatAttachmentInputs(attachmentProps)}
-        ${renderSelectedHumanMentions(options.message, options.mentions, () =>
-          options.onInput(options.message, []),
+        ${renderSelectedHumanMentions(
+          options.message,
+          options.mentions,
+          () => options.onInput(options.message, []),
+          mentionMenu.selectedAvatarUrls,
         )}
         ${renderAttachmentPreview(attachmentProps)}
         ${renderAttachmentReadStatus(options.pendingAttachmentReads)}
@@ -506,7 +519,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
       ${
         options.blockedSubmitNotice
           ? html`<div
-              class="new-session-page__blocked-submit agent-chat__composer-underlaps"
+              class="new-session-page__blocked-submit agent-chat__composer-status"
               data-tone="info"
               role="status"
             >

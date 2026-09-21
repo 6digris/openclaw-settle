@@ -6,6 +6,7 @@ import { isMainThread, threadId } from "node:worker_threads";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { formatErrorMessageWithCode } from "../../infra/errors.js";
 import { getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import { withSqliteReaderOwner } from "../../infra/sqlite-reader-lifecycle.js";
 import { getChildLogger } from "../../logging/logger.js";
 import {
   isIncognitoSessionKey,
@@ -29,6 +30,7 @@ import {
   runOpenClawAgentWorkerWrite,
   runOpenClawAgentWriteAdmission,
 } from "../../state/openclaw-agent-write-admission.js";
+import { resolveStateDir } from "../paths.js";
 import { formatSqliteSessionFileMarker } from "./legacy-sqlite-marker.js";
 import { resolveSessionArtifactDirectory } from "./paths.js";
 import type {
@@ -197,6 +199,11 @@ function archivePruningLogFields(diagnostics: SqliteSessionArchivePruningDiagnos
     asyncAdmissions: diagnostics.asyncAdmissions,
     checkpointCalls: diagnostics.checkpointCalls,
     checkpointIncomplete: diagnostics.checkpointIncomplete,
+    checkpoint: diagnostics.checkpoint,
+    totalBytesBefore: diagnostics.totalBytesBefore,
+    totalBytesAfter: diagnostics.totalBytesAfter,
+    walBytesBefore: diagnostics.walBytesBefore,
+    walBytesAfter: diagnostics.walBytesAfter,
     checkpointMs: milliseconds(diagnostics.checkpointMs),
     checkpointMaxMs: milliseconds(diagnostics.checkpointMaxMs),
     vacuumMs: milliseconds(diagnostics.vacuumMs),
@@ -263,10 +270,15 @@ export async function runExclusiveSqliteSessionWrite<T>(
   });
   let completedAt = startedAt;
   let outcome: "ok" | "error" = "ok";
+  const owned = () =>
+    withSqliteReaderOwner(
+      { operation, ownerKind: isMainThread ? "main" : "worker", actorId: threadId },
+      fn,
+    );
   try {
     const result = await (writer === "worker"
-      ? runOpenClawAgentWorkerWrite(databaseOptions, fn, timing)
-      : runOpenClawAgentWriteAdmission(databaseOptions, fn, false, timing));
+      ? runOpenClawAgentWorkerWrite(databaseOptions, owned, timing)
+      : runOpenClawAgentWriteAdmission(databaseOptions, owned, false, timing));
     completedAt = performance.now();
     if (completedAt - startedAt >= SQLITE_SESSION_SLOW_WRITE_MS) {
       getChildLogger({ subsystem: "session-sqlite" }).warn(
@@ -485,6 +497,17 @@ export function resolveSqliteTranscriptReadScope(
   return {
     ...resolveSqliteReadScope(scope, targetCache),
     sessionId: scope.sessionId,
+  };
+}
+
+/** Pin the environment and database locator before lifecycle work yields. */
+export function captureLifecycleDatabaseScope<T extends ResolvedSqliteReadScope>(scope: T): T {
+  const env = { ...(scope.env ?? process.env) };
+  env.OPENCLAW_STATE_DIR = resolveStateDir(env);
+  return {
+    ...scope,
+    env,
+    path: resolveOpenClawAgentSqlitePath(toDatabaseOptions({ ...scope, env })),
   };
 }
 

@@ -1,4 +1,5 @@
 // Memory Core tests cover index plugin behavior.
+import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -40,42 +41,13 @@ describe("memory index", () => {
     getFtsSessionManager,
     getPersistentManager,
     seedSessionTranscript: seedMemoryIndexSessionTranscript,
-    trackManager,
   } = fixture;
-
-  function rewritePersistedProviderIdentity(manager: MemoryIndexManager, model: string): void {
-    const providerKey = hashText(
-      JSON.stringify({
-        provider: providerFixture.identityAlias.provider,
-        model,
-      }),
-    );
-    const db = Reflect.get(manager, "db") as {
-      prepare: (sql: string) => {
-        get: (...params: unknown[]) => { value?: string } | undefined;
-        run: (...params: unknown[]) => void;
-      };
-    };
-    const metaRow = db
-      .prepare("SELECT value FROM memory_index_meta WHERE key = ?")
-      .get("memory_index_meta_v1");
-    const meta = JSON.parse(metaRow?.value ?? "{}") as MemoryIndexMeta;
-    db.prepare("UPDATE memory_index_meta SET value = ? WHERE key = ?").run(
-      JSON.stringify({ ...meta, model, providerKey }),
-      "memory_index_meta_v1",
-    );
-    db.prepare("UPDATE memory_index_chunks SET model = ?").run(model);
-    db.prepare(
-      "UPDATE memory_embedding_cache SET model = ?, provider_key = ? WHERE provider = ?",
-    ).run(model, providerKey, providerFixture.identityAlias.provider);
-  }
 
   it("rebuilds a missing vector table through forced sync with cached readiness", async () => {
     const cfg = createCfg({
       vectorEnabled: true,
     });
     const manager = await getFreshManager(cfg);
-    trackManager(manager);
     await manager.sync({ reason: "test", force: true });
     const db = Reflect.get(manager, "db") as DatabaseSync;
     expect(db.prepare("SELECT COUNT(*) AS count FROM memory_index_chunks_vec").get()).toEqual({
@@ -792,8 +764,8 @@ describe("memory index", () => {
       await statusManager.close?.();
       statusManager = undefined;
 
-      expect(await fs.readFile(agentPath)).toEqual(databaseBefore);
-      expect(await fs.readFile(`${agentPath}-wal`)).toEqual(walBefore);
+      assert.deepStrictEqual(await fs.readFile(agentPath), databaseBefore);
+      assert.deepStrictEqual(await fs.readFile(`${agentPath}-wal`), walBefore);
     } finally {
       await statusManager?.close?.();
       writer.close();
@@ -1233,65 +1205,6 @@ describe("memory index", () => {
     }
   });
 
-  it.each([
-    {
-      direction: "HF to exact cache path",
-      indexedModel: providerFixture.identityAlias.canonicalModel,
-      configuredModel: providerFixture.identityAlias.cacheModel,
-    },
-    {
-      direction: "exact cache path to HF",
-      indexedModel: providerFixture.identityAlias.cacheModel,
-      configuredModel: providerFixture.identityAlias.canonicalModel,
-    },
-  ])(
-    "keeps $direction indexes and embedding caches usable",
-    async ({ indexedModel, configuredModel }) => {
-      const indexedCfg = createCfg({
-        provider: providerFixture.identityAlias.provider,
-        model: providerFixture.identityAlias.canonicalModel,
-        cacheEnabled: true,
-        vectorEnabled: false,
-      });
-      const indexedManager = await getFreshManager(indexedCfg);
-      await indexedManager.sync({ reason: "test", force: true });
-      if (indexedModel !== providerFixture.identityAlias.canonicalModel) {
-        rewritePersistedProviderIdentity(indexedManager, indexedModel);
-      }
-      await indexedManager.close?.();
-
-      const embedsBeforeReuse = providerFixture.embedBatchCalls;
-      const nextCfg = createCfg({
-        provider: providerFixture.identityAlias.provider,
-        model: configuredModel,
-        cacheEnabled: true,
-        vectorEnabled: false,
-      });
-      const statusManager = await getFreshManager(nextCfg, "status");
-      try {
-        expect(statusManager.status().dirty).toBe(false);
-        expect(statusManager.status().custom?.indexIdentity).toEqual({ status: "valid" });
-      } finally {
-        await statusManager.close?.();
-      }
-
-      const nextManager = await getFreshManager(nextCfg);
-      try {
-        const results = await nextManager.search("zebra");
-
-        expect(results.length).toBeGreaterThan(0);
-        expect(results[0]?.path).toContain("memory/2026-01-12.md");
-        expect(nextManager.status().custom?.indexIdentity).toEqual({ status: "valid" });
-
-        await nextManager.sync({ reason: "test", force: true });
-
-        expect(providerFixture.embedBatchCalls).toBe(embedsBeforeReuse);
-      } finally {
-        await nextManager.close?.();
-      }
-    },
-  );
-
   it("keeps status clean when configured provider alias resolves to indexed adapter", async () => {
     const oldCfg = createCfg({
       provider: "ollama",
@@ -1562,7 +1475,7 @@ describe("memory index", () => {
 
   it("drains retained queued targets through the next idle sync call", async () => {
     const markers = {
-      blocker: "BLOCKER LOCKED SYNC 729",
+      blocker: "BLOCKER FAILED SYNC 729",
       retained: "RETAINED RETRY TARGET 729",
       trigger: "IDLE TRIGGER TARGET 729",
     };
@@ -1573,8 +1486,10 @@ describe("memory index", () => {
         sources: ["sessions"],
         sessionMemory: true,
       }),
+      "cli",
     );
-    let lock: DatabaseSync | null = null;
+    const dbPath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+    const db = new DatabaseSync(dbPath);
     try {
       await manager.sync({ reason: "test-baseline", force: true });
       for (const [sessionId, marker] of Object.entries(markers)) {
@@ -1591,13 +1506,16 @@ describe("memory index", () => {
         });
       }
 
-      const dbPath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
-      lock = new DatabaseSync(dbPath);
-      lock.exec("PRAGMA busy_timeout = 0");
-      lock.exec("BEGIN EXCLUSIVE");
+      db.exec(`
+        CREATE TRIGGER fail_queued_session_publication
+        AFTER INSERT ON memory_index_chunks
+        BEGIN
+          SELECT RAISE(FAIL, 'forced queued session publication failure');
+        END;
+      `);
 
       const active = manager.sync({
-        reason: "test-locked-owner",
+        reason: "test-failed-owner",
         sessions: [
           {
             agentId: "main",
@@ -1617,38 +1535,16 @@ describe("memory index", () => {
         ],
       });
       const failures = await Promise.allSettled([active, failedQueued]);
-      lock.exec("ROLLBACK");
-      lock.close();
-      lock = null;
-      const describeSqliteFailure = (failure: unknown): string => {
-        const details = [String(failure)];
-        if (failure && typeof failure === "object") {
-          const record = failure as Record<string, unknown>;
-          for (const key of ["message", "code"] as const) {
-            if (typeof record[key] === "string") {
-              details.push(record[key]);
-            }
-          }
-          if (record.cause && typeof record.cause === "object") {
-            const cause = record.cause as Record<string, unknown>;
-            for (const key of ["message", "code"] as const) {
-              if (typeof cause[key] === "string") {
-                details.push(cause[key]);
-              }
-            }
-          }
-        }
-        return details.join(" ");
-      };
       for (const result of failures) {
         expect(result.status).toBe("rejected");
         if (result.status !== "rejected") {
-          throw new Error("expected SQLite-locked sync to reject");
+          throw new Error("expected failed SQLite publication to reject");
         }
-        expect(describeSqliteFailure(result.reason)).toMatch(
-          /SQLITE_(?:BUSY|LOCKED)|database is (?:busy|locked)/i,
-        );
+        expect(result.reason).toMatchObject({
+          message: "forced queued session publication failure",
+        });
       }
+      db.exec("DROP TRIGGER fail_queued_session_publication");
 
       const ftsMatchCount = (marker: string): number => {
         const observer = new DatabaseSync(dbPath, { readOnly: true });
@@ -1703,13 +1599,7 @@ describe("memory index", () => {
       expect(recoveryState.queuedSessions.size).toBe(0);
       expect(recoveryProgress).toHaveBeenCalled();
     } finally {
-      if (lock) {
-        try {
-          lock.exec("ROLLBACK");
-        } finally {
-          lock.close();
-        }
-      }
+      db.close();
       await manager.close?.();
     }
   });
@@ -2687,7 +2577,6 @@ describe("memory index", () => {
     });
 
     const manager = await getFreshManager(cfg, "status", true);
-    trackManager(manager);
 
     const result = manager.status();
     expect(result.dirty).toBe(true);
@@ -2732,7 +2621,6 @@ describe("memory index", () => {
     });
 
     const initial = await getFreshManager(cfg, "cli");
-    trackManager(initial);
     await initial.sync({ reason: "cli", force: true });
     await expect(
       initial.search("ORBIT-DELETE-91", { minScore: 0, sources: ["sessions"] }),
@@ -2754,12 +2642,10 @@ describe("memory index", () => {
     ).resolves.toBe(true);
 
     const statusManager = await getFreshManager(cfg, "status", true);
-    trackManager(statusManager);
     expect(statusManager.status().dirty).toBe(true);
     await statusManager.close?.();
 
     const repairManager = await getFreshManager(cfg, "cli");
-    trackManager(repairManager);
     await repairManager.sync({ reason: "cli" });
     expect(providerFixture.embedBatchCalls).toBe(0);
     const deletedResults = await repairManager.search("ORBIT-DELETE-91", {

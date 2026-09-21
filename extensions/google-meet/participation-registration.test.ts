@@ -1,11 +1,15 @@
+import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
+import type { GoogleMeetRuntime } from "./src/runtime.js";
 import {
   createGoogleMeetToolGatewayForTest,
   invokeGoogleMeetGatewayMethodForTest,
   setupGoogleMeetPlugin,
 } from "./src/test-support/plugin-harness.js";
 import { testing } from "./test-api.js";
+
+const requireRecord = createRequireRecord("record", "expected-label-object-capitalized");
 
 const runtime = vi.hoisted(() => ({
   participationContext: vi.fn(),
@@ -14,6 +18,9 @@ const runtime = vi.hoisted(() => ({
 
 vi.mock("./src/runtime.js", () => ({
   GoogleMeetRuntime: class {
+    reconcileTranscriptPolicy = vi
+      .fn<GoogleMeetRuntime["reconcileTranscriptPolicy"]>()
+      .mockResolvedValue(undefined);
     participationContext = runtime.participationContext;
     participate = runtime.participate;
   },
@@ -37,6 +44,85 @@ describe("Google Meet participation registration", () => {
 
   afterEach(() => {
     testing.setCallGatewayFromCliForTests();
+  });
+
+  it("returns structured gateway errors for missing session ids", async () => {
+    const { methods } = setup();
+    for (const method of [
+      "googlemeet.leave",
+      "googlemeet.speak",
+      "googlemeet.participationContext",
+      "googlemeet.participate",
+    ]) {
+      const handler = methods.get(method) as
+        | ((ctx: {
+            params: Record<string, unknown>;
+            respond: ReturnType<typeof vi.fn>;
+          }) => Promise<void>)
+        | undefined;
+      const respond = vi.fn();
+
+      await handler?.({ params: {}, respond });
+
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        { error: "sessionId required" },
+        {
+          code: "INVALID_REQUEST",
+          message: "sessionId required",
+          details: { error: "sessionId required" },
+        },
+      );
+    }
+  });
+
+  it("uses a provider-safe flat tool parameter schema", () => {
+    const { tool } = setup();
+
+    expect(tool.description).toContain("recover_current_tab");
+    expect(JSON.stringify(tool.parameters)).not.toContain("anyOf");
+    const parameters = requireRecord(tool.parameters, "Google Meet tool parameters");
+    expect(parameters.type).toBe("object");
+    const properties = requireRecord(
+      parameters.properties,
+      "Google Meet tool parameter properties",
+    );
+    const action = requireRecord(properties.action, "Google Meet action parameter");
+    expect(action.type).toBe("string");
+    expect(action.enum).toEqual([
+      "join",
+      "create",
+      "status",
+      "transcript",
+      "participation_context",
+      "participate",
+      "setup_status",
+      "resolve_space",
+      "preflight",
+      "latest",
+      "calendar_events",
+      "artifacts",
+      "attendance",
+      "export",
+      "recover_current_tab",
+      "leave",
+      "end_active_conference",
+      "speak",
+      "test_speech",
+      "test_listen",
+    ]);
+    expect(action.description).toContain("recover_current_tab");
+    expect(properties.transport).toEqual({
+      type: "string",
+      enum: ["chrome", "chrome-node", "twilio"],
+      description: "Join transport",
+    });
+    expect(properties.mode).toEqual({
+      type: "string",
+      enum: ["agent", "bidi", "transcribe"],
+      description:
+        "Join mode. agent uses realtime transcription, the configured OpenClaw agent, and regular TTS. bidi uses the realtime voice model directly. transcribe joins observe-only.",
+    });
   });
 
   it("routes participation context through the registered tool and Gateway", async () => {

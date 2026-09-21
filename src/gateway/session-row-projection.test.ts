@@ -21,6 +21,7 @@ import {
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { ready } from "./session-row-projection-record.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
+import { listProjectedSessions } from "./session-utils-list.js";
 import * as rowInputs from "./session-utils-row.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -506,9 +507,9 @@ it("reprocesses activity-summary policy when config changes during materializati
   });
 });
 
-it.each([false, true])(
+it.each(["static", "array", "unowned-map", "empty-map"] as const)(
   "reprocesses utility policy after a synchronous model publication (catalog reader: %s)",
-  async (withCatalogReader) => {
+  async (catalogReader) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const cfg = {
         agents: {
@@ -549,7 +550,16 @@ it.each([false, true])(
         }
         const projection = await createSessionRowProjection({
           cfg,
-          ...(withCatalogReader ? { getModelCatalog: async () => [] } : { modelCatalog: [] }),
+          ...(catalogReader === "static"
+            ? { modelCatalog: [] }
+            : {
+                getModelCatalog: async () =>
+                  catalogReader === "empty-map"
+                    ? new Map()
+                    : catalogReader === "unowned-map"
+                      ? new Map([["main", { entries: [] }]])
+                      : [],
+              }),
         });
         await projection.ensureMaterialized();
         try {
@@ -566,7 +576,7 @@ it.each([false, true])(
               return readInputs(params);
             });
             sessionChanges.emit({ all: true, scope: "catalog" });
-            await projection.ensureMaterialized();
+            await listProjectedSessions({ projection, opts: {} });
           } finally {
             clock.mockRestore();
           }
