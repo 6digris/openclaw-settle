@@ -54,7 +54,11 @@ import { nativeSchtasksIntegrationEnabled } from "./vitest-worker-declarations.m
 // These fixture hooks require physical module boundaries and complete namespaces.
 export const legacyFinalizerBuildSources = [
   "src/cli/update-finalization-output.test-support.ts",
+  "src/cli/program/register.maintenance.ts",
+  "src/cli/one-shot-exit.ts",
   "src/commands/doctor.ts",
+  "src/commands/doctor-lint.ts",
+  "src/commands/doctor-post-upgrade.ts",
   "src/config/config.ts",
   "src/config/paths.ts",
   "src/plugins/installed-plugin-index-records.ts",
@@ -73,7 +77,6 @@ export const legacyFinalizerBuildSources = [
   "src/infra/update-migrated-finalize.worker.ts",
   "src/infra/runtime-process-entrypoints.ts",
   "src/cli/update-cli/update-command-service-plan.ts",
-  "src/cli/update-cli/update-command-repair-service.ts",
   "src/infra/tmp-openclaw-dir.ts",
   "src/cli/update-cli/update-command-convergence.ts",
   "src/cli/update-cli/update-command-restart-context.ts",
@@ -81,7 +84,6 @@ export const legacyFinalizerBuildSources = [
   "src/cli/update-cli/update-command-verification.ts",
   "src/cli/update-cli/shared.ts",
   "src/cli/update-cli/update-command-service-command.ts",
-  "src/cli/daemon-cli/install-load.ts",
 ];
 
 // Test-only roots share the invocation generation without changing package entries.
