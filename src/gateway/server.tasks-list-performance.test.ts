@@ -11,6 +11,7 @@ import {
   listTaskRecords,
   markTaskTerminalById,
 } from "../tasks/task-registry.js";
+import { getTaskRegistryProcessState } from "../tasks/task-registry.process-state.js";
 import { configureTaskRegistryRuntime } from "../tasks/task-registry.store.js";
 import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
 import { createInMemoryTaskRegistryStore } from "../test-utils/task-registry-store.js";
@@ -28,13 +29,15 @@ import {
 } from "./server.tasks-list.test-helpers.js";
 import * as taskSessionAccess from "./task-session-access.js";
 
-function describeEmptyTaskPage(
+function describeFailedTaskPage(
   access: Parameters<typeof taskSessionAccess.prepareTaskSessionReadFilter>[0] | undefined,
+  registryMutations: unknown,
 ): string {
   // Inspect only a failed response, so diagnostics cannot warm authorization reads.
   try {
     return JSON.stringify({
-      phase: "after-empty-response",
+      phase: "after-failed-task-response",
+      registryMutations,
       taskCount: listTaskRecords().length,
       stateDir: process.env.OPENCLAW_STATE_DIR,
       configuredStore: access?.cfg.session?.store,
@@ -52,7 +55,7 @@ function describeEmptyTaskPage(
       }),
     });
   } catch (error) {
-    return `after-empty-response diagnostic failed: ${String(error)}`;
+    return `after-failed-task-response diagnostic failed: ${String(error)}`;
   }
 }
 
@@ -75,6 +78,14 @@ describe("tasks.list Gateway performance", () => {
       throw new Error("expected selected and unselected owned task fixtures");
     }
 
+    const registryTrace = {
+      snapshotLoads: 0,
+      snapshotSize: 0,
+      clearCount: 0,
+      clears: [] as Array<{ size: number; stack?: string }>,
+      deleteCount: 0,
+      deletes: [] as Array<{ taskId: string; size: number; stack?: string }>,
+    };
     let onSnapshotLoad: (() => void) | undefined;
     const initializeTasks = () => {
       resetTaskRegistryForTests({ persist: false });
@@ -82,6 +93,8 @@ describe("tasks.list Gateway performance", () => {
         store: {
           ...createInMemoryTaskRegistryStore(),
           loadSnapshot: () => {
+            registryTrace.snapshotLoads += 1;
+            registryTrace.snapshotSize = tasks.size;
             onSnapshotLoad?.();
             return { tasks, deliveryStates: new Map() };
           },
@@ -89,6 +102,24 @@ describe("tasks.list Gateway performance", () => {
       });
     };
     await withAuthenticatedTaskGateway(initializeTasks, async ({ admin, viewer }) => {
+      // Keep only bounded producer traces; no metadata reads or timers precede the response.
+      const liveTasks = getTaskRegistryProcessState().tasks;
+      const clearTasks = liveTasks.clear.bind(liveTasks);
+      const deleteTask = liveTasks.delete.bind(liveTasks);
+      const clearTrace = vi.spyOn(liveTasks, "clear").mockImplementation(() => {
+        registryTrace.clearCount += 1;
+        if (registryTrace.clears.length < 4) {
+          registryTrace.clears.push({ size: liveTasks.size, stack: new Error().stack });
+        }
+        return clearTasks();
+      });
+      const deleteTrace = vi.spyOn(liveTasks, "delete").mockImplementation((taskId) => {
+        registryTrace.deleteCount += 1;
+        if (registryTrace.deletes.length < 3) {
+          registryTrace.deletes.push({ taskId, size: liveTasks.size, stack: new Error().stack });
+        }
+        return deleteTask(taskId);
+      });
       // Keep real authorization and RPCs, but make each prepared access slice
       // consume a deterministic work budget regardless of host speed.
       let workMs = performance.now();
@@ -155,7 +186,12 @@ describe("tasks.list Gateway performance", () => {
         expect(mutationsApplied).toBe(true);
         expect(list.ok, JSON.stringify(list.error)).toBe(true);
         expect(list.payload?.tasks.map((task) => task.id)).toEqual(adminExpected);
-        expect(list.payload?.nextCursor).toEqual(expect.any(String));
+        expect(
+          list.payload?.nextCursor,
+          list.payload?.nextCursor
+            ? undefined
+            : describeFailedTaskPage(lastPreparedAccess, registryTrace),
+        ).toEqual(expect.any(String));
         expect(listMaxSortedInput).toBeLessThanOrEqual(7);
         const cursor = list.payload?.nextCursor;
         if (!cursor) {
@@ -210,9 +246,7 @@ describe("tasks.list Gateway performance", () => {
         });
 
         const viewerExpected = expectedTaskIds(
-          listTaskRecords().filter(
-            (task) => task.requesterSessionKey === OWNED_SESSION_KEY,
-          ),
+          listTaskRecords().filter((task) => task.requesterSessionKey === OWNED_SESSION_KEY),
           0,
           25,
         );
@@ -252,7 +286,9 @@ describe("tasks.list Gateway performance", () => {
           const restrictedIds = restricted.payload?.tasks.map((task) => task.id);
           expect(
             restrictedIds,
-            restrictedIds?.length === 0 ? describeEmptyTaskPage(lastPreparedAccess) : undefined,
+            restrictedIds?.length === 0
+              ? describeFailedTaskPage(lastPreparedAccess, registryTrace)
+              : undefined,
           ).toEqual(viewerExpected);
           expect(restricted.payload?.tasks).toHaveLength(25);
           expect(
@@ -539,6 +575,8 @@ describe("tasks.list Gateway performance", () => {
           accessChurn.mockRestore();
         }
       } finally {
+        deleteTrace.mockRestore();
+        clearTrace.mockRestore();
         sortSpy.mockRestore();
         accessWork.mockRestore();
         workClock.mockRestore();

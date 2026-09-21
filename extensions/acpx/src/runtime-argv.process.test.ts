@@ -117,6 +117,14 @@ it.each([
           }),
         ),
       });
+      const startedAt = performance.now();
+      let phase = "initial-session";
+      const launchTrace: Array<{ event: string; elapsedMs: number }> = [];
+      const recordLaunch = (event: string) => {
+        if (launchTrace.length < 12) {
+          launchTrace.push({ event, elapsedMs: performance.now() - startedAt });
+        }
+      };
       const createRuntime = () =>
         new AcpxRuntime({
           cwd: state.root,
@@ -124,6 +132,12 @@ it.each([
           agentRegistry: createAgentRegistry({ overrides: config.agents }),
           permissionMode: "deny-all",
           timeoutMs: 5_000,
+          processLifecycle: {
+            onBeforeSpawn: () => recordLaunch("before-spawn"),
+            onSpawned: () => recordLaunch("spawned"),
+            onSpawnFailed: () => recordLaunch("spawn-failed"),
+            onExit: () => recordLaunch("exit"),
+          },
           ...(wrapped
             ? {
                 openclawWrapperRoot: path.join(state.root, "acpx"),
@@ -136,6 +150,7 @@ it.each([
       let handle: Awaited<ReturnType<AcpxRuntime["ensureSession"]>> | undefined;
       try {
         handle = await runtime.ensureSession({ sessionKey, agent, mode: "persistent" });
+        phase = "first-prompt";
         expect(await prompt(runtime, handle, "first")).toMatchObject({
           argv: samples,
           history: ["first"],
@@ -154,8 +169,10 @@ it.each([
         } else {
           expect(record?.agentArgv).toEqual([spawnExecutable, ...args]);
         }
+        phase = "restart-close";
         await runtime.close({ handle, reason: "restart" });
         runtime = createRuntime();
+        phase = "resumed-session";
         const resumed = await runtime.ensureSession({
           sessionKey,
           agent,
@@ -163,6 +180,7 @@ it.each([
         });
         expect(resumed.backendSessionId).toBe(handle.backendSessionId);
         handle = resumed;
+        phase = "second-prompt";
         expect(await prompt(runtime, handle, "second")).toMatchObject({
           argv: samples,
           history: ["first", "second"],
@@ -170,6 +188,18 @@ it.each([
         expect(
           readAcpxProcessLeaseIdentity((await store.load(handle.acpxRecordId!))?.agentArgv),
         ).toEqual(identity);
+      } catch (error) {
+        console.error(
+          "ACP argv process failure:",
+          JSON.stringify({
+            wrapped,
+            form,
+            phase,
+            elapsedMs: performance.now() - startedAt,
+            launchTrace,
+          }),
+        );
+        throw error;
       } finally {
         try {
           if (handle) {
