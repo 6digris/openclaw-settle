@@ -84,7 +84,7 @@ async function runUpdate(
   const result = await runGlobalPackageUpdateSteps({
     ...fixture.params,
     runStep: async (step) => {
-      if (step.name === "global update") {
+      if (step.name === "package-install") {
         const prefixIndex = step.argv.indexOf("--prefix");
         const prefix = step.argv[prefixIndex + 1];
         if (prefixIndex < 0 || !prefix) {
@@ -105,7 +105,7 @@ async function runUpdate(
       if (runLifecycleStep) {
         return await runLifecycleStep(step);
       }
-      if (step.name === "npm package postinstall" && step.cwd) {
+      if (step.name === "npm-package-postinstall" && step.cwd) {
         await fs.rm(path.join(step.cwd, PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH));
       }
       return success(step);
@@ -188,15 +188,15 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
       expect(result).toMatchObject({
         activePackageRoot: fixture.packageRoot,
         afterVersion: null,
-        failedStep: { name: "npm package lifecycle", exitCode: 1, cwd: stage.packageRoot },
+        failedStep: { name: "npm-package-lifecycle", exitCode: 1, cwd: stage.packageRoot },
         recovery: { serviceRestartSafe: true, version: "1.0.0" },
       });
       expect(result.failedStep?.stderrTail).toContain("ownership is uncertain");
       expect(result.failedStep?.stderrTail).toContain(stage.packageRoot);
       expect(result.failedStep?.stderrTail).toContain(path.join(stage.packageRoot, lockName));
       expect(result.steps.map((step) => step.name)).toEqual([
-        "global update",
-        "npm package lifecycle",
+        "package-install",
+        "npm-package-lifecycle",
       ]);
       expect(lifecycleCalls).toEqual([]);
       expectNoActivation(fixture);
@@ -224,7 +224,7 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
       await fs.rm(path.join(packageRoot, PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH));
     });
     expect(result).toMatchObject({
-      failedStep: { name: "npm package lifecycle", exitCode: 1 },
+      failedStep: { name: "npm-package-lifecycle", exitCode: 1 },
       recovery: { serviceRestartSafe: true, version: "1.0.0" },
     });
     expect(lifecycleCalls).toEqual([]);
@@ -300,7 +300,7 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
           expect(result.reason).toBe("already-current");
           expect(result.failedStep).toBeNull();
         } else {
-          expect(result.failedStep?.name).toBe("global install verify");
+          expect(result.failedStep?.name).toBe("package-verify");
         }
       }
     } finally {
@@ -337,7 +337,7 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
       });
       const observed: { stage?: string; oldPending?: string; orphan?: string } = {};
       const runStep = vi.fn<UpdateParams["runStep"]>(async (step) => {
-        expect(step.name).toBe("global update");
+        expect(step.name).toBe("package-install");
         const stage = stageArgs(step.argv).project;
         if (!stage) {
           throw new Error("missing native stage");
@@ -414,7 +414,7 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
         throw new Error("missing stage observation");
       }
       if (state === "absent") {
-        expect(result.failedStep?.name).toBe("global update");
+        expect(result.failedStep?.name).toBe("package-install");
         await expect(fs.access(observed.stage)).rejects.toMatchObject({ code: "ENOENT" });
       } else {
         expect(result.failedStep?.stderrTail).toContain("ownership is uncertain");
@@ -481,7 +481,7 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
           expect(result.recovery).toEqual({ serviceRestartSafe: true, version: "2.0.0" });
           expect(result.steps).toContainEqual(
             expect.objectContaining({
-              name: "package stage cleanup",
+              name: "package-stage-cleanup",
               stderrTail: expect.stringContaining(stage.prefix),
               advisory: expect.objectContaining({ kind: "recoverable-maintenance" }),
             }),
@@ -562,7 +562,7 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
       expect(lifecycleCalls).toEqual([]);
       expect(result).toMatchObject({
         activePackageRoot: fixture.packageRoot,
-        failedStep: { name: "global install verify", exitCode: 1 },
+        failedStep: { name: "package-verify", exitCode: 1 },
         recovery: { serviceRestartSafe: true, version: "1.0.0" },
       });
       expect(result.failedStep?.stderrTail).toContain("3.0.0");
@@ -601,11 +601,11 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
     );
     expect(result).toMatchObject({
       activePackageRoot: fixture.packageRoot,
-      failedStep: { name: "npm package lifecycle", exitCode: 1 },
+      failedStep: { name: "npm-package-lifecycle", exitCode: 1 },
       recovery: { serviceRestartSafe: true, version: "1.0.0" },
     });
     expect(result.failedStep?.stderrTail).toContain("lock generation changed");
-    expect(lifecycleCalls).toEqual(["npm package preinstall"]);
+    expect(lifecycleCalls).toEqual(["npm-package-preinstall"]);
     expectNoActivation(fixture);
     expect(await fs.readFile(path.join(stage.packageRoot, lockName), "utf8")).toBe(
       "replacement generation\n",
@@ -630,7 +630,7 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
     expect(result).toMatchObject({
       activePackageRoot: fixture.packageRoot,
       afterVersion: null,
-      failedStep: { name: "npm package lifecycle", exitCode: 1 },
+      failedStep: { name: "npm-package-lifecycle", exitCode: 1 },
       recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
     });
     expectNoActivation(fixture);
@@ -674,13 +674,13 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
         failedStep: {
           name:
             failure === "settled script failure"
-              ? "npm package preinstall"
-              : "npm package lifecycle",
+              ? "npm-package-preinstall"
+              : "npm-package-lifecycle",
           exitCode: 1,
         },
         recovery: { serviceRestartSafe: true, version: "1.0.0" },
       });
-      expect(lifecycleCalls).toEqual(["npm package preinstall"]);
+      expect(lifecycleCalls).toEqual(["npm-package-preinstall"]);
       expectNoActivation(fixture);
       expect(await readPackageBytes(fixture.packageRoot)).toEqual(fixture.originalBytes);
       await expect(fs.access(stage.prefix)).rejects.toMatchObject({ code: "ENOENT" });

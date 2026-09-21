@@ -164,6 +164,7 @@ it.each([
   "unknown command",
   "unknown load state",
   "respawn enabled",
+  "respawn disabled",
   "active lock",
   "unknown lock",
   "busy listener",
@@ -182,9 +183,9 @@ it.each([
       vi.mocked(service.readCommand).mockResolvedValue(null);
     } else if (scenario === "unknown load state") {
       vi.mocked(service.isLoaded).mockRejectedValue(new Error("inspection failed"));
-    } else if (scenario === "respawn enabled") {
+    } else if (scenario === "respawn enabled" || scenario === "respawn disabled") {
       mockProcessPlatform("darwin");
-      vi.mocked(service.isEnabled!).mockResolvedValue(true);
+      vi.mocked(service.isEnabled!).mockResolvedValue(scenario === "respawn enabled");
     } else if (scenario === "active lock" || scenario === "lock after coordinator") {
       const lock = vi.mocked(gatewayLocks.readActiveGatewayLockIdentity);
       lock.mockResolvedValue({ pid: process.pid, createdAt: "now", port: 18789 });
@@ -221,7 +222,9 @@ it.each([
         { root, env, timeoutMs: 200, assertCurrent() {} },
         publish,
       ),
-    ).rejects.toThrow(/affected Gateway.*retry the update/);
+    ).rejects.toThrow(
+      /affected Gateway.*openclaw gateway status --deep.*openclaw gateway stop.*retry the update/,
+    );
     expect(publish).not.toHaveBeenCalled();
   }),
 );

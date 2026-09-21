@@ -63,7 +63,7 @@ describe("runGlobalPackageUpdateSteps", () => {
           packageRoot,
           runCommand: createRootRunner(globalRoot),
           runStep: async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
-            if (name !== "global update") {
+            if (name !== "package-install") {
               throw new Error(`unexpected step ${name}`);
             }
             const prefixIndex = argv.indexOf("--prefix");
@@ -87,10 +87,7 @@ describe("runGlobalPackageUpdateSteps", () => {
 
         expect(result.failedStep).toBeNull();
         expect(result.afterVersion).toBe("2.0.0");
-        expect(result.steps.map((step) => step.name)).toEqual([
-          "global update",
-          "global install swap",
-        ]);
+        expect(result.steps.map((step) => step.name)).toEqual(["package-install", "package-swap"]);
         await expect(
           fs.readFile(path.join(packageRoot, "package.json"), "utf8"),
         ).resolves.toContain('"version":"2.0.0"');
@@ -110,7 +107,7 @@ describe("runGlobalPackageUpdateSteps", () => {
       await fs.mkdir(staleRenameDir);
 
       const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
-        if (name !== "global update") {
+        if (name !== "package-install") {
           throw new Error(`unexpected step ${name}`);
         }
         await expectPathMissing(staleRenameDir);
@@ -167,7 +164,7 @@ describe("runGlobalPackageUpdateSteps", () => {
       await writePackageRoot(packageRoot, "1.0.0");
 
       const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
-        if (name !== "global update") {
+        if (name !== "package-install") {
           throw new Error(`unexpected step ${name}`);
         }
         expect(argv).toContain("openclaw@v2.0.0");
@@ -203,10 +200,7 @@ describe("runGlobalPackageUpdateSteps", () => {
 
       expect(result.failedStep).toBeNull();
       expect(result.afterVersion).toBe("2.0.0");
-      expect(result.steps.map((step) => step.name)).toEqual([
-        "global update",
-        "global install swap",
-      ]);
+      expect(result.steps.map((step) => step.name)).toEqual(["package-install", "package-swap"]);
     });
   });
 
@@ -236,7 +230,7 @@ describe("runGlobalPackageUpdateSteps", () => {
           packageRoot,
           runCommand: createRootRunner(globalRoot),
           runStep: async ({ name, argv, cwd }) => {
-            if (name !== "global update") {
+            if (name !== "package-install") {
               throw new Error(`unexpected step ${name}`);
             }
             const stagePrefix = argv[argv.indexOf("--prefix") + 1];
@@ -262,8 +256,8 @@ describe("runGlobalPackageUpdateSteps", () => {
         expect(result.failedStep).toBeNull();
         expect(result.afterVersion).toBe(installedVersion);
         expect(result.steps.map((step) => step.name)).toEqual([
-          "global update",
-          "global install swap",
+          "package-install",
+          "package-swap",
           "candidate validation",
         ]);
         expect(postVerifyStep).toHaveBeenCalledWith(packageRoot, expect.any(Array));
@@ -287,7 +281,7 @@ describe("runGlobalPackageUpdateSteps", () => {
 
         let packDir: string | undefined;
         const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
-          if (name === "global update pack") {
+          if (name === "package-pack") {
             expect(argv).toEqual([
               "npm",
               "pack",
@@ -312,7 +306,7 @@ describe("runGlobalPackageUpdateSteps", () => {
               outputLimitExceeded,
             };
           }
-          if (name !== "global update") {
+          if (name !== "package-install") {
             throw new Error(`unexpected step ${name}`);
           }
           const prefixIndex = argv.indexOf("--prefix");
@@ -364,7 +358,7 @@ describe("runGlobalPackageUpdateSteps", () => {
 
         if (outputLimitExceeded) {
           expect(result.failedStep).toMatchObject({
-            name: "global update pack",
+            name: "package-pack",
             exitCode: 0,
             outputLimitExceeded: true,
           });
@@ -376,9 +370,9 @@ describe("runGlobalPackageUpdateSteps", () => {
           expect(result.failedStep).toBeNull();
           expect(result.afterVersion).toBe("2.0.0");
           expect(result.steps.map((step) => step.name)).toEqual([
-            "global update pack",
-            "global update",
-            "global install swap",
+            "package-pack",
+            "package-install",
+            "package-swap",
           ]);
         }
         if (!packDir) {
@@ -420,7 +414,7 @@ describe("runGlobalPackageUpdateSteps", () => {
 
         let tarball: string | undefined;
         const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
-          if (name === "global update pack") {
+          if (name === "package-pack") {
             const destination = argv[argv.indexOf("--pack-destination") + 1];
             if (!destination) {
               throw new Error("missing pack destination");
@@ -436,7 +430,7 @@ describe("runGlobalPackageUpdateSteps", () => {
               exitCode: 0,
             };
           }
-          if (name !== "global update" || !tarball) {
+          if (name !== "package-install" || !tarball) {
             throw new Error(`unexpected step ${name}`);
           }
           expect(argv).toContain(tarball);
@@ -469,9 +463,9 @@ describe("runGlobalPackageUpdateSteps", () => {
 
         expect(result.failedStep).toBeNull();
         expect(result.steps.map((step) => step.name)).toEqual([
-          "global update pack",
-          "global update",
-          "global install swap",
+          "package-pack",
+          "package-install",
+          "package-swap",
         ]);
       });
     },
@@ -550,7 +544,7 @@ describe("runGlobalPackageUpdateSteps", () => {
       await fs.writeFile(staleChunk, 'import "./install.runtime-Xom5hOHq.js";\n', "utf8");
 
       const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
-        if (name !== "global update") {
+        if (name !== "package-install") {
           throw new Error(`unexpected step ${name}`);
         }
         expect(argv[0]).toBe("npm");
@@ -586,10 +580,7 @@ describe("runGlobalPackageUpdateSteps", () => {
 
       expect(result.failedStep).toBeNull();
       expect(result.afterVersion).toBe("2.0.0");
-      expect(result.steps.map((step) => step.name)).toEqual([
-        "global update",
-        "global install swap",
-      ]);
+      expect(result.steps.map((step) => step.name)).toEqual(["package-install", "package-swap"]);
       await expectPathMissing(staleChunk);
     });
   });
@@ -605,7 +596,7 @@ describe("runGlobalPackageUpdateSteps", () => {
 
         const runStep = vi.fn(
           async ({ name, argv, cwd, env }): Promise<PackageUpdateStepResult> => {
-            if (name !== "global update") {
+            if (name !== "package-install") {
               throw new Error(`unexpected step ${name}`);
             }
             expect(argv).toEqual(["pnpm", "add", "-g", "--allow-build=openclaw", "openclaw@2.0.0"]);
@@ -636,7 +627,7 @@ describe("runGlobalPackageUpdateSteps", () => {
 
         expect(result.failedStep).toBeNull();
         expect(result.afterVersion).toBe("2.0.0");
-        expect(result.steps.map((step) => step.name)).toEqual(["global update"]);
+        expect(result.steps.map((step) => step.name)).toEqual(["package-install"]);
       });
     } finally {
       platformSpy.mockRestore();
@@ -701,7 +692,7 @@ describe("runGlobalPackageUpdateSteps", () => {
 
           expect(result.failedStep).toBeNull();
           expect(result.afterVersion).toBe("2.0.0");
-          const swapStep = result.steps.find((step) => step.name === "global install swap");
+          const swapStep = result.steps.find((step) => step.name === "package-swap");
           expect(swapStep?.stdoutTail).toContain("preserved old package");
           expect(swapStep?.stdoutTail).toContain(
             cleanupMode === "manual" ? "remove it manually" : "delayed cleanup",
@@ -759,11 +750,8 @@ describe("runGlobalPackageUpdateSteps", () => {
         postVerifyStep,
       });
 
-      expect(result.failedStep?.name).toBe("global install verify");
-      expect(result.steps.map((step) => step.name)).toEqual([
-        "global update",
-        "global install verify",
-      ]);
+      expect(result.failedStep?.name).toBe("package-verify");
+      expect(result.steps.map((step) => step.name)).toEqual(["package-install", "package-verify"]);
       expect(result.steps.at(-1)?.stderrTail).toContain(
         "expected installed version 2.0.0, found 1.5.0",
       );
@@ -900,7 +888,7 @@ describe("runGlobalPackageUpdateSteps", () => {
         chmodSpy.mockRestore();
       }
 
-      expect(result.failedStep?.name).toBe("global install swap");
+      expect(result.failedStep?.name).toBe("package-swap");
       if (failure === "package restore") {
         expect(result.afterVersion).toBeNull();
         await expectPathMissing(packageRoot);

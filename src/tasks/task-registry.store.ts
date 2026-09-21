@@ -1,4 +1,3 @@
-import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
 import type { SqliteWorkerNativeSettlementOwner } from "../infra/sqlite-worker-operation-settlement.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
@@ -17,7 +16,6 @@ import {
   closeTaskRegistryDatabase,
   deleteTaskAndDeliveryStateFromSqlite,
   loadTaskRegistryStateFromSqlite,
-  repairLegacyTaskIdentifiersInSqlite,
   loadTaskRegistryMutationStateFromSqlite,
   upsertTaskWithDeliveryStateToSqlite,
   upsertTaskDeliveryStateToSqlite,
@@ -65,7 +63,7 @@ export type TaskRegistryStore = TaskExecutionRestoreStore & {
   ) => Promise<TaskMirroredFlowSyncOutcome>;
   loadMutationSnapshotAsync: (
     context: OpenClawStateWorkerContext,
-    scope?: TaskRegistryMutationScope,
+    scope?: TaskRegistryMutationScope | readonly TaskRegistryMutationScope[],
   ) => Promise<TaskRegistryStoreSnapshot>;
   loadMutationSnapshot?: (
     scopes: readonly TaskRegistryMutationScope[],
@@ -120,7 +118,6 @@ const defaultTaskRegistryStore: TaskRegistryStore = {
       scope.execute({ type: "flows.syncMirroredTask", input: params }),
     );
   },
-  repairLegacyIdentifiers: repairLegacyTaskIdentifiersInSqlite,
   loadSnapshot: loadTaskRegistryStateFromSqlite,
   async loadMutationSnapshotAsync(context, scope) {
     const { executeOpenClawStateWorker } = await import("../state/openclaw-state-worker-store.js");
@@ -146,34 +143,6 @@ const defaultTaskRegistryStore: TaskRegistryStore = {
 
 let configuredTaskRegistryStore: TaskRegistryStore = defaultTaskRegistryStore;
 let configuredTaskRegistryObservers: TaskRegistryObservers | null = null;
-
-export async function loadTaskRegistryMutationSnapshots(
-  context: OpenClawStateWorkerContext,
-  store: TaskRegistryStore,
-  scopes: ReadonlyArray<TaskRegistryMutationScope | undefined>,
-): Promise<
-  Array<{ scope: TaskRegistryMutationScope | undefined; snapshot: TaskRegistryStoreSnapshot }>
-> {
-  const snapshotReads = scopes.map(async (scope) => ({
-    scope,
-    snapshot: await store.loadMutationSnapshotAsync(context, scope),
-  }));
-  return Promise.all(snapshotReads).catch(async (error: unknown) => {
-    // Each read owns a worker scope; join its siblings before releasing this owner.
-    const settled = await Promise.allSettled(snapshotReads);
-    const errors = settled.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : [],
-    );
-    if (errors.length > 1) {
-      throw createSqliteLifecycleAggregateError(
-        errors,
-        "Task registry projection reads failed",
-        error,
-      );
-    }
-    throw error;
-  });
-}
 
 export function getTaskRegistryStore(): TaskRegistryStore {
   return configuredTaskRegistryStore;

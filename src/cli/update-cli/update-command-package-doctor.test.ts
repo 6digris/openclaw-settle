@@ -452,7 +452,7 @@ it("still refreshes the run ledger for a step that spawns no Doctor", async () =
   const spawned = createDeferredCore();
   const exited = createDeferredCore();
   const running = runUpdateStep({
-    name: "git fetch",
+    name: "git-fetch",
     argv: ["git", "fetch"],
     cwd: root,
     timeoutMs: ABANDONED_UPDATE_RUN_MS * 2,

@@ -106,6 +106,7 @@ describe("retained package update transactions", () => {
           runCommand: createRootRunner(globalRoot),
           timeoutMs: 1000,
           runStep: async ({ name, argv }) => {
+            const fallback = argv.includes("--omit=optional");
             const stagePrefix = argv[argv.indexOf("--prefix") + 1];
             if (!stagePrefix) {
               throw new Error("missing stage prefix");
@@ -130,11 +131,10 @@ describe("retained package update transactions", () => {
               command: argv.join(" "),
               cwd: stagePrefix,
               durationMs: 0,
-              exitCode:
-                outcome === "fallback install timed out" && name === "global update" ? 1 : 0,
+              exitCode: outcome === "fallback install timed out" && !fallback ? 1 : 0,
               termination:
                 outcome === "install timed out" ||
-                (outcome === "fallback install timed out" && name !== "global update")
+                (outcome === "fallback install timed out" && fallback)
                   ? "timeout"
                   : "exit",
               killed: outcome === "install killed",
@@ -277,7 +277,7 @@ describe("retained package update transactions", () => {
           if (outcome === "wrong target") {
             expect(result.reason).toBeUndefined();
             expect(result.failedStep).toMatchObject({
-              name: "global install verify",
+              name: "package-verify",
               stderrTail: "expected installed version 2.0.0, found 1.0.0",
             });
           } else {
@@ -292,8 +292,8 @@ describe("retained package update transactions", () => {
           expect(result.failedStep).toMatchObject({
             name: failedInstall
               ? outcome === "fallback install timed out"
-                ? "global update (omit optional)"
-                : "global update"
+                ? "package-install-omit-optional"
+                : "package-install"
               : "candidate canary",
             exitCode: outcome === "validation rejected" ? 1 : 0,
           });
@@ -309,7 +309,7 @@ describe("retained package update transactions", () => {
           );
           expect(result.failedStep?.name ?? null).toBe(
             activationFailed
-              ? "global install swap"
+              ? "package-swap"
               : outcome === "doctor rejected"
                 ? "doctor"
                 : receiptThrow

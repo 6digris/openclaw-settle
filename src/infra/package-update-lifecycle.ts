@@ -33,7 +33,7 @@ export async function resolveNpmUpdateLifecyclePolicy(params: {
   return {
     policy: null,
     failedStep: {
-      name: "npm lifecycle policy preflight",
+      name: "npm-lifecycle-policy-preflight",
       command: argv.join(" "),
       cwd: process.cwd(),
       durationMs: 0,
@@ -59,7 +59,7 @@ type PackageUpdateLifecycleResult =
 /** Adapt lifecycle ownership refusal without flattening it into removable stage failure. */
 export async function runPackageUpdateLifecycle(params: {
   packageRoot: string;
-  manager: string;
+  manager: ResolvedGlobalInstallTarget["manager"];
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
   runStep: PackageUpdateStepRunner;
@@ -73,7 +73,7 @@ export async function runPackageUpdateLifecycle(params: {
       timeoutMs: params.timeoutMs,
       runScript: async (script) => {
         const step = await params.runStep({
-          name: `${params.manager} package ${script.name}`,
+          name: `${params.manager}-package-${script.name}`,
           argv: [process.execPath, path.join(params.packageRoot, script.relativePath)],
           cwd: params.packageRoot,
           env: params.env,
@@ -97,7 +97,7 @@ export async function runPackageUpdateLifecycle(params: {
       return { status: "failed", step: failedScript, preserveStage: false };
     }
     const step: UpdateStepResult = {
-      name: `${params.manager} package lifecycle`,
+      name: `${params.manager}-package-lifecycle`,
       command: `complete ${params.packageRoot}`,
       cwd: params.packageRoot,
       durationMs: 0,
@@ -180,7 +180,7 @@ async function cleanupStagedPackageInstall(stage: StagedPackageInstall): Promise
 /** Dispose only after pending work is retired under its lifecycle generation. */
 export async function discardPackageUpdateStage(params: {
   stage: StagedPackageInstall;
-  manager: string;
+  manager: ResolvedGlobalInstallTarget["manager"];
   committed: boolean;
 }): Promise<PackageUpdateLifecycleResult | { status: "advisory"; step: UpdateStepResult }> {
   try {
@@ -194,7 +194,7 @@ export async function discardPackageUpdateStage(params: {
       return {
         status: "advisory",
         step: {
-          name: "package stage cleanup",
+          name: "package-stage-cleanup",
           command: `discard ${params.stage.prefix}`,
           cwd: params.stage.prefix,
           durationMs: 0,
@@ -208,7 +208,7 @@ export async function discardPackageUpdateStage(params: {
       status: "failed",
       preserveStage: true,
       step: {
-        name: `${params.manager} package lifecycle`,
+        name: `${params.manager}-package-lifecycle`,
         command: `discard ${params.stage.packageRoot}`,
         cwd: params.stage.packageRoot,
         durationMs: 0,

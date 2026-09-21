@@ -144,7 +144,7 @@ export async function updateGitCheckout(params: {
     }
     const result = await runStep({
       runCommand,
-      name: "git rollback verify HEAD",
+      name: "git-rollback-verify-head",
       argv: ["git", "-C", gitRoot, "rev-parse", "HEAD"],
       cwd: gitRoot,
       timeoutMs,
@@ -163,7 +163,7 @@ export async function updateGitCheckout(params: {
     if (!beforeSha) {
       return false;
     }
-    let restored = await appendRecoveryStep("git rollback clean", [
+    let restored = await appendRecoveryStep("git-rollback-clean", [
       "git",
       "-C",
       gitRoot,
@@ -173,7 +173,7 @@ export async function updateGitCheckout(params: {
     // Preflight requires a clean checkout outside generated Control UI assets,
     // so preserve that excluded directory while removing update-created paths.
     restored =
-      (await appendRecoveryStep("git rollback clean untracked", [
+      (await appendRecoveryStep("git-rollback-clean-untracked", [
         "git",
         "-C",
         gitRoot,
@@ -187,7 +187,7 @@ export async function updateGitCheckout(params: {
         ]) ?? []),
       ])) && restored;
     if (branch && branch !== "HEAD") {
-      const checkedOut = await appendRecoveryStep("git rollback checkout", [
+      const checkedOut = await appendRecoveryStep("git-rollback-checkout", [
         "git",
         "-C",
         gitRoot,
@@ -197,7 +197,7 @@ export async function updateGitCheckout(params: {
       ]);
       if (checkedOut) {
         restored =
-          (await appendRecoveryStep("git rollback reset", [
+          (await appendRecoveryStep("git-rollback-reset", [
             "git",
             "-C",
             gitRoot,
@@ -206,7 +206,7 @@ export async function updateGitCheckout(params: {
             beforeSha,
           ])) && restored;
         if (createdDevBranchDuringUpdate) {
-          await appendRecoveryStep(`git rollback delete ${DEV_BRANCH}`, [
+          await appendRecoveryStep("git-rollback-delete-branch", [
             "git",
             "-C",
             gitRoot,
@@ -220,7 +220,7 @@ export async function updateGitCheckout(params: {
       return restored && checkedOut && verified;
     }
     restored =
-      (await appendRecoveryStep("git rollback checkout", [
+      (await appendRecoveryStep("git-rollback-checkout", [
         "git",
         "-C",
         gitRoot,
@@ -229,7 +229,7 @@ export async function updateGitCheckout(params: {
         beforeSha,
       ])) && restored;
     if (createdDevBranchDuringUpdate) {
-      await appendRecoveryStep(`git rollback delete ${DEV_BRANCH}`, [
+      await appendRecoveryStep("git-rollback-delete-branch", [
         "git",
         "-C",
         gitRoot,
@@ -266,7 +266,7 @@ export async function updateGitCheckout(params: {
       } catch (error) {
         runtimeRestored = false;
         steps.push({
-          name: "git runtime rollback",
+          name: "git-runtime-rollback",
           command: "restore previous runtime",
           cwd: gitRoot,
           durationMs: 0,
@@ -312,7 +312,7 @@ export async function updateGitCheckout(params: {
     return mutationPrepared ? rollbackError(reason) : buildError(reason);
   };
   const { result: statusCheck, dirty } = await runGitCleanCheckStep(
-    step("clean check", gitCleanCheckArgs(gitRoot), gitRoot),
+    step("clean-check", gitCleanCheckArgs(gitRoot), gitRoot),
   );
   if (isFailedUpdateStep(statusCheck)) {
     return buildError(dirty ? "dirty" : "clean-check-failed");
@@ -349,13 +349,15 @@ export async function updateGitCheckout(params: {
       const { step: inspectionStep, workStep: inspectionWorkStep } =
         forRunner(runInspectionCommand);
       const importCandidate = async (candidateSha: string, upstreamRef?: string) => {
-        const transfer = await prepareGitCandidateTransfer({
+        // Close the pinned pack on every exit, including admission refusal,
+        // before the surrounding inspection checkout is removed.
+        await using transfer = await prepareGitCandidateTransfer({
           candidateSha,
           beforeSha,
           installedRoot: gitRoot,
           installedRunCommand: runCommand,
           upstreamRef,
-          step: inspectionWorkStep("git pack update", [], inspectionRoot),
+          step: inspectionWorkStep("git-pack-update", [], inspectionRoot),
           probeTimeoutMs: timeoutMs,
         });
         if (!transfer) {
@@ -368,7 +370,7 @@ export async function updateGitCheckout(params: {
         await prepareMutation(candidateSha, inspectionRoot, runInspectionCommand);
         candidateTransfer = transfer;
         const imported = await transfer.importInto(
-          workStep("git import admitted target", [], gitRoot),
+          workStep("git-import-admitted-target", [], gitRoot),
         );
         if (!imported) {
           return { status: "error" as const, reason: "fetch-failed" };
@@ -380,7 +382,7 @@ export async function updateGitCheckout(params: {
           root: inspectionRoot,
           step: inspectionStep,
           workStep: inspectionWorkStep,
-          name: "git target inspection fetch",
+          name: "git-target-inspection-fetch",
           channel,
           steps,
         }))
@@ -485,7 +487,7 @@ export async function updateGitCheckout(params: {
     const activateBranch = channel === "dev" && !hasDevTarget;
     sourceMutationStarted = true;
     const failure = await runRequiredStep(
-      `git checkout ${activateBranch ? DEV_BRANCH : preflight.candidateSha}`,
+      "git-checkout",
       activateBranch
         ? ["git", "-C", gitRoot, "checkout", "-B", DEV_BRANCH, preflight.candidateSha]
         : ["git", "-C", gitRoot, "checkout", "--detach", preflight.candidateSha],
@@ -505,11 +507,7 @@ export async function updateGitCheckout(params: {
         preflight.selectedDevUpstream,
         DEV_BRANCH,
       ];
-      const upstreamOptions = workStep(
-        `git branch --set-upstream-to ${preflight.selectedDevUpstream} ${DEV_BRANCH}`,
-        upstreamArgs,
-        gitRoot,
-      );
+      const upstreamOptions = workStep("git-set-upstream", upstreamArgs, gitRoot);
       const upstreamStep = await runGitUpstreamStep(upstreamOptions);
       if (isFailedUpdateStep(upstreamStep)) {
         return await rollbackError("checkout-failed");
@@ -522,7 +520,7 @@ export async function updateGitCheckout(params: {
       await runtimePromotion.activate();
     } catch (error) {
       steps.push({
-        name: "git runtime activation",
+        name: "git-runtime-activation",
         command: "activate validated runtime",
         cwd: gitRoot,
         durationMs: 0,
@@ -568,7 +566,7 @@ export async function updateGitCheckout(params: {
 
     if ((await resolveControlUiAssetHealth({ root: gitRoot })).kind !== "ready") {
       steps.push({
-        name: "ui assets verify",
+        name: "ui-assets-verify",
         command: "verify startup assets",
         cwd: gitRoot,
         durationMs: 0,
@@ -579,7 +577,7 @@ export async function updateGitCheckout(params: {
     }
     const afterBuildId = await readBuiltGatewayBuildId(gitRoot);
     const afterShaStep = await runStep(
-      step("git rev-parse HEAD (after)", ["git", "-C", gitRoot, "rev-parse", "HEAD"], gitRoot),
+      step("git-verify-head", ["git", "-C", gitRoot, "rev-parse", "HEAD"], gitRoot),
     );
     if (isFailedUpdateStep(afterShaStep)) {
       return await rollbackError("head-verification-failed");
@@ -608,7 +606,7 @@ export async function updateGitCheckout(params: {
     }
     const fact = createUpdateErrorFact("git update", error, defaultCommandEnv);
     steps.push({
-      name: "git update",
+      name: "git-update",
       command: "update checkout",
       cwd: gitRoot,
       durationMs: 0,
@@ -624,7 +622,7 @@ export async function updateGitCheckout(params: {
     });
   } finally {
     if (!cleanupUncertain) {
-      await candidateTransfer?.cleanup(step("git update pack cleanup", [], gitRoot));
+      await candidateTransfer?.cleanup(step("git-update-pack-cleanup", [], gitRoot));
       await runtimePromotion?.cleanup();
     }
   }

@@ -11,7 +11,7 @@ import {
   writePackageRoot,
 } from "./package-update-steps.test-support.js";
 
-describe("npm lifecycle policy preflight", () => {
+describe("npm-lifecycle-policy-preflight", () => {
   it.each([false, true])(
     "verifies the original package before recovery from preflight refusal (corrupt=%s)",
     async (corrupt) => {
@@ -44,7 +44,7 @@ describe("npm lifecycle policy preflight", () => {
         expect(result.failedStep).toMatchObject({
           failureFacts: [
             expect.objectContaining({
-              check: "npm lifecycle policy preflight",
+              check: "npm-lifecycle-policy-preflight",
               code: "global-install-failed",
               message: expect.stringContaining("Unable to determine the owning npm version"),
             }),
@@ -165,7 +165,7 @@ describe("package update recovery safety", () => {
         ]);
         const beforeActivate = vi.fn(async () => {});
         const runStep = vi.fn(async ({ name, argv }: { name: string; argv: string[] }) => {
-          if (name === "global update pack") {
+          if (name === "package-pack") {
             const packDestinationIndex = argv.indexOf("--pack-destination");
             const packDir = argv[packDestinationIndex + 1];
             if (packDestinationIndex < 0 || !packDir) {
@@ -250,7 +250,7 @@ describe("package update recovery safety", () => {
               ? { beforeActivate }
               : { onTransaction }),
         });
-        expect(result.failedStep).toMatchObject({ name: "global install stage", exitCode: 1 });
+        expect(result.failedStep).toMatchObject({ name: "package-stage", exitCode: 1 });
         expect(runStep).not.toHaveBeenCalled();
         expect(validateCandidate).not.toHaveBeenCalled();
         expect(beforeActivate).not.toHaveBeenCalled();
@@ -352,7 +352,7 @@ describe("package update recovery safety", () => {
           runStep,
           timeoutMs: 1000,
         });
-        expect(result.failedStep?.name).toBe("global install stage");
+        expect(result.failedStep?.name).toBe("package-stage");
         expect(result.recovery).toEqual({ serviceRestartSafe: true, version: "1.0.0" });
         expect(runStep).not.toHaveBeenCalled();
         expect(await fs.readFile(path.join(packageRoot, "dist", "index.js"), "utf8")).toBe(
@@ -623,12 +623,12 @@ describe("package update recovery safety", () => {
             reason: "runtime-verification-failed",
             packageRollbackVerified: true,
           });
-          expect(
-            result.steps.find((step) => step.name === "global install swap")?.stdoutTail,
-          ).toContain("restored previous openclaw package and affected launchers");
-          expect(
-            result.steps.find((step) => step.name === "global install swap")?.stdoutTail,
-          ).toContain("Update Doctor may have changed persistent state");
+          expect(result.steps.find((step) => step.name === "package-swap")?.stdoutTail).toContain(
+            "restored previous openclaw package and affected launchers",
+          );
+          expect(result.steps.find((step) => step.name === "package-swap")?.stdoutTail).toContain(
+            "Update Doctor may have changed persistent state",
+          );
         }
       });
     },
@@ -704,7 +704,7 @@ describe("package update recovery safety", () => {
         copyFileSpy.mockRestore();
       }
 
-      expect(result.failedStep).toMatchObject({ name: "global install swap", exitCode: 1 });
+      expect(result.failedStep).toMatchObject({ name: "package-swap", exitCode: 1 });
       expect(result.failedStep).toMatchObject({
         failureFacts: [expect.objectContaining({ check: "package-swap", code: "swap-failed" })],
       });

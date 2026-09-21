@@ -10,6 +10,7 @@ export const en: TranslationMap & {
   browser: TranslationMap & { errors: TranslationMap };
   shortcutsOverlay: TranslationMap & { title: string };
   chat: TranslationMap & {
+    codeBlock: TranslationMap;
     commands: TranslationMap;
     welcome: TranslationMap & { suggestions: TranslationMap & { whatCanYouDo: string } };
     backgroundTasks: TranslationMap;
@@ -285,6 +286,14 @@ export const en: TranslationMap & {
     noteLabel: "Progress note",
     dismiss: "Dismiss progress card",
     dismissFailed: "Could not dismiss the progress card. Try again.",
+    refresh: {
+      label: "Refresh task progress",
+      retry: "Retry progress refresh",
+      pending: "Refreshing task progress…",
+      failed: "Could not refresh. Previous update kept. Use refresh to retry.",
+      timeout: "No new update yet. The request may still be running. Use refresh to retry.",
+      updated: "Task progress updated",
+    },
     widgetLabel: "Session progress",
     widgetLoading: "Loading session progress…",
     widgetEmpty: "No progress card yet",
@@ -596,6 +605,7 @@ export const en: TranslationMap & {
       version: "v{version}",
       commitBehind: "{count} commit behind",
       commitsBehind: "{count} commits behind",
+      viewChanges: "Compare on GitHub",
     },
     sidebar: {
       campaignTarget: "{status} · {target}",
@@ -911,7 +921,7 @@ export const en: TranslationMap & {
     sortLabel: "Sort",
     sortUpdated: "Recently updated",
     sortTitle: "Title A–Z",
-    resultCount: "{count} dashboards",
+    resultCount: "Dashboards: {count}",
     noResultsTitle: "No matching dashboards",
     noResultsDescription: "Try another search or author.",
   },
@@ -2253,8 +2263,8 @@ export const en: TranslationMap & {
       saving: "Saving…",
       loading: "Checking installed agents…",
       empty:
-        "No models are available from installed agents. Sign in through your agent, then open the picker again.",
-      signIn: "Sign in through the installed agent, then check again.",
+        "No models are available from installed agents. Check the installed app, then open the picker again.",
+      unconfirmed: "Availability not confirmed",
     },
     empty: {
       title: "Recommended installs",
@@ -3204,30 +3214,11 @@ export const en: TranslationMap & {
       remaining: "{percent}% left",
       resets: "Resets {date}",
     },
-    presets: {
-      today: "Today",
-      last7d: "7d",
-      last30d: "30d",
-      last90d: "90d",
-      last1y: "1y",
-      all: "All",
-    },
-    scope: {
-      instance: "Current instance",
-      instanceHint: "Show only the active session id for each logical session.",
-      family: "Historical lineage",
-      familyHint: "Roll up known rotated transcript-backed session ids.",
-      familyIncluded: "Historical lineage includes {count} session instances.",
-    },
+    presets: {},
+    scope: {},
     filters: {},
     query: {},
-    export: {
-      label: "Export",
-      changed: "Session context changed while preparing the export. Refresh usage and try again.",
-      sessionsCsv: "Sessions CSV",
-      dailyCsv: "Daily CSV",
-      json: "JSON",
-    },
+    export: {},
     cacheStatus: {},
     empty: {},
     daily: {},
@@ -3706,19 +3697,7 @@ export const en: TranslationMap & {
         "The Mermaid renderer could not load or finish. Reload the dashboard; if this continues, check proxy or authentication rules for its renderer asset URLs.",
       imageError: "The diagram image could not be displayed. Reload the dashboard to try again.",
     },
-    codeBlock: {
-      languageFallback: "Code",
-      hiddenLine: "1 hidden line",
-      hiddenLines: "{count} hidden lines",
-      showHiddenLine: "Show 1 hidden line",
-      showHiddenLines: "Show {count} hidden lines",
-      enableWrap: "Enable word wrap",
-      disableWrap: "Disable word wrap",
-      jsonBadge: "JSON",
-      jsonArrayItem: "Array ({count} item)",
-      jsonArrayItems: "Array ({count} items)",
-      jsonObjectKeys: "Object ({count} keys)",
-    },
+    codeBlock: {},
     workspaceConflict: {
       titleOne: "1 cloud workspace conflict",
       titleMany: "{count} cloud workspace conflicts",
@@ -4233,6 +4212,7 @@ export const en: TranslationMap & {
       removeNamedAttachment: "Remove {name}",
       removeBrowserAnnotation: "Remove browser annotation: {name}",
       addAttachment: "Add attachment",
+      attach: "Attach…",
       attachPhoto: "Photo",
       attachFileOption: "File",
       menu: {

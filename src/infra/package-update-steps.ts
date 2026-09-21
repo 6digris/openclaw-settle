@@ -313,7 +313,7 @@ async function prepareNpmGitSourceInstallSpec(params: {
 
   const packDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-update-pack-"));
   const packStep = await params.runStep({
-    name: "global update pack",
+    name: "package-pack",
     argv: [
       params.installTarget.command,
       "pack",
@@ -339,7 +339,7 @@ async function prepareNpmGitSourceInstallSpec(params: {
   const tarball = await findPackedTarball(packDir);
   if (!tarball) {
     const failedStep: UpdateStepResult = {
-      name: "global update pack verify",
+      name: "package-pack-verify",
       command: `find packed tarball in ${packDir}`,
       cwd: packDir,
       durationMs: 0,
@@ -420,7 +420,7 @@ async function prepareStagedPackageInstall(
       stagedInstall: null,
       failedStep: await classifyPackageUpdatePermissionFailure(
         {
-          name: "global install stage",
+          name: "package-stage",
           command: `prepare staged ${installTarget.manager} install`,
           cwd: targetLayout?.prefix ?? installTarget.globalRoot ?? process.cwd(),
           durationMs: Date.now() - startedAt,
@@ -628,7 +628,7 @@ export async function runGlobalPackageUpdateSteps(params: {
         ...params,
         env: effectiveInstallEnv,
         args: params.installTarget.manager === "bun" ? ["pm", "bin", "-g"] : ["bin", "-g"],
-        name: `${params.installTarget.manager} staging preflight`,
+        name: `${params.installTarget.manager}-staging-preflight`,
       });
       if (bin.failedStep) {
         return await packageUpdateFailure(bin.failedStep);
@@ -665,7 +665,7 @@ export async function runGlobalPackageUpdateSteps(params: {
           args,
           cwd: stage.projectRoot,
           env: stage.env,
-          name: "pnpm staging preflight",
+          name: "pnpm-staging-preflight",
         });
         const reportedPath = probe.result && readPackageManagerProbeValue(probe.result.stdout);
         if (
@@ -673,7 +673,7 @@ export async function runGlobalPackageUpdateSteps(params: {
           (await resolveCanonicalPath(reportedPath)) !== (await resolveCanonicalPath(expectedPath))
         ) {
           const failedStep = probe.failedStep ?? {
-            name: "pnpm staging preflight",
+            name: "pnpm-staging-preflight",
             command: [params.installTarget.command, ...args].join(" "),
             cwd: stage.projectRoot,
             durationMs: 0,
@@ -719,7 +719,7 @@ export async function runGlobalPackageUpdateSteps(params: {
     liveTreeMutated ||= !stagedInstall;
     const updateStep = await classifyPackageUpdatePermissionFailure(
       await params.runStep({
-        name: "global update",
+        name: "package-install",
         argv: [
           ...globalInstallArgs(
             installCommandTarget,
@@ -776,7 +776,7 @@ export async function runGlobalPackageUpdateSteps(params: {
         liveTreeMutated ||= !stagedInstall;
         const fallbackStep = await classifyPackageUpdatePermissionFailure(
           await params.runStep({
-            name: "global update (omit optional)",
+            name: "package-install-omit-optional",
             argv: fallbackArgv,
             ...(preparedSpec.installCwd ? { cwd: preparedSpec.installCwd } : {}),
             ...installEnv,
@@ -810,7 +810,7 @@ export async function runGlobalPackageUpdateSteps(params: {
       const candidate = activePackages.length === 1 ? activePackages[0] : undefined;
       if (!candidate) {
         const failedStep: UpdateStepResult = {
-          name: "global install verify",
+          name: "package-verify",
           command: "resolve staged pnpm replacement",
           cwd: stagedInstall.native.projectRoot,
           durationMs: 0,
@@ -859,7 +859,7 @@ export async function runGlobalPackageUpdateSteps(params: {
     if (pnpmReplacementMissing) {
       activePackageRoot = null;
       const replacementStep: UpdateStepResult = {
-        name: "global install verify",
+        name: "package-verify",
         command: `resolve pnpm replacement in ${params.installTarget.globalRoot ?? "unknown root"}`,
         cwd: params.installTarget.globalRoot ?? process.cwd(),
         durationMs: 0,
@@ -888,7 +888,7 @@ export async function runGlobalPackageUpdateSteps(params: {
     }
     if (!verificationPackageRoot) {
       const failedStep: UpdateStepResult = {
-        name: "global install verify",
+        name: "package-verify",
         command: "resolve installed package",
         cwd: updateCwd ?? process.cwd(),
         durationMs: 0,
@@ -987,7 +987,7 @@ export async function runGlobalPackageUpdateSteps(params: {
       }
       if (verificationErrors.length > 0) {
         steps.push({
-          name: "global install verify",
+          name: "package-verify",
           command: `verify ${verificationPackageRoot}`,
           cwd: verificationPackageRoot,
           durationMs: 0,
@@ -1043,7 +1043,7 @@ export async function runGlobalPackageUpdateSteps(params: {
             }
             const message = `Local package overrides: ${result.status}; ${result.applied} replayed. Recovery bundle: ${result.recoveryDir}. ${result.warnings.join(" ")}`;
             const report: UpdateStepResult = {
-              name: "local package overrides",
+              name: "local-package-overrides",
               command: "preserve packaged dist edits",
               cwd: originalPackageRoot ?? process.cwd(),
               durationMs: 0,
@@ -1122,7 +1122,7 @@ export async function runGlobalPackageUpdateSteps(params: {
     }
     const failedStep = await classifyPackageUpdatePermissionFailure(
       {
-        name: "package update",
+        name: "package-update",
         command: "update installed package",
         cwd: activePackageRoot ?? params.installCwd ?? process.cwd(),
 
