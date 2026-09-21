@@ -13,6 +13,7 @@ import {
 } from "../infra/agent-run-registry.js";
 import { loadExecApprovalsReadOnly } from "../infra/exec-approvals-store.js";
 import { registerMcpToolApprovalBinding } from "../infra/mcp-tool-approval-binding.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -110,6 +111,7 @@ async function requestGrant(
           ...request.mcpTool,
           isActive: options.isActive ?? (() => true),
         });
+  const responseSent = createDeferredCore();
   const args = {
     req: { method: "plugin.approval.request", params: request, id: "request-1" },
     params: request,
@@ -130,7 +132,7 @@ async function requestGrant(
             },
           }),
     },
-    respond: vi.fn(),
+    respond: vi.fn(() => responseSent.resolve()),
     isWebchatConnect: () => false,
     context: {
       broadcast: vi.fn(),
@@ -143,7 +145,12 @@ async function requestGrant(
   const pending = createPluginApprovalHandlers(aux.pluginApprovalManager)[
     "plugin.approval.request"
   ]!(args);
-  await vi.waitFor(() => expect(args.respond).toHaveBeenCalled());
+  await Promise.race([responseSent.promise, pending]);
+  expect(args.respond).toHaveBeenCalledWith(
+    true,
+    expect.objectContaining({ status: "accepted" }),
+    undefined,
+  );
   releaseBinding?.();
   const record = (await aux.pluginApprovalManager.listPendingRecords())[0];
   if (!record) {
