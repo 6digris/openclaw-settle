@@ -3,6 +3,7 @@ import {
   TASKS_LIST_CURSOR_MAX_LENGTH,
   type TasksListResult,
 } from "../../packages/gateway-protocol/src/index.js";
+import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
 import * as taskRegistryRead from "../tasks/task-registry-read.js";
 import {
   createTaskRecord,
@@ -26,6 +27,34 @@ import {
   withAuthenticatedTaskGateway,
 } from "./server.tasks-list.test-helpers.js";
 import * as taskSessionAccess from "./task-session-access.js";
+
+function describeEmptyTaskPage(
+  access: Parameters<typeof taskSessionAccess.prepareTaskSessionReadFilter>[0] | undefined,
+): string {
+  // Inspect only a failed response, so diagnostics cannot warm authorization reads.
+  try {
+    return JSON.stringify({
+      phase: "after-empty-response",
+      taskCount: listTaskRecordsUnsorted().length,
+      stateDir: process.env.OPENCLAW_STATE_DIR,
+      configuredStore: access?.cfg.session?.store,
+      lastPreparedProfileId: access?.client?.authenticatedUserProfile?.profileId,
+      sessions: [OWNED_SESSION_KEY, FOREIGN_SESSION_KEY].map((sessionKey) => {
+        const entry = loadSessionEntryReadOnly({ agentId: "main", sessionKey });
+        return {
+          sessionKey,
+          present: entry !== undefined,
+          sessionId: entry?.sessionId,
+          lifecycleRevision: entry?.lifecycleRevision,
+          visibility: entry?.visibility,
+          createdActor: entry?.createdActor,
+        };
+      }),
+    });
+  } catch (error) {
+    return `after-empty-response diagnostic failed: ${String(error)}`;
+  }
+}
 
 installGatewayTestHooks({ scope: "suite" });
 
@@ -66,11 +95,13 @@ describe("tasks.list Gateway performance", () => {
       let accessSliceWorkMs = 20;
       const workClock = vi.spyOn(performance, "now").mockImplementation(() => workMs);
       const prepareAccess = taskSessionAccess.prepareTaskSessionReadFilter;
+      let lastPreparedAccess: Parameters<typeof prepareAccess>[0] | undefined;
       let onAccessSlice: ((batch: Parameters<typeof prepareAccess>[1]) => void) | undefined;
       const accessWork = vi
         .spyOn(taskSessionAccess, "prepareTaskSessionReadFilter")
         .mockImplementation((...args) => {
           const filter = prepareAccess(...args);
+          lastPreparedAccess = args[0];
           onAccessSlice?.(args[1]);
           workMs += accessSliceWorkMs;
           return filter;
@@ -218,7 +249,11 @@ describe("tasks.list Gateway performance", () => {
           });
           expect(visibility?.ok, JSON.stringify(visibility?.error)).toBe(true);
           expect(restricted.ok, JSON.stringify(restricted.error)).toBe(true);
-          expect(restricted.payload?.tasks.map((task) => task.id)).toEqual(viewerExpected);
+          const restrictedIds = restricted.payload?.tasks.map((task) => task.id);
+          expect(
+            restrictedIds,
+            restrictedIds?.length === 0 ? describeEmptyTaskPage(lastPreparedAccess) : undefined,
+          ).toEqual(viewerExpected);
           expect(restricted.payload?.tasks).toHaveLength(25);
           expect(
             restricted.payload?.tasks.every((task) => task.sessionKey === OWNED_SESSION_KEY),
