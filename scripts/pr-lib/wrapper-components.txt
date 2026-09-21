@@ -117,6 +117,11 @@ scripts/lib/official-external-plugin-catalog.json
 scripts/lib/official-external-provider-catalog.json
 scripts/lib/plain-gh.mjs
 scripts/lib/plain-gh.sh
+scripts/lib/plugin-sdk-deprecated-barrel-subpaths.json
+scripts/lib/plugin-sdk-deprecated-public-subpaths.json
+scripts/lib/plugin-sdk-entries.mts
+scripts/lib/plugin-sdk-entrypoints.json
+scripts/lib/plugin-sdk-private-local-only-subpaths.json
 scripts/lib/record-shared.mjs
 scripts/lib/release-changelog.mjs
 scripts/lib/repo-root.mjs
