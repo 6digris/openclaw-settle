@@ -1,5 +1,6 @@
 import type { AuthProfileRowRead, UserModelAuthProfile } from "../agents/auth-profiles/types.js";
 import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
+import type { SandboxRegistryInsert } from "../agents/sandbox/registry.kernel.js";
 import type { SubagentRegistryWrite } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import type { ManagedWorktreeRecord } from "../agents/worktrees/types.js";
 import type { AuditEventListQuery, AuditEventListPage } from "../audit/audit-event-types.js";
@@ -92,6 +93,7 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   TranscriptWriteOperations &
   NodeWorkerJournalWorkerOperations &
   TaskRegistryWorkerOperations & {
+    "sandboxRegistry.insertIfMissing": { input: SandboxRegistryInsert; output: void };
     "githubRepository.personalPending": {
       input: RepositoryGitHubPublicationPendingQuery;
       output: RepositoryGitHubPublicationStatusRow | undefined;
