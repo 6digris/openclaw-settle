@@ -13,8 +13,8 @@ import { resolveProviderRuntimePlugin } from "../plugins/provider-hook-runtime.j
 import { shouldDropClaudeThinkingBlocks } from "../plugins/provider-replay-helpers.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
 import type { ProviderReplayPolicy } from "../plugins/types.js";
+import { isAnthropicApi } from "./embedded-agent-helpers/anthropic-api.js";
 import { isGoogleModelApi } from "./embedded-agent-helpers/google.js";
-import { isAnthropicApi } from "./embedded-agent-helpers/turns.js";
 import type { ToolCallIdMode } from "./tool-call-id.js";
 
 /** Scope of transcript content sanitization before provider replay. */

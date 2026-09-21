@@ -7,10 +7,7 @@ import type { AgentMessage } from "../runtime/index.js";
 import { isThinkingLikeBlock } from "../thinking-block.js";
 import { extractToolCallsFromAssistant, extractToolResultId } from "../tool-call-id.js";
 import type { TranscriptPolicy } from "../transcript-policy.js";
-
-export function isAnthropicApi(modelApi?: string | null): boolean {
-  return modelApi === "anthropic-messages" || modelApi === "bedrock-converse-stream";
-}
+import { isAnthropicApi } from "./anthropic-api.js";
 
 const SIGNED_THINKING_PROVIDERS = new Set(["anthropic", "amazon-bedrock", "anthropic-vertex"]);
 
