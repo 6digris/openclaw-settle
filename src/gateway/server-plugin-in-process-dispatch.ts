@@ -178,6 +178,7 @@ type DispatchGatewayMethodInProcessOptions = {
 
 type ResolvedInProcessGatewayDispatch = {
   assertContextCurrent: () => void;
+  assertCreatedInputSourceCurrent?: () => void;
   client: NonNullable<GatewayRequestOptions["client"]>;
   context: GatewayRequestContext;
   delegatedToolPolicyHandoffId?: string;
@@ -192,8 +193,9 @@ function resolveInProcessGatewayDispatch(
 ): ResolvedInProcessGatewayDispatch {
   const inheritedOperatorAuthority = operatorToolGatewayAuthority.getStore();
   const scope = getPluginRuntimeGatewayRequestScope();
+  const caller = getGatewayToolCallerIdentity();
   const operatorRunAuthority =
-    getGatewayToolCallerIdentity()?.operatorAuthority ??
+    caller?.operatorAuthority ??
     inheritedOperatorAuthority?.operatorRunAuthority ??
     scope?.client?.internal?.operatorRunAuthority;
   // A registered settle cohort owns its wake after the spawning tool has finished.
@@ -204,6 +206,13 @@ function resolveInProcessGatewayDispatch(
   const isHostOwnedAgentRun =
     method === "agent" && Boolean(options?.agentRunTracking || assertSettleWakeCurrent);
   const assertCallerCurrent = captureGatewayToolCallerAssertion();
+  const transfersCreatedInput =
+    method === "sessions.create" &&
+    options?.sessionCreation?.via === "spawn" &&
+    caller?.operationalRunInstance !== undefined &&
+    assertCallerCurrent !== undefined &&
+    options.agentToolCaller?.agentId === caller.agentId &&
+    options.agentToolCaller.sessionKey === caller.sessionKey;
   if (!isHostOwnedAgentRun || !operatorRunAuthority) {
     inheritedOperatorAuthority?.signal.throwIfAborted();
   }
@@ -414,18 +423,22 @@ function resolveInProcessGatewayDispatch(
     }
     bindInProcessSubagentResume(client.internal, resume);
   }
+  const assertSourceCurrent = () => {
+    operatorRunAuthority?.assertCurrent();
+    if ((resolveGatewayContext ? resolveGatewayContext() : scope?.context) !== context) {
+      throw new Error(
+        `In-process gateway dispatch requires a current gateway instance binding (method: ${method}).`,
+      );
+    }
+  };
   return {
     assertContextCurrent: () => {
-      operatorRunAuthority?.assertCurrent();
+      assertSourceCurrent();
       if (method !== "agent") {
         assertCallerCurrent?.(method);
       }
-      if ((resolveGatewayContext ? resolveGatewayContext() : scope?.context) !== context) {
-        throw new Error(
-          `In-process gateway dispatch requires a current gateway instance binding (method: ${method}).`,
-        );
-      }
     },
+    ...(transfersCreatedInput ? { assertCreatedInputSourceCurrent: assertSourceCurrent } : {}),
     client,
     context,
     delegatedToolPolicyHandoffId,
@@ -528,6 +541,13 @@ async function withInProcessGatewayDispatch<T>(
         assertContextCurrent();
         captured.authority.assertCurrent();
       };
+      const assertCreatedInputSourceCurrent = resolved.assertCreatedInputSourceCurrent;
+      if (assertCreatedInputSourceCurrent) {
+        resolved.assertCreatedInputSourceCurrent = () => {
+          assertCreatedInputSourceCurrent();
+          captured.authority.assertCurrent();
+        };
+      }
     }
     // A launched agent is autonomous; retaining tool-call AsyncLocalStorage would
     // leak the human authority into later model-selected work after closure.
@@ -548,6 +568,14 @@ export async function dispatchGatewayMethodInProcessRaw(
   options?: DispatchGatewayMethodInProcessOptions,
 ): Promise<GatewayMethodDispatchResponse> {
   return await withInProcessGatewayDispatch(method, options, async (resolved) => {
+    const assertExplicitRequestCurrent = () => {
+      throwIfGatewayDispatchAborted(method, options?.signal);
+      if (resolved.hasCurrentClientAuthority?.() === false) {
+        throw new Error(`Gateway client authority closed before dispatching ${method}.`);
+      }
+      options?.sessionMutationCommitGuard?.();
+    };
+    const assertCreatedInputSourceCurrent = resolved.assertCreatedInputSourceCurrent;
     return await dispatchGatewayRequestInProcessRaw(method, params, {
       client: resolved.client,
       context: resolved.context,
@@ -562,12 +590,16 @@ export async function dispatchGatewayMethodInProcessRaw(
       sessionMutationCommitGuard: () => {
         resolved.assertContextCurrent();
         // Nested RPCs keep the original request owner through preparation and final I/O.
-        throwIfGatewayDispatchAborted(method, options?.signal);
-        if (resolved.hasCurrentClientAuthority?.() === false) {
-          throw new Error(`Gateway client authority closed before dispatching ${method}.`);
-        }
-        options?.sessionMutationCommitGuard?.();
+        assertExplicitRequestCurrent();
       },
+      ...(assertCreatedInputSourceCurrent
+        ? {
+            assertCreatedInputSourceCurrent: () => {
+              assertCreatedInputSourceCurrent();
+              assertExplicitRequestCurrent();
+            },
+          }
+        : {}),
       timeoutMs: options?.timeoutMs,
       ...(options?.signal ? { signal: options.signal } : {}),
     });

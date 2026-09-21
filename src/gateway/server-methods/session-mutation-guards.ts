@@ -20,6 +20,8 @@ type RequestMutationOptions = Pick<
 
 type RequestMutationAuthorityBase = {
   assertCurrent: () => void;
+  /** Host-proven child input retains its source after the spawning invocation closes. */
+  assertAdmittedInputCurrent?: () => void;
   expectedProfileBinding?: ExpectedProfileBinding;
   /** Recorded by the scope owner only when this invocation uses its narrow alternative. */
   sessionScope?: SessionOperatorScope;
@@ -58,6 +60,42 @@ export function readGatewayRequestMutationAuthority(
   };
   requestMutationAuthorities.set(options, compatibility);
   return compatibility;
+}
+
+/** Only the trusted hosted creation producer can separate its tool receipt from input custody. */
+export function bindCreatedInputMutationAuthority<T extends GatewayRequestOptions>(
+  options: T,
+  assertSourceCurrent: (() => void) | undefined,
+): T {
+  if (!assertSourceCurrent) {
+    return options;
+  }
+  const source = readGatewayRequestMutationAuthority(options);
+  const { req, client, context, signal, hasCurrentClientAuthority, sessionMutationCommitGuard } =
+    options;
+  requestMutationAuthorities.set(options, {
+    ...source,
+    assertAdmittedInputCurrent: () => {
+      if (
+        options.req !== req ||
+        options.client !== client ||
+        options.context !== context ||
+        options.signal !== signal ||
+        options.hasCurrentClientAuthority !== hasCurrentClientAuthority ||
+        options.sessionMutationCommitGuard !== sessionMutationCommitGuard
+      ) {
+        throw new Error("Gateway requester authority changed");
+      }
+      assertRequestAuthorityCurrent({
+        req,
+        client,
+        signal,
+        hasCurrentClientAuthority,
+        sessionMutationCommitGuard: assertSourceCurrent,
+      });
+    },
+  });
+  return options;
 }
 
 /** WS admission retains owner facts, never an arbitrary generation getter or socket lifetime. */
@@ -164,6 +202,32 @@ export function bindGatewayRequestHandlerMutationAuthority<T extends GatewayRequ
           expectedProfileBinding: retainedProfileBinding,
           sessionScope: retainedSessionScope,
         };
+  if (source.assertAdmittedInputCurrent) {
+    const assertAdmittedInputCurrent = source.assertAdmittedInputCurrent;
+    const assertTransferredHandlerCurrent = () => {
+      assertHandlerCurrent();
+      // An adapter may add an opaque host guard. Only the unchanged producer
+      // guard has the known tool-receipt/source split; retain any new guard in full.
+      if (sessionMutationCommitGuard !== request.sessionMutationCommitGuard) {
+        assertRequestAuthorityCurrent(handler);
+      }
+    };
+    authority.assertAdmittedInputCurrent = () => {
+      assertTransferredHandlerCurrent();
+      assertAdmittedInputCurrent();
+    };
+    const authorization = handler.sessionMutationAuthorization;
+    if (authorization) {
+      const retainedHandler = handler;
+      retainedHandler.sessionMutationAuthorization = {
+        ...authorization,
+        assertAdmittedInputCurrent: () => {
+          assertTransferredHandlerCurrent();
+          (authorization.assertAdmittedInputCurrent ?? authorization.assertCurrent)();
+        },
+      };
+    }
+  }
   requestMutationAuthorities.set(handler, authority);
   return handler;
 }
@@ -173,6 +237,7 @@ export function withSessionMutationCommitGuard(
   authorization: SessionMutationAuthorization | undefined,
   assertCommitAllowed: (() => void) | undefined,
   assertExpectedProfile: (() => void) | undefined,
+  assertAdmittedSourceCurrent?: () => void,
 ): SessionMutationAuthorization | undefined {
   if (!assertCommitAllowed && !assertExpectedProfile) {
     return authorization;
@@ -180,7 +245,7 @@ export function withSessionMutationCommitGuard(
   // Committed input keeps its original host and session authority. A later
   // account selection change cannot revoke custody already transferred to it.
   const assertAdmittedInputCurrent = () => {
-    assertCommitAllowed?.();
+    (assertAdmittedSourceCurrent ?? assertCommitAllowed)?.();
     authorization?.assertCurrent();
   };
   return {
@@ -188,7 +253,8 @@ export function withSessionMutationCommitGuard(
     assertAdmittedInputCurrent,
     assertCurrent: () => {
       assertExpectedProfile?.();
-      assertAdmittedInputCurrent();
+      assertCommitAllowed?.();
+      authorization?.assertCurrent();
     },
     assertTargetCurrent: (target) => {
       assertExpectedProfile?.();

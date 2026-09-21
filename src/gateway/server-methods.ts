@@ -631,10 +631,12 @@ export async function handleGatewayRequest(
     }
     // Every session mutation owner uses these pre-commit assertions. Compose the
     // host lifetime here so individual handlers cannot lose it across an await.
+    const requestMutationAuthority = readGatewayRequestMutationAuthority(opts);
     const sessionMutationAuthorization = withSessionMutationCommitGuard(
       authorization.sessionMutationAuthorization,
-      readGatewayRequestMutationAuthority(opts).assertCurrent,
+      requestMutationAuthority.assertCurrent,
       profileBinding?.assertCurrent,
+      requestMutationAuthority.assertAdmittedInputCurrent,
     );
     const invokeHandler = async () => {
       const preparedHandler = await prepareGatewayRequestHandler(handler, entry);
