@@ -49,6 +49,7 @@ export function createSqliteWorkerLifecycle({
     options.assertCurrent?.();
     const worker = runOutsideCaller(() =>
       createCpuTrackedWorker(options.carrierUrl, {
+        resourceLimits: { maxOldGenerationSizeMb: 512 },
         env: resolveNodeCompileCacheEnv(),
         execArgv: options.carrierUrl.pathname.endsWith(".ts")
           ? ["--import", import.meta.resolve("tsx/esm")]

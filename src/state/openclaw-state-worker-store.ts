@@ -1,3 +1,4 @@
+import { channel } from "node:diagnostics_channel";
 import { performance } from "node:perf_hooks";
 import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
 import { captureRuntimeWorkerSource } from "../infra/runtime-worker-generation.js";
@@ -5,7 +6,6 @@ import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../infra/sqlite-handle-lifecycle.js";
 import type { SqliteWorkerAdmissionCleanup } from "../infra/sqlite-worker-broker.types.js";
 import type { DatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
-import type { SqliteWorkerAdmissionFactory } from "../infra/sqlite-worker-operation-admission.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import {
   openSharedStateSqliteWorkerStore,
@@ -41,6 +41,10 @@ import type {
   OpenClawStateWorkerOperationOptions as OperationOptions,
 } from "./openclaw-state-worker-contract.js";
 import { hydrateOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
+import {
+  runWithCapturedWorkerContext,
+  runWithOpenClawStateWorkerStore,
+} from "./openclaw-state-worker-operation.js";
 
 type StoreOperations = OpenClawStateWorkerOperations & OpenClawStateWorkerInspectionOperations;
 type Store = SqliteWorkerStore<StoreOperations>;
@@ -337,6 +341,23 @@ function createSharedStateWorkerOwner() {
       });
     }
   });
+  channel("openclaw.memory.critical").subscribe(() => {
+    for (const entry of stores) {
+      if (
+        entry.idleTimer &&
+        entry.store &&
+        !entry.context.maintenanceScope &&
+        !hasActiveActorOperations(entry)
+      ) {
+        void runInDetachedAsyncContext(() => retire(entry)).catch((error: unknown) => {
+          log.warn("Idle shared-state worker retirement failed", {
+            path: entry.context.admission.databasePath,
+            error,
+          });
+        });
+      }
+    }
+  });
   return {
     close,
     retainOperation,
@@ -592,16 +613,6 @@ export async function runOpenClawStateWorkerOperation<T>(
   );
 }
 
-function runWithCapturedWorkerContext<T>(
-  context: OpenClawStateWorkerContext,
-  operation: () => Promise<T>,
-): Promise<T> {
-  const maintenance = context.maintenanceScope;
-  const run = () =>
-    maintenance ? maintenance.run(() => maintenance.track(operation())) : operation();
-  return context.runInCapturedSchemaScope ? context.runInCapturedSchemaScope(run) : run();
-}
-
 async function runAdmittedOpenClawStateWorkerOperation<T>(
   context: OpenClawStateWorkerContext,
   operation: (scope: DomainScope) => Promise<T>,
@@ -689,28 +700,6 @@ async function inspectAdmittedOpenClawStateDatabase(
     }
     throw error;
   }
-}
-
-function runWithOpenClawStateWorkerStore<T>(
-  store: Store,
-  context: OpenClawStateWorkerContext,
-  operation: (scope: Pick<Store, "execute">) => Promise<T>,
-  assertCurrent?: (commandType?: PropertyKey) => void,
-  createAdmission?: SqliteWorkerAdmissionFactory,
-  requireStateLifecycle = false,
-): Promise<T> {
-  const { admission } = context;
-  return runSqliteWorkerStoreOperation<StoreOperations, T>(
-    store,
-    operation,
-    context,
-    (commandType) => {
-      admission.assertCurrent();
-      assertCurrent?.(commandType);
-    },
-    createAdmission,
-    requireStateLifecycle,
-  );
 }
 
 /** Retain the actual lease until every admitted worker transaction has settled. */
