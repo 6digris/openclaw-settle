@@ -87,6 +87,7 @@ unix.each([false, true])(
     );
     let now = Date.now();
     vi.spyOn(Date, "now").mockImplementation(() => now);
+    // oxlint-disable-next-line typescript/unbound-method -- exec.call restores the actual database receiver.
     const exec = DatabaseSync.prototype.exec;
     vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql) {
       const result = exec.call(this, sql);
