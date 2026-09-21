@@ -72,7 +72,12 @@ function finish(status: "unavailable" | "aborted", reason: string): void {
   );
 }
 
-process.once("disconnect", () => controller.abort(new Error("Repair orchestrator disconnected.")));
+process.once("disconnect", () => {
+  if (!started || finished) {
+    process.exit(0);
+  }
+  controller.abort(new Error("Repair orchestrator disconnected."));
+});
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
     const error = new Error("Repair worker cancelled.");
