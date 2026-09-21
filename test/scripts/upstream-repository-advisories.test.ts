@@ -605,6 +605,39 @@ describe("published upstream repository advisories", () => {
     },
   );
 
+  it("reviews discovered ranges before a later page disables GitHub requests", async () => {
+    const source = createSourceFetch({
+      page: (url) =>
+        url.searchParams.has("after")
+          ? new Response(null, { status: 403 })
+          : Response.json([advisory()], { headers: { link: NEXT_PAGE } }),
+      reviewed: () =>
+        Response.json({
+          ghsa_id: ADVISORY_ID,
+          published_at: "2026-08-01T00:00:00Z",
+          github_reviewed_at: "2026-08-02T00:00:00Z",
+          withdrawn_at: null,
+          vulnerabilities: [vulnerability("= 0.9.0")],
+        }),
+    });
+
+    const report = await scan(source.fetchImpl);
+
+    expect(source.calls.map(({ url }) => url.pathname)).toEqual([
+      "/fixture/1.0.0",
+      "/repos/fixture/packages",
+      "/repos/fixture/packages/security-advisories",
+      `/advisories/${ADVISORY_ID}`,
+      "/repos/fixture/packages/security-advisories",
+    ]);
+    expect(report.advisories).toEqual([]);
+    expect(report.coverage).toMatchObject({
+      status: "partial",
+      reconciliations: [{ id: ADVISORY_ID, matchedVersions: [] }],
+      issues: [{ subject: REPOSITORY, reason: "request-failed" }],
+    });
+  });
+
   it.each(["repeated cursor", "page budget"])(
     "stops at the %s without discarding findings",
     async (limit) => {

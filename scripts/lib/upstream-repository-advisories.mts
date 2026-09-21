@@ -289,6 +289,7 @@ export async function fetchPublishedRepositoryAdvisories({
 }) {
   const issues: CoverageIssue[] = [];
   const advisories: PublishedRepositoryAdvisory[] = [];
+  const reconciliations: AdvisoryReconciliation[] = [];
   const repositories = new Map<string, RepositoryPackages>();
   const deadline = performance.now() + RUN_TIMEOUT_MS;
   const token = process.env.GH_TOKEN;
@@ -357,6 +358,34 @@ export async function fetchPublishedRepositoryAdvisories({
         error: performance.now() >= deadline ? "budget-exhausted" : "request-failed",
       };
     }
+  }
+
+  async function reconcileAdvisory(advisory: PublishedRepositoryAdvisory) {
+    // Repository ranges can remain stale after GitHub reviews the same GHSA.
+    // Verify each discovered page before later repository requests can disable GitHub access.
+    const response = await request(`${GITHUB_API}/advisories/${advisory.id}`, "github");
+    const ranges = response.ok ? reviewedPackageRanges(response.value.data, advisory) : null;
+    if (!ranges) {
+      issues.push({
+        subject: `${advisory.packageName}#${advisory.id}`,
+        reason: response.ok ? "invalid-advisory" : response.error,
+      });
+      return advisory.matchedVersions.length > 0 ? advisory : null;
+    }
+    const reviewedRanges = ranges.map((range) => range.map((bound) => bound.value).join(" "));
+    const matchedVersions = [...new Set(payload[advisory.packageName] ?? [])]
+      .filter((version) => ranges.some((range) => range.every((bound) => bound.test(version))))
+      .toSorted();
+    reconciliations.push({
+      id: advisory.id,
+      packageName: advisory.packageName,
+      repositoryRange: advisory.vulnerable_versions,
+      reviewedRanges,
+      matchedVersions,
+    });
+    return matchedVersions.length > 0
+      ? { ...advisory, vulnerable_versions: reviewedRanges.join(" || "), matchedVersions }
+      : null;
   }
 
   const entries = Object.entries(payload)
@@ -448,12 +477,23 @@ export async function fetchPublishedRepositoryAdvisories({
           }
           const remaining = MAX_ADVISORIES - advisoryCount;
           advisoryCount += Math.min(rows.length, remaining);
+          const pageAdvisories: PublishedRepositoryAdvisory[] = [];
           collectRepositoryMatches(
             rows.slice(0, remaining),
             repository,
             packages,
-            advisories,
+            pageAdvisories,
             issues,
+          );
+          const reconciledPage = await runTasksWithConcurrency({
+            limit: CONCURRENCY,
+            throwOnError: true,
+            tasks: pageAdvisories.map((advisory) => () => reconcileAdvisory(advisory)),
+          });
+          advisories.push(
+            ...reconciledPage.results.filter(
+              (entry): entry is PublishedRepositoryAdvisory => entry !== null,
+            ),
           );
           if (rows.length > remaining) {
             issues.push({ subject: repository, reason: "budget-exhausted" });
@@ -478,46 +518,11 @@ export async function fetchPublishedRepositoryAdvisories({
       }),
   });
 
-  const reconciliations: AdvisoryReconciliation[] = [];
-  const reconciled = await runTasksWithConcurrency({
-    limit: CONCURRENCY,
-    throwOnError: true,
-    tasks: advisories.map((advisory) => async () => {
-      // Repository ranges can remain stale after GitHub reviews the same GHSA.
-      // Exact reviewed package ranges override the parsed publisher range; missing proof retains it.
-      const response = await request(`${GITHUB_API}/advisories/${advisory.id}`, "github");
-      const ranges = response.ok ? reviewedPackageRanges(response.value.data, advisory) : null;
-      if (!ranges) {
-        issues.push({
-          subject: `${advisory.packageName}#${advisory.id}`,
-          reason: response.ok ? "invalid-advisory" : response.error,
-        });
-        return advisory.matchedVersions.length > 0 ? advisory : null;
-      }
-      const reviewedRanges = ranges.map((range) => range.map((bound) => bound.value).join(" "));
-      const matchedVersions = [...new Set(payload[advisory.packageName] ?? [])]
-        .filter((version) => ranges.some((range) => range.every((bound) => bound.test(version))))
-        .toSorted();
-      reconciliations.push({
-        id: advisory.id,
-        packageName: advisory.packageName,
-        repositoryRange: advisory.vulnerable_versions,
-        reviewedRanges,
-        matchedVersions,
-      });
-      return matchedVersions.length > 0
-        ? { ...advisory, vulnerable_versions: reviewedRanges.join(" || "), matchedVersions }
-        : null;
-    }),
-  });
-
   return {
-    advisories: reconciled.results
-      .filter((entry): entry is PublishedRepositoryAdvisory => entry !== null)
-      .toSorted(
-        (left, right) =>
-          left.packageName.localeCompare(right.packageName) || left.id.localeCompare(right.id),
-      ),
+    advisories: advisories.toSorted(
+      (left, right) =>
+        left.packageName.localeCompare(right.packageName) || left.id.localeCompare(right.id),
+    ),
     coverage: {
       source: "github-public-repository-advisories" as const,
       reconciliations: reconciliations.toSorted(
