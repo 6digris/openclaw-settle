@@ -6,6 +6,10 @@ import { promisify } from "node:util";
 import { runCliProcessChild } from "../cli/cli-process-child.test-helpers.js";
 import { ensureOpenClawAgentDatabaseSchema } from "../state/openclaw-agent-db.js";
 import { removeCanonicalValidationFromHistoricalAgentFixture } from "../state/openclaw-agent-db.test-support.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
 import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
 
 const execFileAsync = promisify(execFile);
@@ -164,13 +168,16 @@ export function seedV17AdditiveRepairDatabase(
   stateDir: string,
   options: { participantDependency?: boolean } = {},
 ): string {
+  const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+  openOpenClawStateDatabase({ env });
+  closeOpenClawStateDatabaseForTest();
   const databasePath = path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
   fs.mkdirSync(path.dirname(databasePath), { recursive: true });
   const database = new DatabaseSync(databasePath);
   try {
     ensureOpenClawAgentDatabaseSchema(database, {
       agentId: "main",
-      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+      env,
       path: databasePath,
       register: false,
     });

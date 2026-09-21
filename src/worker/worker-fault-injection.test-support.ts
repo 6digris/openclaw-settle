@@ -158,6 +158,7 @@ type WorkerClientOptions = {
 
 export class ComposedGatewayHarness {
   readonly socketPath: string;
+  readonly stateDir: string;
   readonly cfg: OpenClawConfig;
   readonly database: stateDb.OpenClawStateDatabase;
   readonly store: envStore.WorkerEnvironmentStore;
@@ -208,7 +209,7 @@ export class ComposedGatewayHarness {
     readonly root: string,
     readonly sessionTarget: Awaited<ReturnType<typeof resolveSessionTranscriptRuntimeTarget>>,
   ) {
-    const stateDir = path.join(root, "state");
+    this.stateDir = path.join(root, "state");
     this.socketPath = path.join(root, "gateway.sock");
     this.cfg = {
       agents: { list: [{ id: "main", default: true }] },
@@ -221,7 +222,7 @@ export class ComposedGatewayHarness {
       },
     };
     this.database = stateDb.openOpenClawStateDatabase({
-      env: { OPENCLAW_STATE_DIR: stateDir },
+      env: { OPENCLAW_STATE_DIR: this.stateDir },
     });
     this.store = envStore.createWorkerEnvironmentStore({ database: this.database });
     this.placementStore = placements.createWorkerSessionPlacementStore({
