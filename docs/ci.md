@@ -54,7 +54,7 @@ prevents cached UI imports from mixing separate projects' Lit instances when a
 focused run and a full run share the persistent cache.
 
 Linux PR tests use Bun for the measured compatible unit lanes and Control UI
-Vitest job, with the UI-only FTL mitigation. Full Release Validation
+Vitest job, with a targeted CSS-tokenizer optimizer workaround. Full Release Validation
 keeps their Node coverage and runs them on Bun too; see [test runtime selection](/ci/pipeline#test-runtime-selection).
 
 The complete [startup corpus](/ci/pipeline) uses eight state test files so existing workers can share its release/config matrix. Its explicit fallback prepares the runtime once and uses four workers; historical frozen targets retain their legacy process layout.

@@ -103,27 +103,28 @@ class HoverMarqueeDirective extends AsyncDirective {
       }
     }
     const text = this.text!;
+    const width = label.clientWidth;
+    if (width <= 0) {
+      this.clearOverflow(label);
+      return;
+    }
     const style = getComputedStyle(label);
     const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
-    const overflow =
-      style.whiteSpace === "nowrap" && label.clientWidth > 0
-        ? text.scrollWidth + padding - label.clientWidth
-        : 0;
+    const overflow = style.whiteSpace === "nowrap" ? text.scrollWidth + padding - width : 0;
     const clipped = overflow > (this.options.loop ? 0 : 1);
-    label.classList.toggle("hover-marquee--overflowing", clipped);
+    if (!clipped) {
+      this.clearOverflow(label);
+      return;
+    }
+    label.classList.add("hover-marquee--overflowing");
     const active =
       this.host.matches(":hover, :focus-visible") ||
       Boolean(this.host.querySelector(":focus-visible")) ||
       // Touch opens the existing identity menu; its trigger keeps revealing
       // the name while focus moves into the portaled menu.
       (this.options.loop && this.host.getAttribute("aria-expanded") === "true");
-    if (!clipped || !active || !this.visible || this.motion?.matches) {
+    if (!active || !this.visible || this.motion?.matches) {
       this.stop();
-      if (!clipped) {
-        label.style.removeProperty("--hover-marquee-shift");
-        label.style.removeProperty("--hover-marquee-duration");
-        this.shift = 0;
-      }
       return;
     }
     const fade = Number.parseFloat(style.getPropertyValue("--hover-marquee-fade-width"));
@@ -150,6 +151,14 @@ class HoverMarqueeDirective extends AsyncDirective {
         }
       }, this.options.delay ?? MARQUEE_HOVER_DELAY_MS);
     }
+  }
+
+  private clearOverflow(label: HTMLElement) {
+    this.stop();
+    label.classList.remove("hover-marquee--overflowing");
+    label.style.removeProperty("--hover-marquee-shift");
+    label.style.removeProperty("--hover-marquee-duration");
+    this.shift = 0;
   }
 
   private stop() {

@@ -137,6 +137,10 @@ const sharedUiTestConfig = {
   testTimeout: 60_000,
   hookTimeout: 60_000,
 } as const;
+const nodeSetupFiles = [
+  "./src/test-helpers/bun-css-tokenizer.setup.ts",
+  "./src/test-helpers/lit-warnings.setup.ts",
+];
 const nodeDrivenBrowserLayoutTests = relativizeScopedPatterns(uiNodeDrivenBrowserTestFiles, "ui");
 const timingTests = relativizeScopedPatterns(uiTimingTestFiles, "ui");
 const mockRegistryUnitTests = uiIsolatedTestFiles.map((testFile) => testFile.slice("ui/".length));
@@ -298,7 +302,7 @@ export default defineConfig({
             ...mockRegistryUnitTests,
           ],
           environment: "jsdom",
-          setupFiles: ["./src/test-helpers/lit-warnings.setup.ts"],
+          setupFiles: nodeSetupFiles,
         },
       },
       {
@@ -316,7 +320,7 @@ export default defineConfig({
           name: "unit-mock-registry",
           include: includeUiTests([...mockRegistryUnitTests]),
           environment: "jsdom",
-          setupFiles: ["./src/test-helpers/lit-warnings.setup.ts"],
+          setupFiles: nodeSetupFiles,
         },
       },
       {
@@ -339,7 +343,7 @@ export default defineConfig({
             ...nodeDrivenBrowserLayoutTests,
           ]),
           environment: "jsdom",
-          setupFiles: ["./src/test-helpers/lit-warnings.setup.ts"],
+          setupFiles: nodeSetupFiles,
         },
       },
       { ...createUiBrowserVitestConfig(), extends: false },
@@ -356,7 +360,7 @@ export default defineConfig({
           sequence: { groupOrder: 1 },
           include: includeUiTests(timingTests),
           environment: "jsdom",
-          setupFiles: ["./src/test-helpers/lit-warnings.setup.ts"],
+          setupFiles: nodeSetupFiles,
         },
       },
     ],

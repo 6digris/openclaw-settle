@@ -28,6 +28,7 @@ type ExpectedTestConfig = ReturnType<typeof loadVitestPerformanceConfig> & {
   pool?: string;
   projects?: unknown[];
   runner?: string;
+  setupFiles?: string[];
   sequence?: { groupOrder?: number };
 };
 
@@ -86,16 +87,13 @@ describe("ui package vitest config", () => {
     const selections = Object.fromEntries(
       (["bun-compatible", "dual"] as const).map((policy) => [
         policy,
-        resolveCiTestRuntimeSelections(
-          { configs: ["ui/vitest.config.ts"], env: { BUN_JSC_useFTLJIT: "false" } },
-          policy,
-        ),
+        resolveCiTestRuntimeSelections({ configs: ["ui/vitest.config.ts"] }, policy),
       ]),
     );
     writeFileSync(selectionsPath, JSON.stringify(selections));
     const result = await runVitestShutdownCommand({
       args: [
-        "test/fixtures/vitest-ui-runtime-partition.mjs",
+        fileURLToPath(new URL("./fixtures/vitest-ui-runtime-partition.mjs", import.meta.url)),
         output,
         selectionsPath,
         path.join(root, "include.json"),
@@ -355,7 +353,7 @@ describe("ui package vitest config", () => {
     expect(selected.toSorted()).toEqual(expected);
   });
 
-  it("keeps the standalone ui package on thread workers without broad isolation", () => {
+  it("keeps the standalone ui package on thread workers without broad isolation", async () => {
     const testConfig = requireTestConfig(uiConfig);
 
     expect(testConfig.pool).toBe("threads");
@@ -371,10 +369,19 @@ describe("ui package vitest config", () => {
       expect(projectTestConfig.pool).toBe("threads");
       // Project overrides would defeat CI's explicit --maxWorkers limit.
       expect(projectTestConfig.maxWorkers).toBeUndefined();
+      expect(projectTestConfig.setupFiles).toEqual(
+        projectTestConfig.browser?.enabled
+          ? ["./src/test-helpers/lit-warnings.setup.ts"]
+          : [
+              "./src/test-helpers/bun-css-tokenizer.setup.ts",
+              "./src/test-helpers/lit-warnings.setup.ts",
+            ],
+      );
       expect(projectTestConfig.isolate).toBe(
         projectTestConfig.name === "unit-mock-registry" || projectTestConfig.name === "unit-timing",
       );
     }
+    await import("../ui/src/test-helpers/bun-css-tokenizer.setup.ts");
   });
 
   // The invariant, not a snapshot: `unit` shares one module graph and jsdom

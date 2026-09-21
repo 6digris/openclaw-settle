@@ -94,7 +94,8 @@ the complete original selection on Node and its compatible portion on Bun
 within the same job and worker slot. Other selections run on Node. Main pushes retain Node. Historical targets
 without the runtime-selection capability keep their original Node behavior.
 The UI job probes its actual config and arguments through the target's runtime
-owner, so older unit-only helpers and legacy compatibility targets retain Node.
+owner, so older unit-only helpers, helpers requiring the retired global FTL flag,
+and legacy compatibility targets retain Node.
 Its three native shards and three workers per row remain unchanged.
 The UI runtime partition is applied after Vitest selects each native shard, so
 files keep their original shard ownership. A shard with no Node-only files
@@ -102,10 +103,12 @@ finishes that partition without running other UI files. Dual validation runs
 the complete UI selection on Node, then excludes only those two files from Bun;
 their assertions remain required on Node, with no added skips.
 
-Only the Control UI test step sets `BUN_JSC_useFTLJIT=false`. With FTL enabled,
-the pinned fork can enter an unbounded CSS-tokenizer loop after an ordered sequence
-of UI files. Disabling FTL retains baseline and DFG JIT compilation; Chromium's
-JIT is unaffected. UI Bun admission requires this setting. Remove the mitigation
+The nonbrowser Control UI projects load `bun-css-tokenizer.setup.ts`. On Bun,
+this setup resolves jsdom's native CSS tokenizer and prevents inlining only its
+`endOfFile` predicate. The pinned fork can otherwise
+enter an unbounded CSS-tokenizer loop after an ordered sequence of UI files.
+Baseline, DFG, and FTL JIT remain enabled; Node and Chromium are unaffected.
+The setup leaves tokenizer exports and CSS behavior unchanged. Remove it
 only after a corrected pinned runtime passes the original ordered reproduction,
 the complete UI config, and all three native shards within their existing memory
 budgets.

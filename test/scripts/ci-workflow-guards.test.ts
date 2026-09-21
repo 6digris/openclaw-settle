@@ -596,7 +596,7 @@ function runCiManifestFixture(options: {
   nodeTestShards?: Record<string, unknown>[];
   nodeTestGroupsCodec?: boolean;
   bunTestRuntime?: boolean;
-  bunUiTestRuntime?: boolean;
+  bunUiTestRuntime?: boolean | "requires-ftl-flag";
   startupCorpusCoverage?: boolean;
   changedPlannerSource?: string | null;
   changedPlannerDependencies?: string[];
@@ -640,6 +640,7 @@ function runCiManifestFixture(options: {
         `${options.bunUiTestRuntime ? `import { ciTestShardRequiresBun as currentRuntime } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/ci-test-runtime.mts")).href)};` : ""}
         export const ciTestShardRequiresBun = (shard, policy) =>
           policy !== "node" && (shard.configs?.includes("fixture-bun.config.ts") ||
+            ${options.bunUiTestRuntime === "requires-ftl-flag" ? 'shard.env?.BUN_JSC_useFTLJIT === "false" &&' : ""}
             ${options.bunUiTestRuntime ? `currentRuntime(shard, policy, ${JSON.stringify(process.cwd())})` : "false"});`,
       );
     }
@@ -13281,6 +13282,14 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     },
     {
       eventName: "workflow_dispatch",
+      capability: true,
+      uiCapability: "requires-ftl-flag",
+      policy: "dual",
+      uiPolicy: "node",
+      bun: true,
+    },
+    {
+      eventName: "workflow_dispatch",
       historicalCompatibility: true,
       capability: true,
       uiCapability: true,
@@ -14974,7 +14983,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         }
       }
     }
-    expect(ftlSteps).toEqual(["checks-ui/Test Control UI"]);
+    expect(ftlSteps).toEqual([]);
     const ui = workflow.jobs["checks-ui"];
     const lint = ui.steps.find(
       (step: WorkflowStep) => step.name === "Lint Control UI window.open usage",
@@ -15054,7 +15063,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         ]),
       );
       expect(env.OPENCLAW_NODE_TEST_PLAN_CONCURRENCY).toBe("1");
-      expect(env.BUN_JSC_useFTLJIT).toBe("false");
+      expect(env.BUN_JSC_useFTLJIT).toBeUndefined();
       expect(env.OPENCLAW_UI_E2E_DIAGNOSTIC_DIR).toBe(
         `${root}/.artifacts/control-ui-e2e-timeouts/ui-shard-${shard}-attempt-1`,
       );
@@ -15096,7 +15105,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
             runChild: async (args, childEnv) => {
               forwarded.push(args);
               runtimes.push(childEnv.OPENCLAW_VITEST_RUNTIME);
-              expect(childEnv.BUN_JSC_useFTLJIT).toBe("false");
+              expect(childEnv.BUN_JSC_useFTLJIT).toBeUndefined();
               expect(childEnv.OPENCLAW_VITEST_INCLUDE_FILE).toBeUndefined();
               const includeFile = childEnv.OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE;
               if (

@@ -1747,7 +1747,6 @@ jobs:
             : "node";
           const uiTestRuntimePolicy = !compatibilityTarget && testRuntimePolicy?.ciTestShardRequiresBun({
             configs: ["ui/vitest.config.ts"],
-            env: { BUN_JSC_useFTLJIT: "false" },
             vitestArgs: [
               "--maxWorkers", "3",
               "--reporter=verbose",
@@ -2806,8 +2805,6 @@ jobs:
       - name: Test Control UI
         env:
           OPENCLAW_CI_TEST_RUNTIME_POLICY: ${{ needs.preflight.outputs.ui_test_runtime_policy }}
-          # The pinned fork loops in CSS tokenization with FTL; baseline and DFG stay enabled.
-          BUN_JSC_useFTLJIT: "false"
           OPENCLAW_UI_E2E_DIAGNOSTIC_DIR: ${{ github.workspace }}/.artifacts/control-ui-e2e-timeouts/ui-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           OPENCLAW_NODE_TEST_CONFIGS_JSON: '["ui/vitest.config.ts"]'
           OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: "1"

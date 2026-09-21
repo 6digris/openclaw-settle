@@ -91,13 +91,14 @@ compatible Bun partition:
 ```sh
 OPENCLAW_NODE_TEST_CONFIGS_JSON='["ui/vitest.config.ts"]' \
 OPENCLAW_NODE_TEST_VITEST_ARGS_JSON='["--maxWorkers", "3"]' \
-OPENCLAW_CI_TEST_RUNTIME_POLICY=dual BUN_JSC_useFTLJIT=false \
+OPENCLAW_CI_TEST_RUNTIME_POLICY=dual \
 node --import tsx scripts/ci-run-node-test-shard.mts
 ```
 
-The pinned fork can loop in CSS tokenization with FTL enabled after particular
-UI file orders. This disables only that optimization tier; baseline and DFG JIT
-remain enabled, and Chromium's JIT is unaffected. See the
+The pinned fork can loop in CSS tokenization after particular UI file orders.
+The nonbrowser UI setup prevents inlining the native tokenizer's `endOfFile`
+predicate on Bun while retaining baseline, DFG, and FTL JIT. It does nothing on Node, and
+Chromium keeps its existing setup. See the
 [CI runtime policy](/ci/pipeline#test-runtime-selection) for the removal proof.
 The Bun partition deliberately excludes two whole GC-sensitive files, which
 remain covered by Node. Running the complete UI config directly with

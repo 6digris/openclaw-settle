@@ -398,15 +398,12 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     { targets: ["ui/src/pages/skills/view.test.ts"] },
     { configs: [], targets: ["ui/src/pages/skills/view.test.ts"], env: {} },
     { configs: ["ui/vitest.config.ts", bunConfig] },
-    { env: {} },
-    { env: { BUN_JSC_useFTLJIT: "true" } },
     {
-      env: { BUN_JSC_useFTLJIT: "false", OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE: "external.json" },
+      env: { OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE: "external.json" },
     },
   ])("keeps unproven UI execution envelopes on Node: %s", (overrides) => {
     const selection = {
       configs: ["ui/vitest.config.ts"],
-      env: { BUN_JSC_useFTLJIT: "false" },
       ...overrides,
     };
     expect(resolveCiTestRuntimeSelections(selection, "dual")).toEqual([{ runtime: "node" }]);

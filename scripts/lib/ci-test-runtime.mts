@@ -167,7 +167,6 @@ export function resolveCiTestRuntimeSelections(
     selection.configs[0] === "ui/vitest.config.ts" &&
     !selection.targets?.length &&
     !selection.includePatterns &&
-    selection.env?.BUN_JSC_useFTLJIT === "false" &&
     supportsUiRuntime(args);
   if (!uiPartition && !supportsRuntimePartition(args)) {
     return node;
