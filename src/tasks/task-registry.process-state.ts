@@ -15,7 +15,7 @@ import {
   isEquivalentTaskRecord,
   listTasksFromIndex,
 } from "./task-registry-records.js";
-import type { TaskRegistryObservers, TaskRegistryStore } from "./task-registry.store.js";
+import type { TaskRegistryObservers, TaskRegistryStore } from "./task-registry-runtime.types.js";
 import type {
   TaskRegistryMutationScope,
   TaskRegistryObserverEvent,
