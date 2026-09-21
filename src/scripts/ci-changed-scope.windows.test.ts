@@ -271,7 +271,10 @@ describe("detectChangedScope Windows routing", () => {
       name: "routes child environment resolution and native doctor coverage to Windows",
       paths: [
         "src/agents/provider-local-service.ts",
+        "src/agents/provider-local-service-process.ts",
         "src/agents/provider-local-service.env-case.test.ts",
+        "src/agents/provider-local-service.shutdown.test.ts",
+        "src/agents/provider-local-service.settlement.test.ts",
         "src/cli/mcp-cli.ts",
         "src/cli/mcp-cli.test.ts",
         "src/cli/mcp-cli.path-case.windows.test.ts",
