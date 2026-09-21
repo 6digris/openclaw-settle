@@ -273,6 +273,9 @@ suite.define(() => {
             authProfileOverrideSource: "user",
           },
         );
+        // Initial metadata preparation broadcasts chat.metadata.changed independently of
+        // the snapshot-ordering scenario. Join its real read before connecting the browser.
+        await admin.request("chat.metadata", { sessionKey, agentId: "alpha" });
         await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
           let initialSnapshot = createDeferred<{ deliver: () => void; payload: unknown }>();
           const disconnect = createDeferred<() => Promise<void>>();
