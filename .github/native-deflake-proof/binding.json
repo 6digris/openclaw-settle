@@ -1,0 +1,377 @@
+{
+  "schema": 1,
+  "bound": true,
+  "candidateSha": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+  "toolingSha": "d01d83b79b18fd7700648e97e54db9e133bca46d",
+  "baselineSha": "a4e3a5d5f88f164a9565cf805db242b34557d71f",
+  "pr": 154269,
+  "reviewedSourceManifestSha256": "696d3a707eb11945602fb0fd28d7d1aeedbf489a686ba7a0d549c0598dd4354d",
+  "standaloneGroups": [
+    {
+      "name": "AsyncTimeoutTests",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "suites": [
+        "AsyncTimeoutTests"
+      ],
+      "filter": "AsyncTimeoutTests"
+    },
+    {
+      "name": "CLIInstallerTests",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "suites": [
+        "CLIInstallerTests"
+      ],
+      "filter": "CLIInstallerTests"
+    },
+    {
+      "name": "CronJobsStoreTests",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "suites": [
+        "CronJobsStoreTests"
+      ],
+      "filter": "CronJobsStoreTests"
+    },
+    {
+      "name": "GatewayProcessManagerTests",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "suites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "filter": "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+    }
+  ],
+  "states": {
+    "candidate": {
+      "sha": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "hashes": {
+        "apps/macos/Package.resolved": "2549ca7fd983abf788b8299ae2b570729d7ad98333156b227b4fe1e9ae92eed2",
+        "apps/macos/Package.swift": "3aa70e34f1a9cf93e01986dc25444a20685584880d5e686165430b00fbdb1ee1",
+        "apps/macos/Sources/OpenClaw/GatewayProcessManager.swift": "bb7412b65ff6f4fd618bba66940ca27af8a4c7af4fc19073fbba63ede32b21b2",
+        "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift": "7cd78fbf13eef8a3332caa3e0bd7a2da667334b50ab08bcaa98c863588f9c793",
+        "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift": "eb803d1c6e39300f925321840c05acef333032eb6164e3f6a136110bb639050a",
+        "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift": "67108b11fd59096ee3359f13ee9716e998cf4a103940e8d38ad2d24428b80fd2",
+        "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift": "50a997d11a7a34a9e73a67573c0117ccc4e75a2a84f48fad521fb9f42e03416c",
+        "apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift": "fa29b03e7dd20624b60c2db67896f92d7fbbb464744e061b6246baa4136f5c82",
+        "apps/shared/OpenClawKit/Package.resolved": null,
+        "apps/shared/OpenClawKit/Package.swift": "0438f7c7bf8b9a694af96fa20e1ea982e6715e79d3cdf17d37357f329c59bd05",
+        "apps/shared/OpenClawKit/Sources/OpenClawKit/AsyncTimeout.swift": "79f6780afaf552e532e1b339c74908728d3d209ec7435290a34416ad2d713418",
+        "apps/shared/OpenClawMLXTTSProtocol/Package.swift": "662deb1e39e7284eb4fc649e20bed379fb5ee0c2e46cff8300ebce673d51a0b9",
+        "apps/swabble/Package.resolved": null,
+        "apps/swabble/Package.swift": "836ade9a377c9ebeb419e1fe1f281feda010c0f7fce6dded6a4aa73b91c5bcfd",
+        "package.json": "65daebb3b5f8022455ffdfcb095fc48a0f6177ca4ce2e16d9760416759c07225",
+        "pnpm-lock.yaml": "1f8a8e068df19803f7492454c7c6283a6630a0cf05417044d81b24c1cd5a188a",
+        "pnpm-workspace.yaml": "edced18940dc8b3c31210b327561fca062ce6cebebe92893be983ed604f64ee8",
+        "scripts/lib/failed-trailer.mts": "86ba752b93f3101839d2cac39cb4f0d13477807c8ed5ad569ba23dddaf986796",
+        "scripts/lib/managed-child-process.mts": "1816ce579a6434676ca4bbe5a0a547d532623c264e0505474f12920583b6990a",
+        "scripts/lib/vitest-resource-ownership.mts": "d4d3c644afdc4b20580b5c145f0860ac9b0c3358512e122bdcd7e3a256293659",
+        "scripts/lib/windows-taskkill.mjs": "9100b4bda17e716e721a44132641190e8346a77260dc2194304bfee20fa1958d",
+        "scripts/prepare-apple-mermaid.mjs": "0e914c41fec9dce2dfcffcf774a0c6f121b43044176e930c15b7cc7033f7384b",
+        "scripts/test-macos-native.mts": "716d740e0f4aabbc6b36671ec688f21953d967f4d4a699417420cb63a9cf3344",
+        "scripts/windows-cmd-helpers.mjs": "a2a52f2cbc6e890dee15ca7f514f0ebacd0479f1d58785b6c3fccccc0720b24b"
+      },
+      "changedPaths": []
+    },
+    "baseline": {
+      "sha": "a4e3a5d5f88f164a9565cf805db242b34557d71f",
+      "hashes": {
+        "apps/macos/Package.resolved": "2549ca7fd983abf788b8299ae2b570729d7ad98333156b227b4fe1e9ae92eed2",
+        "apps/macos/Package.swift": "3aa70e34f1a9cf93e01986dc25444a20685584880d5e686165430b00fbdb1ee1",
+        "apps/macos/Sources/OpenClaw/GatewayProcessManager.swift": "7ac61b84d96930e2bc1bc33435e5bab7d0b1c3cbc2fd3473dd6fdb98e9871d9f",
+        "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift": "3feab3968c3e443a2cc61729fc1f21355ba2c5ff70986f9a7233fbebd1ad9bbf",
+        "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift": "18e7a0496b901d0b120efe52c3f71966dc39c6da87b41581019fc91b30a1d9cc",
+        "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift": "6b30e480ab9bc8af60757180d3381bd63c7ff652c860c7a9e84fa4b30d308b2b",
+        "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift": "e06995e42805cfec8118df54d23f7d7199995b7e1a7d2206ae04ce8f3aadeb5a",
+        "apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift": null,
+        "apps/shared/OpenClawKit/Package.resolved": null,
+        "apps/shared/OpenClawKit/Package.swift": "0438f7c7bf8b9a694af96fa20e1ea982e6715e79d3cdf17d37357f329c59bd05",
+        "apps/shared/OpenClawKit/Sources/OpenClawKit/AsyncTimeout.swift": "068ec17386fe5ac09b05186d4df6e8db05252cd3f95f5653e84a438a7b93c6a9",
+        "apps/shared/OpenClawMLXTTSProtocol/Package.swift": "662deb1e39e7284eb4fc649e20bed379fb5ee0c2e46cff8300ebce673d51a0b9",
+        "apps/swabble/Package.resolved": null,
+        "apps/swabble/Package.swift": "836ade9a377c9ebeb419e1fe1f281feda010c0f7fce6dded6a4aa73b91c5bcfd",
+        "package.json": "65daebb3b5f8022455ffdfcb095fc48a0f6177ca4ce2e16d9760416759c07225",
+        "pnpm-lock.yaml": "1f8a8e068df19803f7492454c7c6283a6630a0cf05417044d81b24c1cd5a188a",
+        "pnpm-workspace.yaml": "edced18940dc8b3c31210b327561fca062ce6cebebe92893be983ed604f64ee8",
+        "scripts/lib/failed-trailer.mts": "86ba752b93f3101839d2cac39cb4f0d13477807c8ed5ad569ba23dddaf986796",
+        "scripts/lib/managed-child-process.mts": "1816ce579a6434676ca4bbe5a0a547d532623c264e0505474f12920583b6990a",
+        "scripts/lib/vitest-resource-ownership.mts": "d4d3c644afdc4b20580b5c145f0860ac9b0c3358512e122bdcd7e3a256293659",
+        "scripts/lib/windows-taskkill.mjs": "9100b4bda17e716e721a44132641190e8346a77260dc2194304bfee20fa1958d",
+        "scripts/prepare-apple-mermaid.mjs": "0e914c41fec9dce2dfcffcf774a0c6f121b43044176e930c15b7cc7033f7384b",
+        "scripts/test-macos-native.mts": "716d740e0f4aabbc6b36671ec688f21953d967f4d4a699417420cb63a9cf3344",
+        "scripts/windows-cmd-helpers.mjs": "a2a52f2cbc6e890dee15ca7f514f0ebacd0479f1d58785b6c3fccccc0720b24b"
+      },
+      "changedPaths": []
+    },
+    "baseline-delayed-resumption": {
+      "sha": "a4e3a5d5f88f164a9565cf805db242b34557d71f",
+      "hashes": {
+        "apps/macos/Package.resolved": "2549ca7fd983abf788b8299ae2b570729d7ad98333156b227b4fe1e9ae92eed2",
+        "apps/macos/Package.swift": "3aa70e34f1a9cf93e01986dc25444a20685584880d5e686165430b00fbdb1ee1",
+        "apps/macos/Sources/OpenClaw/GatewayProcessManager.swift": "a95a974ce11b02e28dcfd6d97b07e1857cf3548f069b608f5a6ea42ef45d44bc",
+        "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift": "3feab3968c3e443a2cc61729fc1f21355ba2c5ff70986f9a7233fbebd1ad9bbf",
+        "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift": "18e7a0496b901d0b120efe52c3f71966dc39c6da87b41581019fc91b30a1d9cc",
+        "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift": "6b30e480ab9bc8af60757180d3381bd63c7ff652c860c7a9e84fa4b30d308b2b",
+        "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift": "e06995e42805cfec8118df54d23f7d7199995b7e1a7d2206ae04ce8f3aadeb5a",
+        "apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift": null,
+        "apps/shared/OpenClawKit/Package.resolved": null,
+        "apps/shared/OpenClawKit/Package.swift": "0438f7c7bf8b9a694af96fa20e1ea982e6715e79d3cdf17d37357f329c59bd05",
+        "apps/shared/OpenClawKit/Sources/OpenClawKit/AsyncTimeout.swift": "068ec17386fe5ac09b05186d4df6e8db05252cd3f95f5653e84a438a7b93c6a9",
+        "apps/shared/OpenClawMLXTTSProtocol/Package.swift": "662deb1e39e7284eb4fc649e20bed379fb5ee0c2e46cff8300ebce673d51a0b9",
+        "apps/swabble/Package.resolved": null,
+        "apps/swabble/Package.swift": "836ade9a377c9ebeb419e1fe1f281feda010c0f7fce6dded6a4aa73b91c5bcfd",
+        "package.json": "65daebb3b5f8022455ffdfcb095fc48a0f6177ca4ce2e16d9760416759c07225",
+        "pnpm-lock.yaml": "1f8a8e068df19803f7492454c7c6283a6630a0cf05417044d81b24c1cd5a188a",
+        "pnpm-workspace.yaml": "edced18940dc8b3c31210b327561fca062ce6cebebe92893be983ed604f64ee8",
+        "scripts/lib/failed-trailer.mts": "86ba752b93f3101839d2cac39cb4f0d13477807c8ed5ad569ba23dddaf986796",
+        "scripts/lib/managed-child-process.mts": "1816ce579a6434676ca4bbe5a0a547d532623c264e0505474f12920583b6990a",
+        "scripts/lib/vitest-resource-ownership.mts": "d4d3c644afdc4b20580b5c145f0860ac9b0c3358512e122bdcd7e3a256293659",
+        "scripts/lib/windows-taskkill.mjs": "9100b4bda17e716e721a44132641190e8346a77260dc2194304bfee20fa1958d",
+        "scripts/prepare-apple-mermaid.mjs": "0e914c41fec9dce2dfcffcf774a0c6f121b43044176e930c15b7cc7033f7384b",
+        "scripts/test-macos-native.mts": "716d740e0f4aabbc6b36671ec688f21953d967f4d4a699417420cb63a9cf3344",
+        "scripts/windows-cmd-helpers.mjs": "a2a52f2cbc6e890dee15ca7f514f0ebacd0479f1d58785b6c3fccccc0720b24b"
+      },
+      "changedPaths": [
+        "apps/macos/Sources/OpenClaw/GatewayProcessManager.swift"
+      ]
+    },
+    "candidate-delayed-resumption": {
+      "sha": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "hashes": {
+        "apps/macos/Package.resolved": "2549ca7fd983abf788b8299ae2b570729d7ad98333156b227b4fe1e9ae92eed2",
+        "apps/macos/Package.swift": "3aa70e34f1a9cf93e01986dc25444a20685584880d5e686165430b00fbdb1ee1",
+        "apps/macos/Sources/OpenClaw/GatewayProcessManager.swift": "7efb665909bbeff8fe985ec3f4b60dc1dd55600fc346ee489350978736d9f205",
+        "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift": "7cd78fbf13eef8a3332caa3e0bd7a2da667334b50ab08bcaa98c863588f9c793",
+        "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift": "eb803d1c6e39300f925321840c05acef333032eb6164e3f6a136110bb639050a",
+        "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift": "67108b11fd59096ee3359f13ee9716e998cf4a103940e8d38ad2d24428b80fd2",
+        "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift": "50a997d11a7a34a9e73a67573c0117ccc4e75a2a84f48fad521fb9f42e03416c",
+        "apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift": "fa29b03e7dd20624b60c2db67896f92d7fbbb464744e061b6246baa4136f5c82",
+        "apps/shared/OpenClawKit/Package.resolved": null,
+        "apps/shared/OpenClawKit/Package.swift": "0438f7c7bf8b9a694af96fa20e1ea982e6715e79d3cdf17d37357f329c59bd05",
+        "apps/shared/OpenClawKit/Sources/OpenClawKit/AsyncTimeout.swift": "79f6780afaf552e532e1b339c74908728d3d209ec7435290a34416ad2d713418",
+        "apps/shared/OpenClawMLXTTSProtocol/Package.swift": "662deb1e39e7284eb4fc649e20bed379fb5ee0c2e46cff8300ebce673d51a0b9",
+        "apps/swabble/Package.resolved": null,
+        "apps/swabble/Package.swift": "836ade9a377c9ebeb419e1fe1f281feda010c0f7fce6dded6a4aa73b91c5bcfd",
+        "package.json": "65daebb3b5f8022455ffdfcb095fc48a0f6177ca4ce2e16d9760416759c07225",
+        "pnpm-lock.yaml": "1f8a8e068df19803f7492454c7c6283a6630a0cf05417044d81b24c1cd5a188a",
+        "pnpm-workspace.yaml": "edced18940dc8b3c31210b327561fca062ce6cebebe92893be983ed604f64ee8",
+        "scripts/lib/failed-trailer.mts": "86ba752b93f3101839d2cac39cb4f0d13477807c8ed5ad569ba23dddaf986796",
+        "scripts/lib/managed-child-process.mts": "1816ce579a6434676ca4bbe5a0a547d532623c264e0505474f12920583b6990a",
+        "scripts/lib/vitest-resource-ownership.mts": "d4d3c644afdc4b20580b5c145f0860ac9b0c3358512e122bdcd7e3a256293659",
+        "scripts/lib/windows-taskkill.mjs": "9100b4bda17e716e721a44132641190e8346a77260dc2194304bfee20fa1958d",
+        "scripts/prepare-apple-mermaid.mjs": "0e914c41fec9dce2dfcffcf774a0c6f121b43044176e930c15b7cc7033f7384b",
+        "scripts/test-macos-native.mts": "716d740e0f4aabbc6b36671ec688f21953d967f4d4a699417420cb63a9cf3344",
+        "scripts/windows-cmd-helpers.mjs": "a2a52f2cbc6e890dee15ca7f514f0ebacd0479f1d58785b6c3fccccc0720b24b"
+      },
+      "changedPaths": [
+        "apps/macos/Sources/OpenClaw/GatewayProcessManager.swift"
+      ]
+    },
+    "candidate-joins-loser": {
+      "sha": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "hashes": {
+        "apps/macos/Package.resolved": "2549ca7fd983abf788b8299ae2b570729d7ad98333156b227b4fe1e9ae92eed2",
+        "apps/macos/Package.swift": "3aa70e34f1a9cf93e01986dc25444a20685584880d5e686165430b00fbdb1ee1",
+        "apps/macos/Sources/OpenClaw/GatewayProcessManager.swift": "bb7412b65ff6f4fd618bba66940ca27af8a4c7af4fc19073fbba63ede32b21b2",
+        "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift": "7cd78fbf13eef8a3332caa3e0bd7a2da667334b50ab08bcaa98c863588f9c793",
+        "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift": "eb803d1c6e39300f925321840c05acef333032eb6164e3f6a136110bb639050a",
+        "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift": "67108b11fd59096ee3359f13ee9716e998cf4a103940e8d38ad2d24428b80fd2",
+        "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift": "50a997d11a7a34a9e73a67573c0117ccc4e75a2a84f48fad521fb9f42e03416c",
+        "apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift": "fa29b03e7dd20624b60c2db67896f92d7fbbb464744e061b6246baa4136f5c82",
+        "apps/shared/OpenClawKit/Package.resolved": null,
+        "apps/shared/OpenClawKit/Package.swift": "0438f7c7bf8b9a694af96fa20e1ea982e6715e79d3cdf17d37357f329c59bd05",
+        "apps/shared/OpenClawKit/Sources/OpenClawKit/AsyncTimeout.swift": "c575e7f4b3910d7d6a1d0a5ef4433116afb7ec2a5fc14efa661c7fc38e1a5c7a",
+        "apps/shared/OpenClawMLXTTSProtocol/Package.swift": "662deb1e39e7284eb4fc649e20bed379fb5ee0c2e46cff8300ebce673d51a0b9",
+        "apps/swabble/Package.resolved": null,
+        "apps/swabble/Package.swift": "836ade9a377c9ebeb419e1fe1f281feda010c0f7fce6dded6a4aa73b91c5bcfd",
+        "package.json": "65daebb3b5f8022455ffdfcb095fc48a0f6177ca4ce2e16d9760416759c07225",
+        "pnpm-lock.yaml": "1f8a8e068df19803f7492454c7c6283a6630a0cf05417044d81b24c1cd5a188a",
+        "pnpm-workspace.yaml": "edced18940dc8b3c31210b327561fca062ce6cebebe92893be983ed604f64ee8",
+        "scripts/lib/failed-trailer.mts": "86ba752b93f3101839d2cac39cb4f0d13477807c8ed5ad569ba23dddaf986796",
+        "scripts/lib/managed-child-process.mts": "1816ce579a6434676ca4bbe5a0a547d532623c264e0505474f12920583b6990a",
+        "scripts/lib/vitest-resource-ownership.mts": "d4d3c644afdc4b20580b5c145f0860ac9b0c3358512e122bdcd7e3a256293659",
+        "scripts/lib/windows-taskkill.mjs": "9100b4bda17e716e721a44132641190e8346a77260dc2194304bfee20fa1958d",
+        "scripts/prepare-apple-mermaid.mjs": "0e914c41fec9dce2dfcffcf774a0c6f121b43044176e930c15b7cc7033f7384b",
+        "scripts/test-macos-native.mts": "716d740e0f4aabbc6b36671ec688f21953d967f4d4a699417420cb63a9cf3344",
+        "scripts/windows-cmd-helpers.mjs": "a2a52f2cbc6e890dee15ca7f514f0ebacd0479f1d58785b6c3fccccc0720b24b"
+      },
+      "changedPaths": [
+        "apps/shared/OpenClawKit/Sources/OpenClawKit/AsyncTimeout.swift"
+      ]
+    },
+    "candidate-held-response": {
+      "sha": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "hashes": {
+        "apps/macos/Package.resolved": "2549ca7fd983abf788b8299ae2b570729d7ad98333156b227b4fe1e9ae92eed2",
+        "apps/macos/Package.swift": "3aa70e34f1a9cf93e01986dc25444a20685584880d5e686165430b00fbdb1ee1",
+        "apps/macos/Sources/OpenClaw/GatewayProcessManager.swift": "bb7412b65ff6f4fd618bba66940ca27af8a4c7af4fc19073fbba63ede32b21b2",
+        "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift": "7cd78fbf13eef8a3332caa3e0bd7a2da667334b50ab08bcaa98c863588f9c793",
+        "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift": "eb803d1c6e39300f925321840c05acef333032eb6164e3f6a136110bb639050a",
+        "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift": "67108b11fd59096ee3359f13ee9716e998cf4a103940e8d38ad2d24428b80fd2",
+        "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift": "a08df1e79b02d681d33d0a03c1d45f1a0d799e024fa2caf095279b82ddbac3fb",
+        "apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift": "bb1633db6325a47f53e1d94b89e545ea40f620252aacbc363ec642b39edd8ad0",
+        "apps/shared/OpenClawKit/Package.resolved": null,
+        "apps/shared/OpenClawKit/Package.swift": "0438f7c7bf8b9a694af96fa20e1ea982e6715e79d3cdf17d37357f329c59bd05",
+        "apps/shared/OpenClawKit/Sources/OpenClawKit/AsyncTimeout.swift": "79f6780afaf552e532e1b339c74908728d3d209ec7435290a34416ad2d713418",
+        "apps/shared/OpenClawMLXTTSProtocol/Package.swift": "662deb1e39e7284eb4fc649e20bed379fb5ee0c2e46cff8300ebce673d51a0b9",
+        "apps/swabble/Package.resolved": null,
+        "apps/swabble/Package.swift": "836ade9a377c9ebeb419e1fe1f281feda010c0f7fce6dded6a4aa73b91c5bcfd",
+        "package.json": "65daebb3b5f8022455ffdfcb095fc48a0f6177ca4ce2e16d9760416759c07225",
+        "pnpm-lock.yaml": "1f8a8e068df19803f7492454c7c6283a6630a0cf05417044d81b24c1cd5a188a",
+        "pnpm-workspace.yaml": "edced18940dc8b3c31210b327561fca062ce6cebebe92893be983ed604f64ee8",
+        "scripts/lib/failed-trailer.mts": "86ba752b93f3101839d2cac39cb4f0d13477807c8ed5ad569ba23dddaf986796",
+        "scripts/lib/managed-child-process.mts": "1816ce579a6434676ca4bbe5a0a547d532623c264e0505474f12920583b6990a",
+        "scripts/lib/vitest-resource-ownership.mts": "d4d3c644afdc4b20580b5c145f0860ac9b0c3358512e122bdcd7e3a256293659",
+        "scripts/lib/windows-taskkill.mjs": "9100b4bda17e716e721a44132641190e8346a77260dc2194304bfee20fa1958d",
+        "scripts/prepare-apple-mermaid.mjs": "0e914c41fec9dce2dfcffcf774a0c6f121b43044176e930c15b7cc7033f7384b",
+        "scripts/test-macos-native.mts": "716d740e0f4aabbc6b36671ec688f21953d967f4d4a699417420cb63a9cf3344",
+        "scripts/windows-cmd-helpers.mjs": "a2a52f2cbc6e890dee15ca7f514f0ebacd0479f1d58785b6c3fccccc0720b24b"
+      },
+      "changedPaths": [
+        "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+        "apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift"
+      ]
+    },
+    "candidate-deadline-only-admission": {
+      "sha": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "hashes": {
+        "apps/macos/Package.resolved": "2549ca7fd983abf788b8299ae2b570729d7ad98333156b227b4fe1e9ae92eed2",
+        "apps/macos/Package.swift": "3aa70e34f1a9cf93e01986dc25444a20685584880d5e686165430b00fbdb1ee1",
+        "apps/macos/Sources/OpenClaw/GatewayProcessManager.swift": "bb7412b65ff6f4fd618bba66940ca27af8a4c7af4fc19073fbba63ede32b21b2",
+        "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift": "7cd78fbf13eef8a3332caa3e0bd7a2da667334b50ab08bcaa98c863588f9c793",
+        "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift": "eb803d1c6e39300f925321840c05acef333032eb6164e3f6a136110bb639050a",
+        "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift": "67108b11fd59096ee3359f13ee9716e998cf4a103940e8d38ad2d24428b80fd2",
+        "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift": "a08df1e79b02d681d33d0a03c1d45f1a0d799e024fa2caf095279b82ddbac3fb",
+        "apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift": "eed37faaadf950749e525e6e5413fdfdfb41a472d7e205fc0b5a2f0d181e070a",
+        "apps/shared/OpenClawKit/Package.resolved": null,
+        "apps/shared/OpenClawKit/Package.swift": "0438f7c7bf8b9a694af96fa20e1ea982e6715e79d3cdf17d37357f329c59bd05",
+        "apps/shared/OpenClawKit/Sources/OpenClawKit/AsyncTimeout.swift": "79f6780afaf552e532e1b339c74908728d3d209ec7435290a34416ad2d713418",
+        "apps/shared/OpenClawMLXTTSProtocol/Package.swift": "662deb1e39e7284eb4fc649e20bed379fb5ee0c2e46cff8300ebce673d51a0b9",
+        "apps/swabble/Package.resolved": null,
+        "apps/swabble/Package.swift": "836ade9a377c9ebeb419e1fe1f281feda010c0f7fce6dded6a4aa73b91c5bcfd",
+        "package.json": "65daebb3b5f8022455ffdfcb095fc48a0f6177ca4ce2e16d9760416759c07225",
+        "pnpm-lock.yaml": "1f8a8e068df19803f7492454c7c6283a6630a0cf05417044d81b24c1cd5a188a",
+        "pnpm-workspace.yaml": "edced18940dc8b3c31210b327561fca062ce6cebebe92893be983ed604f64ee8",
+        "scripts/lib/failed-trailer.mts": "86ba752b93f3101839d2cac39cb4f0d13477807c8ed5ad569ba23dddaf986796",
+        "scripts/lib/managed-child-process.mts": "1816ce579a6434676ca4bbe5a0a547d532623c264e0505474f12920583b6990a",
+        "scripts/lib/vitest-resource-ownership.mts": "d4d3c644afdc4b20580b5c145f0860ac9b0c3358512e122bdcd7e3a256293659",
+        "scripts/lib/windows-taskkill.mjs": "9100b4bda17e716e721a44132641190e8346a77260dc2194304bfee20fa1958d",
+        "scripts/prepare-apple-mermaid.mjs": "0e914c41fec9dce2dfcffcf774a0c6f121b43044176e930c15b7cc7033f7384b",
+        "scripts/test-macos-native.mts": "716d740e0f4aabbc6b36671ec688f21953d967f4d4a699417420cb63a9cf3344",
+        "scripts/windows-cmd-helpers.mjs": "a2a52f2cbc6e890dee15ca7f514f0ebacd0479f1d58785b6c3fccccc0720b24b"
+      },
+      "changedPaths": [
+        "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+        "apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift"
+      ]
+    }
+  },
+  "controls": [
+    {
+      "name": "baseline-delayed-resumption",
+      "sourceState": "baseline",
+      "sourceSha": "a4e3a5d5f88f164a9565cf805db242b34557d71f",
+      "patches": [
+        "baseline-delayed-resumption.patch"
+      ],
+      "filter": "GatewayProcessManagerTests.*transient unavailable health response retries",
+      "testIdContains": "transient unavailable health response retries until ready",
+      "expectation": "assertion-red",
+      "expectedExit": 1,
+      "innerTimeoutMs": 180000,
+      "requiredIssuePatterns": [
+        "waitForGatewayReady",
+        "snapshotSendCount",
+        "starting",
+        "running"
+      ],
+      "expectedIssues": 3
+    },
+    {
+      "name": "candidate-delayed-resumption",
+      "sourceState": "candidate",
+      "sourceSha": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "patches": [
+        "candidate-delayed-resumption.patch"
+      ],
+      "filter": "GatewayProcessManagerTests.*transient unavailable health response retries",
+      "testIdContains": "transient unavailable health response retries within its budget",
+      "expectation": "green",
+      "expectedExit": 0,
+      "innerTimeoutMs": 180000,
+      "requiredIssuePatterns": [],
+      "expectedCases": 3
+    },
+    {
+      "name": "candidate-joins-loser",
+      "sourceState": "candidate",
+      "sourceSha": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "patches": [
+        "candidate-joins-loser-negative-control.patch"
+      ],
+      "filter": "AsyncTimeoutTests.*timeout returns when operation ignores cancellation",
+      "testIdContains": "timeout returns when operation ignores cancellation",
+      "expectation": "bounded-timeout",
+      "expectedExit": 124,
+      "innerTimeoutMs": 30000,
+      "requiredIssuePatterns": []
+    },
+    {
+      "name": "candidate-held-response",
+      "sourceState": "candidate",
+      "sourceSha": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "patches": [
+        "candidate-held-response-admission-control.patch"
+      ],
+      "filter": "GatewayProcessManagerTests.*transient unavailable health response retries",
+      "testIdContains": "transient unavailable health response retries within its budget",
+      "expectation": "green",
+      "expectedExit": 0,
+      "innerTimeoutMs": 180000,
+      "requiredIssuePatterns": [],
+      "expectedCases": 3
+    },
+    {
+      "name": "candidate-deadline-only-admission",
+      "sourceState": "candidate",
+      "sourceSha": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "patches": [
+        "candidate-held-response-admission-control.patch",
+        "candidate-deadline-only-admission-mutant.patch"
+      ],
+      "filter": "GatewayProcessManagerTests.*transient unavailable health response retries",
+      "testIdContains": "transient unavailable health response retries within its budget",
+      "expectation": "assertion-red",
+      "expectedExit": 1,
+      "innerTimeoutMs": 180000,
+      "requiredIssuePatterns": [
+        "manager.status",
+        "failed",
+        "_testHasLaunchAgentReadinessFailure"
+      ],
+      "expectedCases": 3,
+      "expectedIssues": 2
+    }
+  ],
+  "payloadHashes": {
+    "control-native-launcher.mts": "6462db06cbbd8d3335bb8a327f98f5df14e1f7415f6af11c25db9ae20f770e70",
+    "controls/baseline-delayed-resumption.patch": "d16e4dbe2ffbb4f0222382c880a4d00cecfc92553807d5192a1c802169410909",
+    "controls/candidate-deadline-only-admission-mutant.patch": "6daca097df4375a4e253cf174d5a5c7e0ea337e8a0ea1a8aebf3e1b732408477",
+    "controls/candidate-delayed-resumption.patch": "690a15154d24ee7320f3f2e9067cea5b1884e7620d823d06206507624c789f38",
+    "controls/candidate-held-response-admission-control.patch": "06abd02426a1ba01a4aaf74dbed76f48e5f7727c7c44ee9d18b2161c25f4144e",
+    "controls/candidate-joins-loser-negative-control.patch": "3a1bcd9d68960405525b05a1b760509a1bb169b6ffaba4c18c18e811f98cf747",
+    "driver.mjs": "72ceedb8705f733b49d7ab43b4614c186c315d807cd8da2353629c6eb6a312df"
+  },
+  "platform": {
+    "macos": "26.6.2",
+    "macosBuild": "25G83",
+    "xcode": "26.6",
+    "xcodeBuild": "17F113",
+    "swift": "6.3.3"
+  },
+  "envelope": {
+    "jobMinutes": 60,
+    "managedMinutes": 50,
+    "shutdownGraceSeconds": 90,
+    "cleanupReserveSeconds": 120
+  }
+}

@@ -1,0 +1,47 @@
+--- a/apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift
++++ b/apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift
+@@ -16,6 +16,7 @@
+         var registrations: UInt64 = 0
+         var sleeps: [UUID: Sleep] = [:]
+         var admissions: [(deadline: Instant, after: UInt64, gate: AsyncTestGate)] = []
++        var proofFirstHealthResponse: AsyncTestGate?
+     }
+ 
+     private let state = Mutex(State())
+@@ -59,6 +60,11 @@
+         }
+     }
+ 
++    // Diagnostic only: hold the first health response until the retry observer is registered.
++    func proofReleaseResponseWhenWaiting(_ gate: AsyncTestGate) {
++        self.state.withLock { $0.proofFirstHealthResponse = gate }
++    }
++
+     func waitForSleep(until deadline: Instant, after registration: UInt64 = 0) async {
+         let gate = AsyncTestGate()
+         let admitted = self.state.withLock { state in
+@@ -67,6 +73,13 @@
+             }
+             state.admissions.append((deadline, registration, gate))
+             return false
++        }
++        if !admitted, registration > 0 {
++            let response = self.state.withLock { state in
++                defer { state.proofFirstHealthResponse = nil }
++                return state.proofFirstHealthResponse
++            }
++            response?.open()
+         }
+         if admitted { gate.open() }
+         await gate.wait()
+--- a/apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift
++++ b/apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift
+@@ -1316,7 +1316,7 @@
+                 await firstHealthRequest.wait()
+                 clock.advance(by: responseDelay)
+                 let probeRegistration = clock.sleepRegistrations
+-                responseGate.open()
++                clock.proofReleaseResponseWhenWaiting(responseGate)
+                 // A clipped retry shares the old probe's deadline, but must own a new timer.
+                 await clock.waitForSleep(until: clock.now.advanced(by: retryDelay), after: probeRegistration)
+                 #expect(session.latestTask()?.snapshotSendCount() == 3)

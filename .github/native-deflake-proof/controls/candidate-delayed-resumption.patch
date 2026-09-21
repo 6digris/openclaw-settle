@@ -1,0 +1,11 @@
+--- a/apps/macos/Sources/OpenClaw/GatewayProcessManager.swift
++++ b/apps/macos/Sources/OpenClaw/GatewayProcessManager.swift
+@@ -959,6 +959,8 @@
+                     latestRetryDisposition = .retryWithoutRepair
+                     if self.probeFailureShowsStartupProgress(error) {
+                         responsiveStartupProgressObserved = true
++                        // Diagnostic only: force a delayed owner resumption after a transient response.
++                        try? await Task.sleep(for: .milliseconds(750))
+                     }
+                 }
+                 let retryDelay = min(.milliseconds(300), max(.zero, clock.now.duration(to: deadline)))

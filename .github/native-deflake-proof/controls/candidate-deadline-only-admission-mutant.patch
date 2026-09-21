@@ -1,0 +1,20 @@
+--- a/apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift
++++ b/apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift
+@@ -44,7 +44,7 @@
+                     state.sleeps[id] = Sleep(
+                         deadline: deadline, registration: registration, continuation: continuation)
+                     let admitted = { (admission: (deadline: Instant, after: UInt64, gate: AsyncTestGate)) in
+-                        admission.deadline == deadline && admission.after < registration
++                        admission.deadline == deadline
+                     }
+                     let gates = state.admissions.filter(admitted).map(\.gate)
+                     state.admissions.removeAll(where: admitted)
+@@ -62,7 +62,7 @@
+     func waitForSleep(until deadline: Instant, after registration: UInt64 = 0) async {
+         let gate = AsyncTestGate()
+         let admitted = self.state.withLock { state in
+-            if state.sleeps.values.contains(where: { $0.deadline == deadline && $0.registration > registration }) {
++            if state.sleeps.values.contains(where: { $0.deadline == deadline }) {
+                 return true
+             }
+             state.admissions.append((deadline, registration, gate))

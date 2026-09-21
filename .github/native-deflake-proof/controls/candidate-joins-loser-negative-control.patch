@@ -1,0 +1,16 @@
+--- a/apps/shared/OpenClawKit/Sources/OpenClawKit/AsyncTimeout.swift
++++ b/apps/shared/OpenClawKit/Sources/OpenClawKit/AsyncTimeout.swift
+@@ -86,7 +86,12 @@
+         self.state.withLock { $0 = .resolved([]) }
+         if let continuation {
+             // Only the winner consumes its factory; it may log or call back into a caller.
+-            continuation.resume(with: outcome())
++            // Diagnostic only: model a regression that joins the cancellation-ignoring loser.
++            let result = outcome()
++            Task {
++                for task in tasks { await task.value }
++                continuation.resume(with: result)
++            }
+         }
+     }
+ }
