@@ -542,6 +542,40 @@ describe("createBlockReplyPipeline content coverage dedup", () => {
   );
 
   it.each([false, true])(
+    "deduplicates an unkeyed replay after a source occurrence (coalescing=%s)",
+    async (coalescing) => {
+      const sent: ReplyPayload[] = [];
+      const pipeline = createBlockReplyPipeline({
+        onBlockReply: async (payload) => {
+          sent.push(payload);
+        },
+        timeoutMs: 5000,
+        ...(coalescing
+          ? { coalescing: { minChars: 100, maxChars: 200, idleMs: 0, joiner: "" } }
+          : {}),
+      });
+
+      pipeline.enqueue(
+        setReplyPayloadMetadata(
+          { text: "unchanged" },
+          {
+            assistantMessageIndex: 1,
+            blockSourceText: "unchanged",
+            blockSourceRange: [0, 9],
+          },
+        ),
+      );
+      await pipeline.flush({ force: true });
+      pipeline.enqueue(
+        setReplyPayloadMetadata({ text: "unchanged" }, { assistantMessageIndex: 1 }),
+      );
+      await pipeline.flush({ force: true });
+
+      expect(sent.map((payload) => payload.text)).toEqual(["unchanged"]);
+    },
+  );
+
+  it.each([false, true])(
     "recognizes delivered source through synthetic fence wrappers (coalescing=%s)",
     async (coalescing) => {
       const sent: ReplyPayload[] = [];

@@ -180,6 +180,9 @@ export function createBlockReplyPipeline(params: {
       }
       seenKeys.add(dedupeKey);
     }
+    if (occurrenceKey) {
+      seenKeys.add(payloadKey);
+    }
     if (!carriesUnkeyedDistinctSource && (sentKeys.has(dedupeKey) || pendingKeys.has(dedupeKey))) {
       return;
     }
@@ -331,6 +334,9 @@ export function createBlockReplyPipeline(params: {
     }
     if (!carriesUnkeyedDistinctSource) {
       seenKeys.add(dedupeKey);
+    }
+    if (occurrenceKey) {
+      seenKeys.add(payloadKey);
     }
     bufferedAssistantMessageIndex = assistantMessageIndex;
     coalescer.enqueue(payload);
