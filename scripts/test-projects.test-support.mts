@@ -3386,9 +3386,13 @@ function resolveToolingTestTargets(changedPath: string, cwd = process.cwd()) {
   const exactTargets = exactOwners ? resolveToolingTestOwnerTargets(...exactOwners) : [];
   const semanticTargets = resolveSemanticToolingTargets(implementationPath);
   const facts = getChangedPathFacts(changedPath);
+  const toolingTestSource =
+    changedPath.startsWith("test/scripts/") &&
+    TOOLING_IMPORTABLE_FILE_EXTENSIONS.some((ext) => implementationPath.endsWith(ext));
   const hasToolingOwner =
     exactTargets.length > 0 ||
     semanticTargets.length > 0 ||
+    toolingTestSource ||
     hasToolingSourceOwner(changedPath, implementationPath);
   if (!hasToolingOwner) {
     return null;
@@ -3429,9 +3433,13 @@ function resolveToolingTestTargets(changedPath: string, cwd = process.cwd()) {
     TOOLING_IMPORTABLE_FILE_EXTENSIONS.some((ext) => implementationPath.endsWith(ext))
       ? resolveAffectedTestsFromTargetedImportScan(implementationPath, cwd, {
           tooling: true,
-          direct: true,
+          direct: !toolingTestSource,
         })
       : [];
+  if (toolingTestSource && importGraphResult === null) {
+    // Keep caller fallbacks; a partial literal reference cannot prove an opaque frontier.
+    return null;
+  }
   const importGraphTargets = importGraphResult ?? [];
   const referenceTargets =
     githubYaml || (semanticTargets.length === 0 && !hasDirectOwner)
