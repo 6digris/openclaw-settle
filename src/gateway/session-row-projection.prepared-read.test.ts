@@ -251,7 +251,7 @@ it("keeps an exact placement read when another session publishes activity", asyn
     const captured = createDeferredCore();
     const release = createDeferredCore();
     const respond = vi.fn();
-    let pending: Promise<void> | void;
+    let pending: Promise<void> | void = undefined;
     try {
       await projection.ensureMaterialized();
       const readProjection = placements.readProjection.bind(placements);
