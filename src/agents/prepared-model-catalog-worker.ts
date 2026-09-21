@@ -16,6 +16,10 @@ import {
   getPluginCacheRetirementSignal,
   getPluginMetadataSnapshotCache,
 } from "../plugins/plugin-cache.js";
+import {
+  capturePluginGenerationRehearsalContext,
+  type PluginGenerationRehearsalContext,
+} from "../plugins/plugin-generation-rehearsal.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { createPluginSourceCaptureRoot } from "../plugins/plugin-source-capture-directory.js";
 import { captureProviderSyntheticAuthFacts } from "../plugins/provider-runtime.js";
@@ -58,6 +62,7 @@ export type PreparedModelCatalogWorkerInput = Readonly<{
   providerIds: readonly string[];
   preferBuiltPluginArtifacts: boolean;
   pluginMetadataSnapshot: Omit<PluginMetadataSnapshot, "normalizePluginId">;
+  pluginGenerationRehearsal?: PluginGenerationRehearsalContext;
 }>;
 
 export type PreparedModelCatalogWorkerData = (
@@ -397,6 +402,7 @@ export function createPreparedModelCatalogWorkerInput(params: {
     providerIds,
     preferBuiltPluginArtifacts: params.preferBuiltPluginArtifacts === true,
     pluginMetadataSnapshot,
+    pluginGenerationRehearsal: capturePluginGenerationRehearsalContext(params.agentFacts.env),
   };
 }
 

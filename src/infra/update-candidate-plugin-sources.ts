@@ -10,7 +10,7 @@ export function resolveUpdateCandidatePluginSourceEntries(
   config: OpenClawConfig,
 ) {
   const plugins = normalizePluginsConfig(config.plugins);
-  const entries = new Map<string, { rootDir: string; entryFile: string }>();
+  const entries = new Map<string, { rootDir: string; entryFile: string; standalone: boolean }>();
   for (const candidate of candidates) {
     if (candidate.format === "bundle") {
       continue;
@@ -23,13 +23,19 @@ export function resolveUpdateCandidatePluginSourceEntries(
       rootConfig: config,
     }).enabled;
     const packageManifest = candidate.packageManifest;
+    const standalone = candidate.packageDir === undefined;
     if (enabled) {
-      entries.set(candidate.source, { rootDir: candidate.rootDir, entryFile: candidate.source });
+      entries.set(candidate.source, {
+        rootDir: candidate.rootDir,
+        entryFile: candidate.source,
+        standalone,
+      });
     }
     if (candidate.setupSource && (enabled || packageManifest?.setupFeatures?.configPromotion)) {
       entries.set(candidate.setupSource, {
         rootDir: candidate.rootDir,
         entryFile: candidate.setupSource,
+        standalone,
       });
     }
     if (
@@ -49,6 +55,7 @@ export function resolveUpdateCandidatePluginSourceEntries(
       entries.set(doctor.modulePath, {
         rootDir: doctor.boundaryRoot,
         entryFile: doctor.modulePath,
+        standalone,
       });
     }
   }

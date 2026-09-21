@@ -68,6 +68,7 @@ export async function runGatewayStartupMaintenance(params: {
   cfgAtStart: OpenClawConfig;
   startupRuntimeConfig: OpenClawConfig;
   minimalTestGateway: boolean;
+  updateCanary?: boolean;
   log: GatewayPluginBootstrapLog;
 }): Promise<void> {
   const startupMaintenanceConfig = resolveGatewayStartupMaintenanceConfig({
@@ -102,6 +103,7 @@ export async function runGatewayStartupMaintenance(params: {
         runStartupSessionMigration({
           cfg: params.cfgAtStart,
           env: process.env,
+          updateCanary: params.updateCanary,
           log: params.log,
         }),
       );

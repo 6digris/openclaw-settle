@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isPathInside, relativePluginPathInsideRootSync } from "./path-safety.js";
+import {
+  rebindPluginGenerationArtifactLinks,
+  type PluginGenerationLinkState,
+} from "./plugin-generation-artifact-state.js";
 import { createPluginSourceCapture } from "./plugin-package-metadata-capture.js";
 
 function canonicalSource(rootDir: string, sourceRoot: string, source: string): string {
@@ -48,12 +52,14 @@ function captureRecoverySource({
   capturedRoot,
   boundaryRoot,
   capturedPaths,
+  internalLinks,
 }: {
   rootDir: string;
   sourceRoot: string;
   capturedRoot: string;
   boundaryRoot: string;
   capturedPaths: ReadonlyMap<string, string>;
+  internalLinks: readonly PluginGenerationLinkState[];
 }) {
   const recovery = createPluginSourceCapture();
   try {
@@ -61,6 +67,11 @@ function captureRecoverySource({
     fs.cpSync(boundaryRoot, recovery.directory, {
       recursive: true,
       verbatimSymlinks: true,
+    });
+    rebindPluginGenerationArtifactLinks({
+      directory: recovery.directory,
+      sourceDirectory: boundaryRoot,
+      packages: internalLinks,
     });
     const relocate = (filename: string) =>
       path.join(recovery.directory, path.relative(boundaryRoot, filename));
@@ -87,6 +98,7 @@ export function createPluginGenerationSourceLookup({
   capturedPaths,
   hardlinkedSources,
   assertModuleAvailable,
+  captureInternalLinks,
 }: {
   rootDir: string;
   sourceRoot: string;
@@ -95,6 +107,7 @@ export function createPluginGenerationSourceLookup({
   capturedPaths: ReadonlyMap<string, string>;
   hardlinkedSources: ReadonlySet<string>;
   assertModuleAvailable: (filename: string) => void;
+  captureInternalLinks: () => readonly PluginGenerationLinkState[];
 }) {
   const resolveCaptured = (source: string) => {
     const captured = getCapturedSource(capturedPaths, rootDir, sourceRoot, source);
@@ -116,6 +129,13 @@ export function createPluginGenerationSourceLookup({
       return captured;
     },
     captureRecoverySource: () =>
-      captureRecoverySource({ rootDir, sourceRoot, capturedRoot, boundaryRoot, capturedPaths }),
+      captureRecoverySource({
+        rootDir,
+        sourceRoot,
+        capturedRoot,
+        boundaryRoot,
+        capturedPaths,
+        internalLinks: captureInternalLinks(),
+      }),
   };
 }

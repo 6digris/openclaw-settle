@@ -7,6 +7,11 @@ import { walkDirectorySync } from "../infra/fs-safe.js";
 import { hasNodeErrorCode, isPathInside } from "../infra/path-guards.js";
 import { createJiti } from "./jiti-factory.js";
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
+import {
+  readPluginGenerationInspection,
+  retainPluginGenerationInspection,
+  type PluginGenerationInspection,
+} from "./plugin-generation-rehearsal.js";
 import { visitPluginSourceReferences } from "./plugin-source-references.js";
 
 /** Acquire the same literal module inputs as execution, without evaluating plugin code. */
@@ -17,15 +22,35 @@ export function inspectPluginSourceDependencies(
   const packageRoots = new Set<string>();
   const unresolved: Array<{ source: string; specifier: string }> = [];
   const references: Array<{ source: string; specifier: string; target: string }> = [];
-  const checks: Array<() => void> = [];
-  const seenEntries = new Set<string>();
+  const checks = new Map<string, () => void>();
+  const byEntry = new Map<string, PluginGenerationInspection>();
+  const bySource = new Map<string, PluginGenerationInspection>();
+  const reusedSources: Array<{ entryFile: string; reason: string }> = [];
   for (const entry of entries) {
     const source = fs.realpathSync(entry.entryFile);
-    if (seenEntries.has(source)) {
+    const prior = bySource.get(source);
+    if (prior) {
+      byEntry.set(entry.entryFile, prior);
+      retainPluginGenerationInspection(entry, prior);
       continue;
     }
-    seenEntries.add(source);
+    const prepared = readPluginGenerationInspection(entry);
+    if (prepared) {
+      prepared.files.forEach((file) => files.add(file));
+      prepared.packageRoots.forEach((root) => packageRoots.add(root));
+      unresolved.push(...prepared.unresolved);
+      references.push(...prepared.references);
+      checks.set(prepared.generation, prepared.assertSourceCurrent);
+      byEntry.set(entry.entryFile, prepared);
+      bySource.set(source, prepared);
+      reusedSources.push({ entryFile: entry.entryFile, reason: prepared.reuseReason });
+      continue;
+    }
     const root = fs.realpathSync(entry.rootDir);
+    const referenceStart = references.length;
+    const unresolvedStart = unresolved.length;
+    const entryFiles: string[] = [];
+    const entryRoots: string[] = [];
     // This scope grants source acquisition only. No module evaluation or registration runs here.
     const artifact = capturePluginGenerationArtifact(root, source, (run) => run());
     try {
@@ -111,17 +136,36 @@ export function inspectPluginSourceDependencies(
         }
         if (captured.kind === "file") {
           files.add(original);
+          entryFiles.push(original);
         } else if (captured.kind === "directory") {
           packageRoots.add(original);
+          entryRoots.push(original);
         }
       }
-      artifact.assertSourceCurrent();
-      checks.push(artifact.assertSourceCurrent);
+      checks.set(artifact.boundaryRoot, artifact.assertSourceCurrent);
+      const graph: PluginGenerationInspection = {
+        files: entryFiles,
+        packageRoots: entryRoots.filter(
+          (packageRoot) =>
+            !entryRoots.some((other) => other !== packageRoot && isPathInside(other, packageRoot)),
+        ),
+        unresolved: unresolved.slice(unresolvedStart),
+        references: references.slice(referenceStart),
+      };
+      retainPluginGenerationInspection(entry, graph);
+      byEntry.set(entry.entryFile, graph);
+      bySource.set(source, graph);
     } finally {
       artifact.dispose();
     }
   }
+  // Selected surfaces of one immutable acquisition share one final verification, without yielding.
+  for (const check of checks.values()) {
+    check();
+  }
   return {
+    byEntry,
+    reusedSources,
     files: [...files],
     packageRoots: [...packageRoots].filter(
       (root) => ![...packageRoots].some((other) => other !== root && isPathInside(other, root)),
@@ -129,7 +173,7 @@ export function inspectPluginSourceDependencies(
     unresolved,
     references,
     assertSourceCurrent: () => {
-      for (const check of checks) {
+      for (const check of checks.values()) {
         check();
       }
     },

@@ -482,6 +482,7 @@ export async function prepareGatewayServerBootstrap(input: {
       cfgAtStart,
       startupRuntimeConfig,
       minimalTestGateway,
+      updateCanary: opts.updateCanary,
       log,
     }),
   );

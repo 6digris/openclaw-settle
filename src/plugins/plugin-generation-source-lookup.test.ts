@@ -31,6 +31,7 @@ describe("plugin generation source lookup", () => {
       capturedPaths: new Map([[aliasedSource, source]]),
       hardlinkedSources: new Set(),
       assertModuleAvailable,
+      captureInternalLinks: () => [],
     });
 
     expect(lookup.hasSource(source)).toBe(true);
@@ -56,6 +57,7 @@ describe("plugin generation source lookup", () => {
       capturedPaths: new Map([[source, source]]),
       hardlinkedSources: new Set(),
       assertModuleAvailable: vi.fn(),
+      captureInternalLinks: () => [],
     });
 
     expect(lookup.hasSource(source)).toBe(true);

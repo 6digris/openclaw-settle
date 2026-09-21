@@ -13,6 +13,7 @@ import type { Model } from "../llm/types.js";
 import { listRuntimePluginIdsFromRegistry } from "../plugins/active-runtime-registry.js";
 import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { isManifestPluginAvailableForControlPlane } from "../plugins/manifest-contract-eligibility.js";
+import { withPluginGenerationRehearsalContext } from "../plugins/plugin-generation-rehearsal.js";
 import { restorePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { withPluginSourceCaptureDirectory } from "../plugins/plugin-package-metadata-capture.js";
 import { captureProviderCatalogExpiries } from "../plugins/provider-catalog-expiry.js";
@@ -539,51 +540,53 @@ if (parentPort) {
     if (value.kind !== "catalog" || !isWorkerRequest(request)) {
       throw new Error("invalid prepared model catalog worker request");
     }
-    return withPluginSourceCaptureDirectory(
-      data.sourceCaptureDirectory,
-      async () => {
-        const previous = current;
-        let attempted: WorkerGeneration | undefined;
-        let release: (() => Promise<void>) | undefined;
-        try {
-          const result = await runPreparedModelCatalogWorkerRequest(value, request, async () => {
-            if (previous?.fingerprint === value.generationFingerprint) {
-              return previous.prepared;
-            }
-            const prepared = (attempted = await prepareWorkerGeneration(value));
-            if (prepared.reconstructedFingerprint === value.generationFingerprint) {
-              const releaseBase = ownPreparedPluginGeneration(prepared.pluginGeneration).retain();
-              release = async () => {
-                try {
-                  await prepared.discovery?.release();
-                } finally {
-                  await releaseBase();
-                }
+    return withPluginGenerationRehearsalContext(value.pluginGenerationRehearsal, () =>
+      withPluginSourceCaptureDirectory(
+        data.sourceCaptureDirectory,
+        async () => {
+          const previous = current;
+          let attempted: WorkerGeneration | undefined;
+          let release: (() => Promise<void>) | undefined;
+          try {
+            const result = await runPreparedModelCatalogWorkerRequest(value, request, async () => {
+              if (previous?.fingerprint === value.generationFingerprint) {
+                return previous.prepared;
+              }
+              const prepared = (attempted = await prepareWorkerGeneration(value));
+              if (prepared.reconstructedFingerprint === value.generationFingerprint) {
+                const releaseBase = ownPreparedPluginGeneration(prepared.pluginGeneration).retain();
+                release = async () => {
+                  try {
+                    await prepared.discovery?.release();
+                  } finally {
+                    await releaseBase();
+                  }
+                };
+              }
+              return prepared;
+            });
+            if (attempted && release && result.status === "ok") {
+              current = {
+                fingerprint: value.generationFingerprint,
+                prepared: attempted,
+                release,
               };
+              attempted = undefined;
+              release = undefined;
+              // Acquire the replacement before releasing shared source registrations.
+              await previous?.release();
             }
-            return prepared;
-          });
-          if (attempted && release && result.status === "ok") {
-            current = {
-              fingerprint: value.generationFingerprint,
-              prepared: attempted,
-              release,
-            };
-            attempted = undefined;
-            release = undefined;
-            // Acquire the replacement before releasing shared source registrations.
-            await previous?.release();
+            return result;
+          } finally {
+            if (release) {
+              await release();
+            } else if (attempted) {
+              await discardPreparedPluginGeneration(attempted.pluginGeneration);
+            }
           }
-          return result;
-        } finally {
-          if (release) {
-            await release();
-          } else if (attempted) {
-            await discardPreparedPluginGeneration(attempted.pluginGeneration);
-          }
-        }
-      },
-      data.sourceCaptureManagedRoot,
+        },
+        data.sourceCaptureManagedRoot,
+      ),
     );
   });
 }

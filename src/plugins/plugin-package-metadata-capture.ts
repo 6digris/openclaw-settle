@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
@@ -9,28 +9,13 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { openRootFileSync } from "../infra/boundary-file-read.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { escapeRegExp } from "../shared/regexp.js";
+import {
+  pluginSourceStatIdentity,
+  pluginSourceContentHash,
+  type PluginSourceInput,
+} from "./plugin-generation-artifact-state.js";
 import { retainPluginSourceCaptureInstance } from "./plugin-source-capture-directory.js";
 import { PLUGIN_SOURCE_CAPTURE_PREFIX } from "./plugin-source-capture-path.js";
-
-export function createPluginSourceLinkCapture() {
-  const links = new Set<string>();
-  return {
-    defer(filename: string, root: string): boolean {
-      if (
-        !fs.lstatSync(filename).isSymbolicLink() ||
-        isPathInside(root, fs.realpathSync(filename))
-      ) {
-        return false;
-      }
-      links.add(filename);
-      return true;
-    },
-    contains: (filename: string) => [...links].some((link) => isPathInside(link, filename)),
-  };
-}
-
-export const pluginSourceStatIdentity = (stat: fs.BigIntStats): string =>
-  `${stat.dev}:${stat.ino}:${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
 
 export function readPluginSourceBytes(source: string, boundary: string): Buffer {
   const opened = openRootFileSync({
@@ -48,18 +33,6 @@ export function readPluginSourceBytes(source: string, boundary: string): Buffer 
     fs.closeSync(opened.fd);
   }
 }
-
-export const pluginSourceContentHash = (content: Buffer | string[]) =>
-  createHash("sha256")
-    .update(Array.isArray(content) ? JSON.stringify(content) : content)
-    .digest("hex");
-
-export type PluginSourceInput = {
-  identity: string;
-  contentHash: string;
-  directory: boolean;
-  boundary: string;
-};
 
 export function verifyPluginSourceInputs(
   inputs: ReadonlyMap<string, PluginSourceInput>,
@@ -85,9 +58,13 @@ export function verifyPluginSourceInputs(
 
 export type PluginDependencyResolution = { root: string; lookupDirectory: string };
 
-export function createPluginDependencyResolver() {
-  const roots = new Map<string, PluginDependencyResolution | undefined>();
-  return (name: string, importer: string): PluginDependencyResolution | undefined => {
+export function createPluginDependencyResolver(
+  initial: readonly (readonly [string, PluginDependencyResolution | null])[] = [],
+) {
+  const roots = new Map<string, PluginDependencyResolution | undefined>(
+    initial.map(([key, value]) => [key, value ?? undefined]),
+  );
+  const resolve = (name: string, importer: string): PluginDependencyResolution | undefined => {
     const key = `${path.dirname(importer)}\0${name}`;
     if (roots.has(key)) {
       return roots.get(key);
@@ -107,6 +84,9 @@ export function createPluginDependencyResolver() {
     roots.set(key, undefined);
     return undefined;
   };
+  return Object.assign(resolve, {
+    snapshot: () => [...roots].map(([key, value]) => [key, value ?? null] as const),
+  });
 }
 
 /** Prepare each importer's package lookup once; Node still selects its export target. */
@@ -726,13 +706,21 @@ export function createPluginSourceCapture(execute?: <T>(run: () => T) => T) {
     additions,
     capture: captureAdmitted,
     assertModuleAvailable,
+    hasFailures: () => captureFailures.size > 0,
     directory,
     outputRoot: override?.managedRoot ?? instance?.managedRoot,
     linkHost: (hostRoot: string) => {
       const modules = path.join(directory, "node_modules");
       fs.mkdirSync(modules, { recursive: true, mode: 0o700 });
+      const link = path.join(modules, "openclaw");
+      if (fs.existsSync(link)) {
+        if (fs.realpathSync(link) !== fs.realpathSync(hostRoot)) {
+          throw new Error("Plugin generation is bound to another OpenClaw host");
+        }
+        return;
+      }
       // Native ESM follows the selected host's real public exports and identity.
-      fs.symlinkSync(hostRoot, path.join(modules, "openclaw"), "junction");
+      fs.symlinkSync(hostRoot, link, "junction");
     },
     dispose() {
       beginDisposal();

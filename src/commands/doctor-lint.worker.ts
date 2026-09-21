@@ -5,6 +5,10 @@ import { closeCliResources, runCliDisposer } from "../cli/runtime-cleanup.js";
 import { scrubDoctorErrorMessage } from "../flows/doctor-error-message.js";
 import { resolveUpdateRehearsalRoot } from "../infra/update-rehearsal-paths.js";
 import { enableConsoleCapture } from "../logging/console.js";
+import {
+  capturePluginGenerationRehearsalContext,
+  withPluginGenerationRehearsalContext,
+} from "../plugins/plugin-generation-rehearsal.js";
 import { defaultRuntime } from "../runtime.js";
 import { DoctorLintCliOptionsSchema } from "./doctor-lint-options.js";
 
@@ -27,21 +31,23 @@ async function runDoctorLintWorker(): Promise<void> {
     throw new Error("Doctor lint worker requires JSON output.");
   }
   enableConsoleCapture();
-  await withCliProcessScope(() =>
-    withCliCommandCleanup(false, async (cleanup) => {
-      let exitCode: number;
-      try {
-        const { runDoctorLintCliInProcess } = await import("./doctor-lint.js");
-        exitCode = await runDoctorLintCliInProcess(defaultRuntime, opts, true);
-      } finally {
-        await closeCliResources(cleanup);
-        const resources = cleanup?.pluginResources;
-        if (resources) {
-          await runCliDisposer("plugin-registration-resources", () => resources.release());
+  await withPluginGenerationRehearsalContext(capturePluginGenerationRehearsalContext(), () =>
+    withCliProcessScope(() =>
+      withCliCommandCleanup(false, async (cleanup) => {
+        let exitCode: number;
+        try {
+          const { runDoctorLintCliInProcess } = await import("./doctor-lint.js");
+          exitCode = await runDoctorLintCliInProcess(defaultRuntime, opts, true);
+        } finally {
+          await closeCliResources(cleanup);
+          const resources = cleanup?.pluginResources;
+          if (resources) {
+            await runCliDisposer("plugin-registration-resources", () => resources.release());
+          }
         }
-      }
-      exitCliAfterOutput(defaultRuntime, exitCode);
-    }),
+        exitCliAfterOutput(defaultRuntime, exitCode);
+      }),
+    ),
   );
 }
 

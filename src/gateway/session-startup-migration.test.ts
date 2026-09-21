@@ -8,6 +8,7 @@ import {
   loadExactSessionEntry,
   loadExactSessionEntryReadOnly,
   persistSessionTranscriptTurn,
+  readSessionTranscriptMessageEvents,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import * as canonicalWorker from "../config/sessions/session-accessor.sqlite-canonical-worker-pool.js";
@@ -17,6 +18,7 @@ import {
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { setCanonicalSqliteSessionMainKey } from "../config/sessions/session-canonical-key.js";
 import { withCanonicalSessionValidationDeferral } from "../config/sessions/session-canonical-validation-deferral.js";
+import { hasPendingCanonicalSessionValidation } from "../config/sessions/session-canonical-validation.js";
 import { sessionTranscriptIndexNeedsReconcile } from "../config/sessions/session-transcript-index.js";
 import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -24,6 +26,8 @@ import * as gatewayLock from "../infra/gateway-lock.js";
 import * as gatewayOwner from "../infra/gateway-owner-lease.js";
 import * as nodeSqlite from "../infra/node-sqlite.js";
 import * as coordinator from "../infra/state-database-coordinator.js";
+import { buildUpdateRehearsalPathEnv } from "../infra/update-rehearsal-paths.js";
+import { buildUpdateDoctorEnv } from "../infra/update-runner-doctor.js";
 import { hasPersistedOpenClawAgentCanonicalValidation } from "../state/openclaw-agent-canonical-validation-receipt.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import {
@@ -339,6 +343,101 @@ describe("runStartupSessionMigration", () => {
           ).toBe(true);
         }
         expect(fs.existsSync(path.join(stateDir, "session-sqlite-migration-runs"))).toBe(false);
+      });
+    },
+  );
+
+  it.each(["private canary", "incomplete markers", "ordinary startup"] as const)(
+    "certifies canonical sessions while deferring only disposable runtime work: %s",
+    async (mode) => {
+      const stateDir = fs.realpathSync.native(tempDirs.make("openclaw-canary-session-startup-"));
+      await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const env: NodeJS.ProcessEnv = {
+          ...process.env,
+          ...buildUpdateRehearsalPathEnv(stateDir),
+          ...buildUpdateDoctorEnv({
+            allowGatewayServiceRepair: false,
+            allowGatewayActivation: false,
+            serviceRepairPolicy: "external",
+          }),
+          OPENCLAW_UPDATE_IN_PROGRESS: "0",
+          OPENCLAW_COMPATIBILITY_HOST_VERSION: undefined,
+        };
+        if (mode === "incomplete markers") {
+          delete env.OPENCLAW_SKIP_PROVIDERS;
+        }
+        const cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
+        const scope = {
+          agentId: "main",
+          env,
+          sessionId: "canary-session",
+          sessionKey: "agent:main:canary",
+        };
+        await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 10 });
+        await persistSessionTranscriptTurn(scope, {
+          messages: [
+            { eventId: "retained-message", message: { role: "user", content: "retained history" } },
+          ],
+          touchSessionEntry: false,
+        });
+        await waitForSessionTranscriptIndexReconcile(scope);
+        const database = openOpenClawAgentDatabase(scope);
+        database.db.exec(`
+          UPDATE session_transcript_index_state SET needs_rebuild = 1;
+          UPDATE session_key_contract SET canonical_ready = NULL;
+          INSERT OR IGNORE INTO session_canonical_validation_pending
+            SELECT session_key FROM session_nodes;
+        `);
+        const sourceEvents = database.db.prepare("SELECT * FROM transcript_events").all();
+        expect(hasPendingCanonicalSessionValidation(database)).toBe(true);
+        expect(hasPersistedOpenClawAgentCanonicalValidation(database)).toBe(false);
+        await closeOpenClawAgentDatabasesAsync(stateDir);
+        closeOpenClawAgentDatabasesForTest(stateDir);
+        const log = makeLog();
+
+        await runStartupSessionMigration({
+          cfg,
+          env,
+          log,
+          updateCanary: mode !== "ordinary startup",
+        });
+
+        const deferred = mode === "private canary";
+        if (deferred) {
+          expect(isOpenClawAgentDatabaseOpen(database.path)).toBe(false);
+          expect(log.warn).toHaveBeenCalledWith(
+            expect.stringContaining(
+              "deferred transcript projection rebuilds and copied orphan-session recovery to live Gateway startup",
+            ),
+          );
+        } else {
+          expect(log.warn).not.toHaveBeenCalled();
+        }
+        expect(
+          withOpenClawAgentDatabaseReadOnly(
+            (current) => ({
+              canonicalReady: hasPersistedOpenClawAgentCanonicalValidation(current),
+              canonicalPending: hasPendingCanonicalSessionValidation(current),
+              projectionPending: sessionTranscriptIndexNeedsReconcile(current.db, scope.sessionId),
+              events: current.db.prepare("SELECT * FROM transcript_events").all(),
+            }),
+            scope,
+          ),
+        ).toMatchObject({
+          found: true,
+          value: {
+            canonicalReady: true,
+            canonicalPending: false,
+            projectionPending: deferred,
+            events: sourceEvents,
+          },
+        });
+        if (deferred) {
+          await runStartupSessionMigration({ cfg, env, log: makeLog() });
+        }
+        expect(readSessionTranscriptMessageEvents(scope).map((row) => row.event)).toEqual([
+          expect.objectContaining({ id: "retained-message" }),
+        ]);
       });
     },
   );

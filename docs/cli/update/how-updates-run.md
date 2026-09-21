@@ -120,6 +120,13 @@ serving plugin. Complete snapshots do not require the original source to remain
 available. Some older managed-state or cross-volume projections do not retain a
 recoverable original path, which Doctor reports in the update diagnostics.
 
+Within one candidate validation, plugin entry, setup, and Doctor surfaces share
+one prepared source generation and its dependency inspection results. Each runtime
+still receives an isolated copy, so plugin-local writes cannot change another
+check's inputs. The prepared generation lives only in the disposable rehearsal;
+it never links to the serving plugin's mutable files. If preparation is unavailable,
+checks record a warning and acquire their own isolated copies.
+
 Path aliases that resolve to a running package's bundled plugin use the staged
 bundled plugin with the same ID when
 available, preserving bundled trust. External path installs keep their existing
@@ -127,6 +134,17 @@ classification. The live plugin files and host links stay unchanged. Channels,
 cron, automatic updates, background task maintenance, and other side services are
 suppressed in this canary. Copied task records remain available for startup
 validation without recovery or pruning.
+
+The disposable test Gateway validates canonical session rows but defers rebuilding
+transcript search/history projections and recovering copied orphan sessions to the
+live Gateway's startup. It records that deferral and closes its temporary session
+maintenance connections. Normal Gateway startup still rebuilds pending projections
+before serving history. This candidate-side behavior also applies when the installed
+2026.9.4 updater starts the test Gateway.
+
+Doctor waits for accepted transcript reconciliation and its SQLite lease cleanup
+before closing agent database connections. That lifecycle boundary also applies
+to plugin migration settlement after candidate validation has passed.
 
 Update build and validation processes resolve source-linked plugin SDKs from
 the staged installation root, even when the serving source launcher passed its own checkout

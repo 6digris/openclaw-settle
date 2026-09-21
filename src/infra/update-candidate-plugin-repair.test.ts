@@ -4,7 +4,9 @@ import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { capturePluginGenerationArtifact } from "../plugins/plugin-generation-artifact.js";
 import { runCommandBuffered } from "../process/exec.js";
+import { withEnvAsync } from "../test-utils/env.js";
 import { resolveUpdateCandidatePluginPath } from "./update-candidate-paths.js";
 import { completeUpdateCandidatePluginRehearsal } from "./update-candidate-plugin-repair.js";
 import { buildUpdateRehearsalPathEnv } from "./update-rehearsal-paths.js";
@@ -138,6 +140,57 @@ it("completes a declared Doctor module independently of the runtime entry", asyn
   const after = await f.run();
   expect(after.code, after.stderr.toString()).toBe(0);
   expect(after.stdout.toString().trim()).toBe("sibling-ready");
+});
+
+it("reuses one prepared generation for entry, setup, and Doctor after completing the private snapshot", async () => {
+  const f = await fixture();
+  const surfaces = ["index.mjs", "setup-entry.mjs", "doctor-contract-api.mjs"];
+  for (const directory of [f.plugin, f.copiedPlugin]) {
+    await fs.writeFile(
+      path.join(directory, "package.json"),
+      JSON.stringify({
+        name: "demo",
+        type: "module",
+        openclaw: { extensions: ["./index.mjs"], setupEntry: "./setup-entry.mjs" },
+      }),
+    );
+    await fs.writeFile(
+      path.join(directory, "openclaw.plugin.json"),
+      JSON.stringify({
+        id: "demo",
+        configSchema: { type: "object", properties: {} },
+        doctorContract: { configRepair: true },
+      }),
+    );
+    for (const surface of surfaces) {
+      await fs.writeFile(
+        path.join(directory, surface),
+        `export const value = ${JSON.stringify(surface)};`,
+      );
+    }
+  }
+  expect(await completeUpdateCandidatePluginRehearsal(f)).toEqual({ copiedFiles: 0, warnings: [] });
+  for (const surface of surfaces) {
+    await fs.writeFile(
+      path.join(f.copiedPlugin, surface),
+      "export const value = 'changed source';",
+    );
+  }
+  await withEnvAsync(f.env, async () => {
+    const digests = new Set<string>();
+    for (const surface of surfaces) {
+      const artifact = capturePluginGenerationArtifact(f.copiedPlugin);
+      try {
+        const entry = artifact.resolve(path.join(f.copiedPlugin, surface));
+        expect((await import(pathToFileURL(entry).href)).value).toBe(surface);
+        expect(artifact.sourceAcquisition).toBe("prepared-candidate-plugin-generation");
+        digests.add(artifact.sourceDigest);
+      } finally {
+        artifact.dispose();
+      }
+    }
+    expect(digests.size).toBe(1);
+  });
 });
 
 it.each(["absolute path", "file URL"])(
