@@ -1194,7 +1194,7 @@ fi
   itPosix.each(["producer failure", "truncated archive", "reader failure"])(
     "refuses anchor extraction on %s",
     (failure) => {
-      const fixture = makeMismatchedWrapperRepo();
+      const fixture = makeMismatchedWrapperRepo({ toolingOnly: true });
       parkCanonicalOffAnchor(fixture);
       const git = join(fixture.bin, "git");
       writeFileSync(
@@ -1744,7 +1744,7 @@ exit 99
   )(
     "refuses missing $dependency before handoff (matching=$matching) without installing",
     ({ dependency, matching }) => {
-      const fixture = makeMismatchedWrapperRepo();
+      const fixture = makeMismatchedWrapperRepo({ toolingOnly: true });
       if (matching) {
         fixture.git(fixture.linked, ["reset", "--hard", "refs/remotes/origin/main"]);
       }
