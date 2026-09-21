@@ -1,5 +1,5 @@
 import { createServer, type IncomingHttpHeaders, type IncomingMessage } from "node:http";
-import { Writable } from "node:stream";
+import { getDefaultHighWaterMark, Writable, type Duplex } from "node:stream";
 import { promisify } from "node:util";
 import { zstdCompress, zstdDecompress } from "node:zlib";
 import { createPermitPool } from "openclaw/plugin-sdk/concurrency-runtime";
@@ -21,10 +21,11 @@ import { isJsonObject } from "./protocol.js";
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 1024 * 1024;
-const MAX_REQUESTS = 16;
+const MAX_UPLOADS = 16;
 const MAX_WEBSOCKETS = 64;
-// One extra request batch absorbs bursts while retaining TCP room for busy replies.
-const MAX_PENDING_REQUESTS = MAX_REQUESTS;
+// Preserve the former 64 WS + 16 HTTP envelope; uploads no longer own response slots.
+const MAX_RESIDENTS = MAX_WEBSOCKETS + MAX_UPLOADS;
+const MAX_PENDING_REQUESTS = MAX_UPLOADS;
 const REQUEST_TIMEOUT_MS = 30_000;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const IDLE_WEBSOCKET_MS = 60_000;
@@ -71,27 +72,83 @@ export async function createCodexInferenceProxy(params: {
   // Keep the native backend suffix; Codex uses it to select Guardian/backend surfaces.
   const pathPrefix =
     "/" + generateSecureToken({ bytes: 32, redact: true }) + upstream.pathname.replace(/\/$/, "");
-  const permits = createPermitPool(MAX_REQUESTS);
-  let pendingCount = 0;
-  let pendingBytes = 0;
-  // Queue only bounded work, not whole turns: a parent may be waiting on children
-  // that need this same pool. HTTP waits before reading its body; WS frames own bytes.
-  const acquire = async (signal: AbortSignal, deadlineAtMs: number, bytes = 0) => {
-    if (pendingCount >= MAX_PENDING_REQUESTS || pendingBytes + bytes > MAX_BODY_BYTES) {
-      return null;
-    }
-    pendingCount++;
-    pendingBytes += bytes;
-    try {
-      return await permits.acquire({ signal, deadlineAtMs });
-    } finally {
-      pendingCount--;
-      pendingBytes -= bytes;
-    }
-  };
+  const acquireUpload = createUploadAdmission();
   const sockets = new Set<WebSocket>();
   const connections = new Set<() => void>();
   const idleConnections = new Set<() => void>();
+  const residents = createPermitPool(MAX_RESIDENTS);
+  const tickets = new Set<object>();
+  const unresolved = new Set<{ signal: AbortSignal; deadlineAtMs: number }>();
+  let granted = 0;
+  let retiringIdle = 0;
+  const reclaimIdle = () => {
+    if (
+      granted === MAX_RESIDENTS &&
+      retiringIdle === 0 &&
+      [...unresolved].some(
+        ({ signal, deadlineAtMs }) => !signal.aborted && Date.now() < deadlineAtMs,
+      )
+    ) {
+      idleConnections.values().next().value?.();
+    }
+  };
+  const reserveResident = (socket: Duplex, signal: AbortSignal, deadlineAtMs: number) => {
+    // Reserve synchronously: acquire() resolves even free grants asynchronously.
+    // Cancelled waiters remain charged while their socket/owner is still closing.
+    if (tickets.size >= MAX_RESIDENTS + MAX_PENDING_REQUESTS) {
+      return null;
+    }
+    const ticket = { signal, deadlineAtMs };
+    tickets.add(ticket);
+    unresolved.add(ticket);
+    let releasePermit: (() => void) | null = null;
+    let finished = false;
+    let retiring = false;
+    const settle = () => {
+      if (!finished || !socket.closed || unresolved.has(ticket)) {
+        return;
+      }
+      socket.off("close", settle);
+      tickets.delete(ticket);
+      if (releasePermit) {
+        releasePermit();
+        releasePermit = null;
+        granted--;
+      }
+      if (retiring) {
+        retiring = false;
+        retiringIdle--;
+      }
+      reclaimIdle();
+    };
+    socket.once("close", settle);
+    const ready = residents.acquire({ signal, deadlineAtMs }).then((release) => {
+      unresolved.delete(ticket);
+      if (release && signal.aborted) {
+        release();
+      } else if (release) {
+        releasePermit = release;
+        granted++;
+      }
+      settle();
+      reclaimIdle();
+      return releasePermit !== null;
+    });
+    reclaimIdle();
+    return {
+      ready,
+      retireIdle() {
+        if (!retiring) {
+          retiring = true;
+          retiringIdle++;
+        }
+      },
+      finish() {
+        finished = true;
+        settle();
+      },
+    };
+  };
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_BODY_BYTES,
@@ -146,60 +203,91 @@ export async function createCodexInferenceProxy(params: {
     if (rewritten.length > MAX_BODY_BYTES) {
       throw new Error(FAILURE);
     }
-    return { ...prepared, bytes: rewritten };
+    return { bytes: rewritten, assertCurrent: prepared.assertCurrent, signal: prepared.signal };
+  };
+  const prepareHttp = async (
+    req: IncomingMessage,
+    sampling: boolean,
+    signal: AbortSignal,
+    release: () => void,
+  ) => {
+    const wire = await readProxyBody(req, MAX_BODY_BYTES);
+    const encoding = req.headers["content-encoding"];
+    if (encoding && encoding !== "identity" && encoding !== "zstd") {
+      throw new Error(FAILURE);
+    }
+    const decoded =
+      encoding === "zstd" ? await decompress(wire, { maxOutputLength: MAX_BODY_BYTES }) : wire;
+    signal.throwIfAborted();
+    const prepared = prepare(decoded, sampling);
+    const body = encoding === "zstd" ? await compress(prepared.bytes) : prepared.bytes;
+    prepared.assertCurrent();
+    const requestSignal = AbortSignal.any([signal, ...(prepared.signal ? [prepared.signal] : [])]);
+    return {
+      ...createUploadBody(body, requestSignal, release),
+      assertCurrent: prepared.assertCurrent,
+      signal: requestSignal,
+    };
   };
   const server = createServer((req, res) => {
+    const socket = req.socket;
+    // Native creates a fresh HTTP transport per inference. Closing this response
+    // avoids retaining uncharged keepalive sockets after resident admission ends.
+    res.setHeader("Connection", "close");
     const controller = new AbortController();
     const signal = AbortSignal.any([lifetime.signal, controller.signal]);
     const deadlineAtMs = Date.now() + REQUEST_TIMEOUT_MS;
     let releasePermit: (() => void) | null = null;
+    let resident: ReturnType<typeof reserveResident> = null;
+    let upload: Awaited<ReturnType<typeof prepareHttp>> | undefined;
     let guarded: Awaited<ReturnType<typeof fetchWithSsrFGuard>> | undefined;
     const abort = () => controller.abort();
     req.once("aborted", abort);
     res.once("close", abort);
+    // A fully read pipelined request can outlive its socket without a response
+    // close event on supported Node versions. The transport owns cancellation.
+    socket.once("close", abort);
     void (async () => {
       try {
         const { target, sampling } = resolveTarget(req);
         if (req.method !== "POST") {
           throw new Error(FAILURE);
         }
-        releasePermit = await acquire(signal, deadlineAtMs);
+        resident = reserveResident(socket, signal, deadlineAtMs);
+        const admitted = resident && (await resident.ready);
+        signal.throwIfAborted();
+        assertCurrent();
+        if (!admitted) {
+          res.writeHead(503, OVERLOAD_HEADERS).end(OVERLOAD_BODY);
+          return;
+        }
+        releasePermit = await acquireUpload(signal, deadlineAtMs);
         signal.throwIfAborted();
         assertCurrent();
         if (!releasePermit) {
-          res.writeHead(503, { ...OVERLOAD_HEADERS, connection: "close" }).end(OVERLOAD_BODY);
+          res.writeHead(503, OVERLOAD_HEADERS).end(OVERLOAD_BODY);
           return;
         }
-        const wire = await readProxyBody(req, MAX_BODY_BYTES);
-        const encoding = req.headers["content-encoding"];
-        if (encoding && encoding !== "identity" && encoding !== "zstd") {
-          throw new Error(FAILURE);
-        }
-        const decoded =
-          encoding === "zstd" ? await decompress(wire, { maxOutputLength: MAX_BODY_BYTES }) : wire;
-        assertCurrent();
-        const prepared = prepare(decoded, sampling);
-        // Materialize ArrayBuffer-backed bytes for the web Fetch body contract.
-        const body = Buffer.from(
-          encoding === "zstd" ? await compress(prepared.bytes) : prepared.bytes,
-        );
-        prepared.assertCurrent();
-        const requestSignal = AbortSignal.any([
-          signal,
-          ...(prepared.signal ? [prepared.signal] : []),
-        ]);
+        upload = await prepareHttp(req, sampling, signal, releasePermit);
+        const init: RequestInit & { duplex: "half" } = {
+          method: "POST",
+          headers: { ...relayHeaders(req.headers), "content-length": String(upload.length) },
+          body: upload.body,
+          signal: upload.signal,
+          duplex: "half",
+        };
         guarded = await fetchWithSsrFGuard({
           url: target.toString(),
-          init: { method: "POST", headers: relayHeaders(req.headers), body, signal: requestSignal },
-          signal: requestSignal,
-          beforeRequest: prepared.assertCurrent,
+          init,
+          signal: upload.signal,
+          beforeRequest: upload.assertCurrent,
           requireHttps: true,
           maxRedirects: 0,
           capture: false,
           mode: "trusted_env_proxy",
           auditContext: "codex-parent-local-inference",
         });
-        prepared.assertCurrent();
+        upload.assertCurrent();
         // fetch decodes response content encodings. Never forward stale encoding/length headers.
         const headers = Object.fromEntries(guarded.response.headers);
         delete headers["content-encoding"];
@@ -207,7 +295,7 @@ export async function createCodexInferenceProxy(params: {
         if (!guarded.response.body) {
           res.end();
         } else {
-          await guarded.response.body.pipeTo(Writable.toWeb(res), { signal: requestSignal });
+          await guarded.response.body.pipeTo(Writable.toWeb(res), { signal: upload.signal });
         }
       } catch {
         // Errors can contain headers, bodies, or the private URL: never log/reflect them.
@@ -217,16 +305,19 @@ export async function createCodexInferenceProxy(params: {
           res.destroy();
         }
       } finally {
+        upload?.settle();
         releasePermit?.();
         req.off("aborted", abort);
         res.off("close", abort);
+        socket.off("close", abort);
         await guarded?.release().catch(() => undefined);
+        resident?.finish();
       }
     })();
   });
   // Leave HTTP/failure-response headroom beyond the separately bounded WS pool.
   // This last-resort TCP ceiling must not be the normal inference admission limit.
-  server.maxConnections = MAX_WEBSOCKETS + MAX_REQUESTS * 4;
+  server.maxConnections = MAX_WEBSOCKETS + MAX_UPLOADS * 4;
   server.requestTimeout = REQUEST_TIMEOUT_MS;
   server.headersTimeout = HANDSHAKE_TIMEOUT_MS;
   server.on("upgrade", (req, socket, head) => {
@@ -234,21 +325,33 @@ export async function createCodexInferenceProxy(params: {
       let remote: WebSocket | undefined;
       let local: WebSocket | undefined;
       let proxyAgent: ReturnType<typeof createNodeProxyAgent>;
+      let upstreamClosed = Promise.resolve();
+      let finishSetup = () => {};
+      const setupSettled = new Promise<void>((resolve) => {
+        finishSetup = resolve;
+      });
+      let resident: ReturnType<typeof reserveResident> = null;
       const controller = new AbortController();
       const deadlineAtMs = Date.now() + HANDSHAKE_TIMEOUT_MS;
       let releasePermit: (() => void) | null = null;
       let framePending = false;
       let idleTimer: ReturnType<typeof setTimeout> | undefined;
       let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
+      let closing = false;
       const close = () => {
+        if (closing) {
+          return;
+        }
+        closing = true;
+        if (idleConnections.has(close)) {
+          resident?.retireIdle();
+        }
         clearTimeout(idleTimer);
         clearTimeout(handshakeTimer);
         socket.off("end", close);
         connections.delete(close);
         idleConnections.delete(close);
         controller.abort();
-        releasePermit?.();
-        releasePermit = null;
         remote?.terminate();
         local?.terminate();
         proxyAgent?.destroy();
@@ -259,6 +362,15 @@ export async function createCodexInferenceProxy(params: {
           sockets.delete(local);
         }
         socket.destroy();
+        // ws can emit close before a CONNECTING request's socket actually closes.
+        // Keep residency until the public request/socket teardown has settled too.
+        void setupSettled
+          .then(() => upstreamClosed)
+          .then(() => {
+            releasePermit?.();
+            releasePermit = null;
+            resident?.finish();
+          });
       };
       try {
         const { target, sampling } = resolveTarget(req);
@@ -284,9 +396,21 @@ export async function createCodexInferenceProxy(params: {
         // Cancel pending admission before it can dial for a disconnected caller.
         socket.once("end", close);
         const signal = AbortSignal.any([lifetime.signal, controller.signal]);
+        resident = reserveResident(socket, signal, deadlineAtMs);
+        const admitted = resident && (await resident.ready);
+        signal.throwIfAborted();
+        assertCurrent();
+        if (!admitted) {
+          rejectWebSocketUpgrade(socket, {
+            status: 503,
+            headers: { "Retry-After": "1" },
+            body: { contentType: "application/json", text: OVERLOAD_BODY },
+          });
+          return;
+        }
         // Admission precedes the upstream dial. Complete the real upstream handshake
         // before local 101 so native auth errors and negotiated headers stay intact.
-        releasePermit = await acquire(signal, deadlineAtMs);
+        releasePermit = await acquireUpload(signal, deadlineAtMs);
         signal.throwIfAborted();
         assertCurrent();
         if (!releasePermit) {
@@ -327,6 +451,21 @@ export async function createCodexInferenceProxy(params: {
           perMessageDeflate: false,
           maxPayload: MAX_BODY_BYTES,
           handshakeTimeout: Math.max(1, deadlineAtMs - Date.now()),
+          finishRequest(request) {
+            let socketClosed = Promise.resolve();
+            request.once("socket", (upstreamSocket) => {
+              socketClosed = new Promise<void>((resolve) => {
+                upstreamSocket.once("close", () => resolve());
+              });
+            });
+            upstreamClosed = new Promise<void>((resolve) => {
+              request.once("close", () => {
+                void socketClosed.then(resolve);
+              });
+            });
+            // finishRequest replaces ws's default end(), including proxy-agent requests.
+            request.end();
+          },
         });
         sockets.add(remote);
         remote.once("upgrade", (response) => {
@@ -373,31 +512,37 @@ export async function createCodexInferenceProxy(params: {
               accepted.once("error", close);
               accepted.once("close", close);
               let releaseFrame = () => {};
-              const idle = () => {
-                releasePermit?.();
-                releasePermit = null;
+              const idle = (reclaimable = true) => {
                 framePending = false;
                 idleConnections.delete(close);
-                idleConnections.add(close);
+                if (reclaimable) {
+                  idleConnections.add(close);
+                }
                 clearTimeout(idleTimer);
                 idleTimer = setTimeout(close, IDLE_WEBSOCKET_MS);
                 idleTimer.unref();
+                reclaimIdle();
               };
-              idle();
+              releasePermit?.();
+              releasePermit = null;
+              // A fresh 101 still awaits native's first frame. Pressure may reclaim
+              // cached completed responses, not the handshake it just admitted.
+              idle(false);
               const forward = async (prepared: ReturnType<typeof prepare>) => {
+                let releaseUpload: (() => void) | null = null;
                 try {
                   const requestSignal = AbortSignal.any([
                     signal,
                     ...(prepared.signal ? [prepared.signal] : []),
                   ]);
-                  releasePermit = await acquire(
+                  releaseUpload = await acquireUpload(
                     requestSignal,
                     Date.now() + REQUEST_TIMEOUT_MS,
                     prepared.bytes.length,
                   );
                   requestSignal.throwIfAborted();
                   prepared.assertCurrent();
-                  if (!releasePermit) {
+                  if (!releaseUpload) {
                     accepted.send(OVERLOAD_BODY, { binary: false }, close);
                     return;
                   }
@@ -408,12 +553,17 @@ export async function createCodexInferenceProxy(params: {
                   ) {
                     throw new Error(FAILURE);
                   }
+                  const release = releaseUpload;
                   remote.send(prepared.bytes, { binary: false }, (error) => {
+                    // Capture this frame's lease: terminal delivery can allow the next
+                    // frame before an earlier send callback runs.
+                    release();
                     if (error) {
                       close();
                     }
                   });
                 } catch {
+                  releaseUpload?.();
                   close();
                 }
               };
@@ -434,8 +584,9 @@ export async function createCodexInferenceProxy(params: {
                   // A WS may serve later turns. Replace the old generation's abort listener.
                   releaseFrame();
                   const onAbort = () => close();
-                  prepared.signal?.addEventListener("abort", onAbort, { once: true });
-                  releaseFrame = () => prepared.signal?.removeEventListener("abort", onAbort);
+                  const frameSignal = prepared.signal;
+                  frameSignal?.addEventListener("abort", onAbort, { once: true });
+                  releaseFrame = () => frameSignal?.removeEventListener("abort", onAbort);
                   void forward(prepared);
                 } catch {
                   close();
@@ -450,9 +601,8 @@ export async function createCodexInferenceProxy(params: {
                   close();
                   return;
                 }
-                // Prewarm and completed responses retain their WS for later turns,
-                // but no longer own an in-flight request slot. Unknown events never
-                // prove quiescence; leave the stream active until native closes it.
+                // Upload completion does not prove response quiescence. Only a
+                // delivered terminal event makes this retained transport reclaimable.
                 const terminal = !binary && isTerminalResponse(rawBytes(data));
                 accepted.send(data, { binary }, (error) => {
                   if (error) {
@@ -470,6 +620,8 @@ export async function createCodexInferenceProxy(params: {
         });
       } catch {
         close();
+      } finally {
+        finishSetup();
       }
     })();
   });
@@ -511,6 +663,89 @@ export async function createCodexInferenceProxy(params: {
     close();
     throw error;
   }
+}
+
+function createUploadAdmission() {
+  const permits = createPermitPool(MAX_UPLOADS);
+  let outstanding = 0;
+  let queuedBytes = 0;
+  return async (signal: AbortSignal, deadlineAtMs: number, bytes = 0) => {
+    const queued = outstanding >= MAX_UPLOADS;
+    if (
+      outstanding >= MAX_UPLOADS + MAX_PENDING_REQUESTS ||
+      (queued && queuedBytes + bytes > MAX_BODY_BYTES)
+    ) {
+      return null;
+    }
+    // Count free-but-unresolved grants too, so one synchronous burst gets both
+    // the active batch and the waiting batch instead of rejecting its 17th call.
+    outstanding++;
+    if (queued) {
+      queuedBytes += bytes;
+    }
+    let releasePermit: (() => void) | null = null;
+    let released = false;
+    const release = () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      outstanding--;
+      releasePermit?.();
+    };
+    try {
+      releasePermit = await permits.acquire({ signal, deadlineAtMs });
+      if (!releasePermit || signal.aborted) {
+        release();
+        return null;
+      }
+      return release;
+    } catch (error) {
+      release();
+      throw error;
+    } finally {
+      if (queued) {
+        queuedBytes -= bytes;
+      }
+    }
+  };
+}
+
+function createUploadBody(bytes: Buffer, signal: AbortSignal, release: () => void) {
+  const length = bytes.length;
+  const chunkSize = getDefaultHighWaterMark(false);
+  let remaining: Buffer | undefined = bytes;
+  let offset = 0;
+  const settle = () => {
+    remaining = undefined;
+    signal.removeEventListener("abort", settle);
+    release();
+  };
+  signal.addEventListener("abort", settle, { once: true });
+  if (signal.aborted) {
+    settle();
+  }
+  const body = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        signal.throwIfAborted();
+        if (!remaining || offset === length) {
+          // With HWM 0, Undici's next pull follows the final chunk's drain-aware
+          // write. Drop the backing body here, not when early response headers arrive.
+          settle();
+          controller.close();
+          return;
+        }
+        const end = Math.min(offset + chunkSize, length);
+        // A slice would retain the entire request while the transport owns a chunk.
+        controller.enqueue(Uint8Array.from(remaining.subarray(offset, end)));
+        offset = end;
+      },
+      cancel: settle,
+    },
+    { highWaterMark: 0 },
+  );
+  return { body, length, settle };
 }
 
 function isTerminalResponse(bytes: Buffer): boolean {
