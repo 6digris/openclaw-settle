@@ -227,8 +227,7 @@ describe("runDoctorHealthFlow", () => {
           (kind.includes("stopped-loaded") && process.platform !== "darwin") ||
           kind === "absent" ||
           kind === "windows-ready" ||
-          kind === "windows-disabled" ||
-          kind.endsWith("loaded-disabled")
+          kind === "windows-disabled"
         ) {
           await run;
           expect(
