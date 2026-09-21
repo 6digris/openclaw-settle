@@ -365,6 +365,7 @@ it.runIf(process.platform !== "win32")(
               noEmit: true,
               strict: true,
               types: [],
+              lib: ["es5"],
               module: "nodenext",
               target: "es2022",
               incremental: true,
