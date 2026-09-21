@@ -1,17 +1,28 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
+  assignSessionOwner,
   openSessionEntryReadView,
+  recordSessionParticipant,
   patchSessionEntryCore,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
+import { loadExactSessionEntryFromStoreReadOnly } from "../../config/sessions/session-accessor.sqlite-exact-read.js";
 import { withLocalWorkspaceProjection } from "../../gateway/worker-environments/local-workspace-projection.js";
 import { localWorkspaceStore } from "../../gateway/worker-environments/local-workspace-store.js";
-import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  getOpenClawAgentDatabaseIfOpen,
+  resolveIncognitoOpenClawAgentSqlitePath,
+  resolveOpenClawAgentSqlitePath,
+  runOpenClawAgentWriteTransaction,
+} from "../../state/openclaw-agent-db.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -178,7 +189,20 @@ describe.skipIf(process.platform === "win32")("native managed worktree relocatio
       }),
       { preserveActivity: true },
     );
+    assignSessionOwner(scope, {
+      owner: { type: "agent", id: "research" },
+      assignedBy: { type: "system", id: "fixture" },
+      assignedAt: 1,
+    });
+    recordSessionParticipant(scope, {
+      identity: { type: "profile", id: "collaborator" },
+      promptedAt: 1,
+    });
     const beforeMove = openSessionEntryReadView(scope).get(sessionKey)!;
+    expect(beforeMove).toMatchObject({
+      owner: { actor: { type: "agent", id: "research" } },
+      participants: [{ identity: { type: "profile", id: "collaborator" } }],
+    });
     const preview = await service.previewMove({ id: record.id, destinationRoot });
     expect(preview.blockers).toEqual([]);
     const receipt = await service.move({
@@ -203,6 +227,116 @@ describe.skipIf(process.platform === "win32")("native managed worktree relocatio
       spawnedWorkspaceDir: movedProjection,
     });
     expect((await service.verifyMove(receipt.operationId)).verified).toBe(true);
+  });
+
+  it("keeps missing agent stores absent while discovering and verifying a move", async () => {
+    const record = await service.create({
+      repoRoot: repo,
+      name: "no-agent-store",
+      baseRef: "HEAD",
+    });
+    const options = { agentId: "main", env };
+    const databasePath = resolveOpenClawAgentSqlitePath(options);
+    await expect(fs.lstat(databasePath)).rejects.toMatchObject({ code: "ENOENT" });
+    const preview = await service.previewMove({ id: record.id, destinationRoot });
+    expect(preview.blockers).toEqual([]);
+    const receipt = await service.move({
+      id: record.id,
+      destinationRoot,
+      operationId: randomUUID(),
+      expectedObservation: preview.observation!,
+      controlledMaintenance: true,
+    });
+    expect(receipt.phase).toBe("verified");
+    expect((await service.verifyMove(receipt.operationId)).verified).toBe(true);
+    await expect(fs.lstat(databasePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(getOpenClawAgentDatabaseIfOpen(options)).toBeUndefined();
+  });
+
+  it("retains an unavailable agent store and refuses relocation before filesystem effects", async () => {
+    const record = await service.create({
+      repoRoot: repo,
+      name: "unavailable-store",
+      baseRef: "HEAD",
+    });
+    const options = { agentId: "main", env };
+    await upsertSessionEntryCore(
+      { ...options, sessionKey: "agent:main:unavailable" },
+      { sessionId: "unavailable", updatedAt: 1 },
+    );
+    const databasePath = resolveOpenClawAgentSqlitePath(options);
+    await closeOpenClawAgentDatabasesAsync();
+    const database = new DatabaseSync(databasePath);
+    database.exec("PRAGMA user_version = 2147483647");
+    database.close();
+    const before = {
+      database: await fs.readFile(databasePath),
+      source: await fs.readFile(path.join(record.path, "README.md")),
+      refs: await requireGit(repo, ["show-ref"]),
+    };
+
+    const preview = await service.previewMove({ id: record.id, destinationRoot });
+    expect(preview.blockers.join("\n")).toContain("newer schema version");
+    expect(preview.observation).toBeUndefined();
+    expect((await service.inventory()).relocations).toEqual([]);
+    expect(await fs.readFile(databasePath)).toEqual(before.database);
+    expect(await fs.readFile(path.join(record.path, "README.md"))).toEqual(before.source);
+    expect(await requireGit(repo, ["show-ref"])).toBe(before.refs);
+    expect(await fs.readdir(destinationRoot)).toEqual([]);
+    expect(getOpenClawAgentDatabaseIfOpen(options)).toBeUndefined();
+  });
+
+  it("relocates an incognito-shaped persisted key in its recorded physical store", async () => {
+    const sessionKey = "agent:main:dashboard:incognito-persisted";
+    const record = await service.create({
+      repoRoot: repo,
+      name: "persisted-key",
+      baseRef: "HEAD",
+      ownerKind: "session",
+      ownerId: sessionKey,
+    });
+    const options = { agentId: "main", env };
+    const storePath = resolveSessionStorePathCore(undefined, options);
+    const scope = { ...options, storePath, sessionKey };
+    const incognitoPath = resolveIncognitoOpenClawAgentSqlitePath(options);
+    await expect(fs.lstat(incognitoPath)).rejects.toMatchObject({ code: "ENOENT" });
+    // Imported durable rows keep their physical owner even if their key resembles
+    // a process-only session. Seed that canonical store without request-key routing.
+    runOpenClawAgentWriteTransaction((database) => {
+      writeSessionEntry(database, sessionKey, {
+        sessionId: "persisted-incarnation",
+        lifecycleRevision: "persisted-lifecycle",
+        updatedAt: 1,
+        worktree: { id: record.id, branch: record.branch, repoRoot: repo },
+        sessionRoot: record.path,
+        spawnedCwd: path.join(record.path, "subdirectory"),
+        spawnedWorkspaceDir: record.path,
+        skillsSnapshot: { prompt: "retained full prompt", skills: [] },
+      });
+    }, options);
+    const before = loadExactSessionEntryFromStoreReadOnly(scope)!.entry;
+    const preview = await service.previewMove({ id: record.id, destinationRoot });
+    expect(preview.blockers).toEqual([]);
+    const receipt = await service.move({
+      id: record.id,
+      destinationRoot,
+      operationId: randomUUID(),
+      expectedObservation: preview.observation!,
+      controlledMaintenance: true,
+    });
+    expect(receipt.phase).toBe("verified");
+    expect(loadExactSessionEntryFromStoreReadOnly(scope)?.entry).toEqual({
+      ...before,
+      sessionRoot: receipt.destination,
+      spawnedCwd: path.join(receipt.destination, "subdirectory"),
+      spawnedWorkspaceDir: receipt.destination,
+    });
+    expect((await service.verifyMove(receipt.operationId)).verified).toBe(true);
+    expect((await readWorktreeMoveReceipts(env))[0]?.plan.sessions).toMatchObject([
+      { agentId: "main", storePath, sessionKey, sessionId: before.sessionId },
+    ]);
+    await expect(fs.lstat(incognitoPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(getOpenClawAgentDatabaseIfOpen({ ...options, path: incognitoPath })).toBeUndefined();
   });
 
   it.skipIf(process.platform === "win32")(

@@ -6,7 +6,7 @@ import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.
 import {
   readWorktreeSessionReferences,
   verifyWorktreeSessionReferences,
-} from "./relocation-references.js";
+} from "./relocation-references-read.worker.js";
 import {
   admitWorktreeRelocation,
   advanceWorktreeRelocation,
