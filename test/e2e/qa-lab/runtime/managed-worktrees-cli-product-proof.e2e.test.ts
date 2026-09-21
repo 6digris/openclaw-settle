@@ -186,6 +186,11 @@ describe("managed worktrees child CLI product proof", () => {
         removed: [],
         orphansDeleted: expect.any(Number),
         snapshotsPruned: expect.any(Number),
+        outcome: "completed",
+        issues: [],
+        issueCount: 0,
+        protectedCount: 0,
+        limitsSatisfied: true,
       });
       const activeList = parseCommandJson<WorktreeListJson>(
         "worktrees list after gc",
