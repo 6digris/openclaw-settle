@@ -74,6 +74,8 @@ it.for([
       directory,
       {
         ...process.env,
+        // This sparse fixture models the historical Node-only workflow adapter.
+        OPENCLAW_CI_TEST_RUNTIME_POLICY: "node",
         OPENCLAW_NODE_TEST_GROUPS_JSON: JSON.stringify([
           { configs: ["old.config.ts"], shard_name: "frozen-proof" },
         ]),
