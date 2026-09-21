@@ -45,8 +45,9 @@ import {
   renderComposerQuestionDock,
   resolveComposerQuestionPanel,
 } from "./components/chat-composer-question.ts";
-import { getChatComposerState } from "./components/chat-composer-state.ts";
+import { getChatComposerState, hasTerminalRunStatus } from "./components/chat-composer-state.ts";
 import type { ChatComposerProps } from "./components/chat-composer-types.ts";
+import { renderChatComposerQueue } from "./components/chat-composer-view.ts";
 import { isChatRunWorking, renderChatComposer } from "./components/chat-composer.ts";
 import { isImageLightboxEvent, openInlineChatImage } from "./components/chat-image-lightbox.ts";
 import { renderChatPullRequests } from "./components/chat-pull-requests.ts";
@@ -367,14 +368,16 @@ export function renderChat(props: ChatProps) {
   const notices = renderChatComposerNotices(props);
   // Transcript invalidation replaces its render context; bind submission afterward.
   questionState.transcriptRenderContext.onAsyncQuestionSubmit = props.onAsyncQuestionSubmit;
+  const displayQueue = selectChatInputDisplay(
+    props.messages,
+    props.queue,
+    pendingInputs?.page.items ?? [],
+  ).queue;
+  const composerProps = { ...props, displayQueue };
   const defaultComposer = renderChatComposer({
     ...props,
     asyncQuestions,
-    displayQueue: selectChatInputDisplay(
-      props.messages,
-      props.queue,
-      pendingInputs?.page.items ?? [],
-    ).queue,
+    displayQueue,
     footerContent,
     notices,
     onRequestUpdate: requestUpdate,
@@ -405,6 +408,11 @@ export function renderChat(props: ChatProps) {
           getChatComposerState(props.paneId),
           requestUpdate,
         ),
+      )}
+      ${renderChatComposerQueue(
+        composerProps,
+        canCompose,
+        Boolean(props.canAbort && props.onAbort) && !hasTerminalRunStatus(props.runStatus),
       )}
       ${
         props.suggestionComposer

@@ -211,10 +211,27 @@ suite.define(() => {
       await gateway.emitGatewayEvent("sessions.changed", acceptedSession);
       await page.locator(".chat-send-status").waitFor({ state: "detached" });
 
-      for (const message of ["send first", "edit before send", "remove me", "send last"]) {
+      const locallyQueued = ["send first", "edit before send", "remove me", "send last"];
+      for (const message of locallyQueued) {
         await composer.fill(message);
         await page.getByRole("button", { name: "Queue message" }).click();
         await page.locator(".chat-queue__item", { hasText: message }).waitFor({ timeout: 10_000 });
+      }
+      await expect.poll(() => page.locator(".chat-queue__item").count()).toBe(locallyQueued.length);
+      for (const message of locallyQueued) {
+        await expect
+          .poll(() =>
+            page.locator(".chat-thread-inner").getByText(message, { exact: true }).count(),
+          )
+          .toBe(0);
+      }
+      if (artifactDir) {
+        await writeFile(
+          `${artifactDir}/00-local-queue-owner.png`,
+          await takeControlUiViewportScreenshot(page, page.locator(".shell"), [
+            page.locator(".chat-queue"),
+          ]),
+        );
       }
       const editRow = page.locator(".chat-queue__item", { hasText: "edit before send" });
       await editRow.dblclick();

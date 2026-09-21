@@ -40,6 +40,7 @@ import {
   admitChatSubmission,
   reduceChatSessionProjection,
   getChatSessionProjection,
+  selectChatInputDisplay,
 } from "./history-merge.ts";
 import { installOutboxBrowserStorage } from "./outbox-browser.test-support.ts";
 import { prepareOutboxPayload } from "./outbox-payloads.ts";
@@ -80,6 +81,99 @@ afterEach(() => {
 });
 
 describe("server-owned pending input display", () => {
+  it("keeps editable Control UI input beside the composer and out of history", () => {
+    const local: ChatQueueItem = {
+      id: "local-row",
+      sendRunId: "run-queued",
+      sessionKey,
+      sessionId,
+      text: "Keep my queued input",
+      createdAt: 50,
+      sendState: "waiting-idle",
+    };
+
+    const display = selectChatInputDisplay([], [local], []);
+
+    expect(display.queue).toEqual([local]);
+    expect(display.queue[0]).toBe(local);
+    expect(display.threadQueue).toEqual([]);
+    expect(display.pendingInputs).toEqual([]);
+    expect(
+      buildChatItems({
+        paneId: "pane",
+        sessionKey,
+        messages: [],
+        toolMessages: [],
+        streamSegments: [],
+        stream: null,
+        streamStartedAt: null,
+        queue: [local],
+        pendingInputs: [],
+        showToolCalls: true,
+      }).some((item) => item.kind === "group" && item.role === "user"),
+    ).toBe(false);
+  });
+
+  it("lets Gateway acceptance replace a stale editable browser copy", () => {
+    const local: ChatQueueItem = {
+      id: "local-row",
+      sendRunId: "run-queued",
+      text: "Browser copy",
+      createdAt: 50,
+      sendState: "waiting-idle",
+    };
+    const queued = { ...input, state: "queued" as const };
+
+    const display = selectChatInputDisplay([], [local], [queued]);
+
+    expect(display.queue).toEqual([]);
+    expect(display.threadQueue).toEqual([]);
+    expect(display.pendingInputs).toEqual([queued]);
+  });
+
+  it("keeps pending input from another client in the transcript", () => {
+    const queued = { ...input, state: "queued" as const };
+
+    const display = selectChatInputDisplay([], [], [queued]);
+
+    expect(display.queue).toEqual([]);
+    expect(display.threadQueue).toEqual([]);
+    expect(display.pendingInputs).toEqual([queued]);
+    expect(
+      buildChatItems({
+        paneId: "pane",
+        sessionKey,
+        messages: [],
+        toolMessages: [],
+        streamSegments: [],
+        stream: null,
+        streamStartedAt: null,
+        pendingInputs: [queued],
+        showToolCalls: true,
+      }).some((item) => item.kind === "group" && item.role === "user"),
+    ).toBe(true);
+  });
+
+  it("retires the Control UI row only when canonical history adopts it", () => {
+    const local: ChatQueueItem = {
+      id: "local-row",
+      sendRunId: "run-queued",
+      text: "Keep my accepted input",
+      createdAt: 50,
+    };
+    const canonical = {
+      role: "user",
+      content: "Keep my accepted input",
+      __openclaw: { id: input.id, idempotencyKey: "run-queued:user" },
+    };
+
+    const display = selectChatInputDisplay([canonical], [local], []);
+
+    expect(display.queue).toEqual([]);
+    expect(display.threadQueue).toEqual([]);
+    expect(display.pendingInputs).toEqual([]);
+  });
+
   it("shows a durable receipt while an accepted input waits for workspace sync", () => {
     const queued = { ...input, state: "queued" as const };
 

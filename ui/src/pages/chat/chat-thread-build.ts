@@ -305,7 +305,7 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
     items.push(item);
   }
   const queuedSends = props.queue ?? [];
-  const { queue: threadQueuedSends, pendingInputs } = selectChatInputDisplay(
+  const { threadQueue: threadQueuedSends, pendingInputs } = selectChatInputDisplay(
     history,
     queuedSends,
     props.pendingInputs ?? [],

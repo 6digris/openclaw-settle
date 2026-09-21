@@ -20,6 +20,7 @@ import {
   type RetainedChatSubmission,
   retireInitialChatSubmission,
 } from "../../app/chat-submissions.ts";
+import { isMovableChatQueueItem } from "../../lib/chat/chat-queue-order.ts";
 import type { ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import { findChatSubmissionMessage } from "../../lib/chat/history-message-identity.ts";
 import { chatOutboxDeliveryKey, type ChatComposerScope } from "../../lib/chat/outbox-store.ts";
@@ -390,7 +391,12 @@ export function publishChatSessionProjectionMessages(
   return projection;
 }
 
-/** Custody is its own display collection; only canonical user IDs can replace it. */
+/**
+ * Keep editable browser outbox rows beside the composer instead of projecting
+ * them into conversation history. Once the Gateway accepts a run, its pending
+ * record owns display until canonical history adopts it; the browser must not
+ * imply that editing a stale local copy would mutate the accepted payload.
+ */
 export function selectChatInputDisplay(
   messages: readonly unknown[],
   queue: readonly ChatQueueItem[],
@@ -410,14 +416,16 @@ export function selectChatInputDisplay(
     }
   }
   const accepted = new Set(inputs.map((input) => input.runId));
+  const displayQueue = queue.filter(
+    (item) =>
+      !item.sendRunId ||
+      (!accepted.has(item.sendRunId) &&
+        !sendKeys.has(item.sendRunId) &&
+        !sendKeys.has(`${item.sendRunId}:user`)),
+  );
   return {
-    queue: queue.filter(
-      (item) =>
-        !item.sendRunId ||
-        (!accepted.has(item.sendRunId) &&
-          !sendKeys.has(item.sendRunId) &&
-          !sendKeys.has(`${item.sendRunId}:user`)),
-    ),
+    queue: displayQueue,
+    threadQueue: displayQueue.filter((item) => !isMovableChatQueueItem(item)),
     pendingInputs: inputs.filter((input) => !userIds.has(input.id)),
   };
 }
