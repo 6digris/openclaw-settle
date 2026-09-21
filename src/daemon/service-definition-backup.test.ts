@@ -9,6 +9,7 @@ import {
 } from "../cli/cli-process-child.test-helpers.js";
 import { restartLaunchAgent } from "./launchd-lifecycle.js";
 import { buildLaunchAgentPlist } from "./launchd-plist.js";
+import { omitExportedTaskDefaults } from "./schtasks-export-defaults.test-support.js";
 import { readScheduledTaskCommand, resolveStartupEntryPaths } from "./schtasks-layout.js";
 import { restoreGatewayServiceDefinitionBackup } from "./service-definition-backup.js";
 import { fixture, native, readRetainedReceipt } from "./service-definition-backup.test-support.js";
@@ -561,8 +562,7 @@ describe("service definition backup receipts", () => {
         if (args[0] === "/Create") {
           if (phase === "normalized") {
             f.setTask(
-              f
-                .task()
+              omitExportedTaskDefaults(f.task())
                 .replaceAll("<UserId>operator</UserId>", "<UserId>S-1-5-21-1-2-3-1001</UserId>")
                 .replace("<RunLevel>LeastPrivilege</RunLevel>", ""),
             );
@@ -601,6 +601,7 @@ describe("service definition backup receipts", () => {
 
   it.each([
     "Settings.RestartOnFailure.Count",
+    "Settings.Priority",
     "Actions.Exec.Command",
     "RegistrationInfo.Description",
   ])(
@@ -614,19 +615,24 @@ describe("service definition backup receipts", () => {
           f.setTask(
             key === "Settings.RestartOnFailure.Count"
               ? f.task().replace("<Count>3</Count>", "<Count>7</Count>")
-              : key === "Actions.Exec.Command"
-                ? f
-                    .task()
-                    .replace(
-                      /<Command>[^<]*<\/Command>/u,
-                      "<Command>operator-private.cmd</Command>",
-                    )
-                : f
-                    .task()
-                    .replace(
-                      /<Description>[^<]*<\/Description>/u,
-                      "<Description>operator-private</Description>",
-                    ),
+              : key === "Settings.Priority"
+                ? omitExportedTaskDefaults(f.task()).replace(
+                    "</Settings>",
+                    "<Priority>4</Priority></Settings>",
+                  )
+                : key === "Actions.Exec.Command"
+                  ? f
+                      .task()
+                      .replace(
+                        /<Command>[^<]*<\/Command>/u,
+                        "<Command>operator-private.cmd</Command>",
+                      )
+                  : f
+                      .task()
+                      .replace(
+                        /<Description>[^<]*<\/Description>/u,
+                        "<Description>operator-private</Description>",
+                      ),
           );
         }
         return result;
@@ -649,8 +655,7 @@ describe("service definition backup receipts", () => {
       const result = await execute(args);
       if (args[0] === "/Create") {
         f.setTask(
-          f
-            .task()
+          omitExportedTaskDefaults(f.task())
             .replaceAll("<UserId>operator</UserId>", "<UserId>S-1-5-21-1-2-3-1001</UserId>")
             .replace("<RunLevel>LeastPrivilege</RunLevel>", "")
             .replace(
@@ -671,9 +676,25 @@ describe("service definition backup receipts", () => {
     expect(f.task()).toContain("<Interval>PT1M</Interval>");
     expect(native.identity).toHaveBeenCalled();
     expect(native.task.mock.calls.some(([args]) => args[0] === "/Run")).toBe(true);
-    await expect(f.capture.finish()).resolves.toMatchObject({
-      task: { afterPolicySha256: expect.any(String) },
-    });
+    const receipt = await f.capture.finish();
+    expect(receipt).toMatchObject({ task: { afterPolicySha256: expect.any(String) } });
+    expect(f.task()).not.toContain("<Priority>");
+    expect(await fs.readFile(f.sourcePath, "utf8")).toContain("OPERATOR_SETTING=new-value");
+    // A later autostart choice remains independent of equivalent XML defaults.
+    f.setTask(
+      f
+        .task()
+        .replace(/(<Settings>[\s\S]*?)<Enabled>true<\/Enabled>/u, "$1<Enabled>false</Enabled>"),
+    );
+    native.task.mockImplementation(execute);
+    await restoreGatewayServiceDefinitionBackup({ ...f, receipt });
+    expect(await fs.readFile(f.sourcePath)).toEqual(f.original);
+    expect(f.task()).toBe(
+      f.originalTask.replace(
+        /(<Settings>[\s\S]*?)<Enabled>true<\/Enabled>/u,
+        "$1<Enabled>false</Enabled>",
+      ),
+    );
   });
 
   it("pins the verified XML snapshot and rechecks it before running the task", async () => {
