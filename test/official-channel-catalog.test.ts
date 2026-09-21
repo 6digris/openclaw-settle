@@ -66,7 +66,7 @@ function writeExternalChannelDocs(repoRoot: string): void {
   };
   for (const entry of seed.entries) {
     const channel = entry.openclaw?.channel;
-    if (!channel?.docsPath || !channel.label) {
+    if (!channel?.docsPath?.startsWith("/") || !channel.label) {
       continue;
     }
     const title = channel.id === "openclaw-weixin" ? "WeChat" : channel.label;
