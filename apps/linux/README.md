@@ -110,7 +110,7 @@ cargo run
 cargo build
 ```
 
-The app uses `OPENCLAW_DESKTOP_CLI` when set. Otherwise it checks `~/.openclaw/bin/openclaw`, then `openclaw` on `PATH`.
+The app uses `OPENCLAW_DESKTOP_CLI` when set. Otherwise it checks `~/.openclaw/bin/openclaw`, then `openclaw` on `PATH`. Linux bundles also include a self-contained runtime for machines without a CLI. Existing installations retain their installer and service ownership; the included runtime never replaces a global CLI. Unbundled development builds and the macOS/Windows test ports retain their existing CLI discovery behavior.
 
 Desktop notifications use each platform's system notification service. macOS 13+ uses Apple's User Notifications framework; Windows uses native system toasts and Linux uses the desktop notification service through `notify-rust`. On macOS, test notifications from a signed `.app` bundle: a direct `cargo run` stays unbundled, so the app disables notifications instead of initializing Apple's framework with no bundle identity.
 
@@ -210,10 +210,11 @@ uses the same isolated fixtures and also runs in the Linux App workflow.
 The welcome screen explains what OpenClaw can do and asks where your assistant
 should live:
 
-- **On this computer** installs the CLI and managed Node runtime when needed,
-  then starts the Gateway as a systemd user service. Release builds install the
-  stable channel automatically; development builds ask for a release channel
-  and preselect Development.
+- **On this computer** uses the included runtime on a new Linux bundle installation,
+  then starts the Gateway through the existing systemd user-service installer.
+  Existing CLI installations remain in use. Unbundled development builds install
+  the CLI and managed Node when needed and ask for a release channel; the macOS
+  and Windows test ports retain their existing installation behavior.
 - **On another computer** connects to an existing Gateway without installing or
   starting a local Gateway service. Select a nearby discovered Gateway, enter a
   Gateway URL directly, or choose **SSH tunnel** and enter `user@gateway-host`.
@@ -396,9 +397,28 @@ Quick Chat advertises the Gateway `inline-widgets` capability and renders hosted
 
 Retrying an unchanged Quick Chat draft after a connection error reuses its original idempotency key while the Gateway and agent remain unchanged. If the Gateway confirms the turn already completed, Quick Chat attempts to recover the matching reply from bounded session history instead of resending it. Unavailable or incomplete history produces an error; further retries of that unchanged draft on the same configured Gateway only retry recovery. Widget previews can refresh access after reconnecting to the same configured Gateway, but switching Gateways prevents old previews from using the new connection's access, even after switching back to the original URL.
 
+## Included Linux runtime
+
+Linux production bundles require the host C/C++ ABI described above and `libatomic1` (declared by the Debian package). They include a Node 26.8.2 Single Executable Application (SEA) containing the canonical installed OpenClaw package and its dependencies. Program-code bootstrap requires no system Node, npm, or network installation. Accounts, optional plugins and models, browser downloads, and OS permissions remain separate onboarding steps.
+
+The app validates and materializes its program resources under its app-local data directory. Content-addressed versions remain available for running workers and app rollback. A stable app-owned launcher lets the existing CLI service installer create a service that survives AppImage unmounting and app relocation. App updates validate the included runtime before switching that launcher; an already-running Gateway keeps its existing runtime until a normal service restart. Remote connections do not install or start a local Gateway.
+
+The SEA is a distribution container, not a replacement JavaScript loader. It extracts a pristine Node executable and executes the normal OpenClaw launcher, preserving ESM, top-level await, lazy imports, native addons, worker threads, and Node subprocess arguments. This deliberately carries a second, compressed Node copy: SEA does not inherently make the distribution smaller. The packager reports compressed, extracted, Node, and final executable byte counts. The runtime does not rely on experimental filesystem support from a later Node version.
+
+Build the canonical package first, stage the included runtime, and pass its production resource configuration to Tauri:
+
+```bash
+pnpm build
+bash apps/linux/scripts/stage-sea-runtime.sh
+cd apps/linux/src-tauri
+pnpm dlx @tauri-apps/cli@2.11.4 build --config tauri.sea.conf.json
+```
+
+The app updater or system package manager owns updates to these resources. Optional plugin installation still belongs to OpenClaw. Never run a package-manager update against the private extracted runtime.
+
 ## Installer resource
 
-`tauri.conf.json` bundles the repository's canonical `scripts/install-cli.sh` directly as `install-cli.sh`. The app never keeps a forked copy. Stable, beta, and dev installs select `latest`, `beta`, and a managed Git `main` checkout respectively, always under `~/.openclaw`.
+`tauri.conf.json` bundles the repository's canonical `scripts/install-cli.sh` directly as `install-cli.sh` for unbundled development and supported test-port setup. The app never keeps a forked copy. These stable, beta, and dev installs select `latest`, `beta`, and a managed Git `main` checkout respectively, under `~/.openclaw`. Linux production bundles use their included runtime instead of a network CLI install.
 
 ## Icons
 
@@ -431,6 +451,8 @@ menu bar images into. Non-Apple platforms keep the full-color `32x32.png`.
 Build a `.deb` and AppImage locally (the same command manual CI runs):
 
 ```bash
+pnpm build
+bash apps/linux/scripts/stage-sea-runtime.sh
 plugins=$(mktemp -d)
 cache=$(mktemp -d)
 trap 'rm -rf "$plugins" "$cache"' EXIT
@@ -442,7 +464,7 @@ export LDAI_RUNTIME_FILE="$(apps/linux/scripts/tauri-appimage-tools.sh runtime-p
 (
   cd apps/linux/src-tauri
   GSTREAMER_PLUGINS_DIR="$plugins" \
-    pnpm dlx @tauri-apps/cli@2.11.4 build --bundles deb,appimage \
+    pnpm dlx @tauri-apps/cli@2.11.4 build --bundles deb,appimage --config tauri.sea.conf.json \
       --config '{"bundle":{"createUpdaterArtifacts":false,"useLocalToolsDir":false}}'
 )
 apps/linux/scripts/finalize-appimage.sh \

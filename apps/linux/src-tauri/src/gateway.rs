@@ -228,6 +228,9 @@ pub fn ensure_ready(cli: &OpenClawCli) -> Result<ReadyGateway, String> {
         return dashboard(cli, snapshot);
     }
 
+    if snapshot.installed {
+        assert_bundled_service_owner(cli)?;
+    }
     if !snapshot.installed {
         run_service_command(cli, "install")?;
         snapshot = status(cli)?;
@@ -257,6 +260,7 @@ fn wait_until_reachable(cli: &OpenClawCli) -> Result<GatewaySnapshot, String> {
 }
 
 pub fn act(cli: &OpenClawCli, action: GatewayAction) -> Result<GatewaySnapshot, String> {
+    assert_bundled_service_owner(cli)?;
     run_service_command(cli, action.command())?;
     if matches!(action, GatewayAction::Stop) {
         return status(cli);
@@ -362,6 +366,27 @@ mod dashboard_tests {
             None
         );
     }
+}
+
+fn assert_bundled_service_owner(cli: &OpenClawCli) -> Result<(), String> {
+    let Some(launcher) = cli.bundled_service_launcher() else {
+        return Ok(());
+    };
+    let status = cli
+        .json::<DaemonStatus, _, _>(["gateway", "status", "--json"])
+        .map_err(|error| error.to_string())?;
+    let command = status
+        .service
+        .command
+        .as_ref()
+        .and_then(|value| value.get("programArguments"))
+        .and_then(|value| value.as_array())
+        .and_then(|values| values.first())
+        .and_then(|value| value.as_str());
+    if command.map(std::path::Path::new) != Some(launcher) {
+        return Err("This local Gateway is managed by another installation. Use its installer or service manager; the included runtime has left it unchanged.".into());
+    }
+    Ok(())
 }
 
 fn run_service_command(cli: &OpenClawCli, action: &str) -> Result<(), String> {

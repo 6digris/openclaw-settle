@@ -5,13 +5,69 @@ use std::fmt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+
+struct BundledRuntime {
+    #[cfg(target_os = "linux")]
+    source: PathBuf,
+    directory: PathBuf,
+    #[cfg(target_os = "linux")]
+    version: String,
+    prepared: Mutex<Option<PathBuf>>,
+}
+
+static BUNDLED_RUNTIME: OnceLock<BundledRuntime> = OnceLock::new();
+
+#[cfg(target_os = "linux")]
+pub(crate) fn configure_bundled_runtime(source: PathBuf, directory: PathBuf, version: String) {
+    let _ = BUNDLED_RUNTIME.set(BundledRuntime {
+        source,
+        directory,
+        version,
+        prepared: Mutex::new(None),
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn configure_bundled_fixture(executable: PathBuf, directory: PathBuf) {
+    let _ = BUNDLED_RUNTIME.set(BundledRuntime {
+        #[cfg(target_os = "linux")]
+        source: executable.clone(),
+        directory,
+        #[cfg(target_os = "linux")]
+        version: "0.1.0".into(),
+        prepared: Mutex::new(Some(executable)),
+    });
+}
+
+impl BundledRuntime {
+    fn executable(&self) -> Result<PathBuf, CliError> {
+        let prepared = self.prepared.lock().map_err(|_| {
+            CliError::Environment("Runtime preparation lock is unavailable.".into())
+        })?;
+        if let Some(executable) = prepared.as_ref() {
+            return Ok(executable.clone());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let mut prepared = prepared;
+            let executable =
+                crate::bundled_runtime::prepare(&self.source, &self.directory, &self.version)
+                    .map_err(CliError::Environment)?;
+            *prepared = Some(executable.clone());
+            Ok(executable)
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(CliError::Missing)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct OpenClawCli {
     executable: PathBuf,
     openclaw_home: PathBuf,
     available: Arc<AtomicBool>,
+    runtime_directory: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -38,6 +94,10 @@ impl fmt::Display for CliError {
 impl std::error::Error for CliError {}
 
 impl OpenClawCli {
+    pub(crate) fn bundled_available() -> bool {
+        BUNDLED_RUNTIME.get().is_some()
+    }
+
     pub fn discover() -> Result<Self, CliError> {
         let cli = Self::locate()?;
         match cli.verify() {
@@ -59,6 +119,15 @@ impl OpenClawCli {
             return Ok(Self::new(managed, home));
         }
 
+        // Never replace an operator-managed CLI. The included runtime is the
+        // offline fallback on machines without an existing installation.
+        if let Some(runtime) = BUNDLED_RUNTIME.get() {
+            if !path_cli_exists() {
+                let mut cli = Self::new(runtime.executable()?, home);
+                cli.runtime_directory = Some(runtime.directory.clone());
+                return Ok(cli);
+            }
+        }
         Ok(Self::new(PathBuf::from("openclaw"), home))
     }
 
@@ -67,7 +136,14 @@ impl OpenClawCli {
             executable,
             openclaw_home,
             available: Arc::new(AtomicBool::new(true)),
+            runtime_directory: None,
         }
+    }
+
+    pub(crate) fn bundled_service_launcher(&self) -> Option<&std::path::Path> {
+        self.runtime_directory
+            .as_ref()
+            .map(|_| self.executable.as_path())
     }
 
     pub fn is_available(&self) -> bool {
@@ -93,6 +169,11 @@ impl OpenClawCli {
         let mut command = Command::new(&self.executable);
         command.args(args);
         command.env("PATH", self.command_path()?);
+        if let Some(directory) = &self.runtime_directory {
+            command.env("OPENCLAW_DESKTOP_RUNTIME_DIR", directory);
+            // AppImage libraries must not override the selected Node ABI.
+            command.env_remove("LD_LIBRARY_PATH");
+        }
         command.stdin(Stdio::null());
         Ok(command)
     }
@@ -146,6 +227,12 @@ impl OpenClawCli {
     }
 }
 
+fn path_cli_exists() -> bool {
+    env::var_os("PATH").is_some_and(|value| {
+        env::split_paths(&value).any(|directory| directory.join("openclaw").is_file())
+    })
+}
+
 pub(crate) fn output_tail(output: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(output);
     let mut lines: Vec<&str> = text
@@ -192,6 +279,29 @@ mod tests {
             output_tail(b"waiting\n\nwaiting\nfailed\nwaiting"),
             Some("waiting\nfailed\nwaiting".into())
         );
+    }
+
+    #[test]
+    fn bundled_command_uses_private_runtime_without_changing_config_identity() {
+        let mut cli = OpenClawCli::new(
+            PathBuf::from("/app/runtime"),
+            PathBuf::from("/home/test/.openclaw"),
+        );
+        cli.runtime_directory = Some(PathBuf::from("/home/test/.local/share/app/runtime"));
+        let command = cli.command(["gateway", "status", "--json"]).unwrap();
+        let environment: std::collections::HashMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            environment.get(std::ffi::OsStr::new("OPENCLAW_DESKTOP_RUNTIME_DIR")),
+            Some(&Some(std::ffi::OsStr::new(
+                "/home/test/.local/share/app/runtime"
+            )))
+        );
+        assert_eq!(
+            environment.get(std::ffi::OsStr::new("LD_LIBRARY_PATH")),
+            Some(&None)
+        );
+        assert!(!environment.contains_key(std::ffi::OsStr::new("OPENCLAW_STATE_DIR")));
+        assert!(!environment.contains_key(std::ffi::OsStr::new("OPENCLAW_CONFIG_PATH")));
     }
 
     #[test]

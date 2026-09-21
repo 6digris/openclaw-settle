@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+mod bundled_runtime;
 mod cli;
 #[cfg(target_os = "linux")]
 mod desktop_bridge;
@@ -744,19 +746,22 @@ impl DesktopState {
                 Ok(())
             })?;
         }
-        let cli = self.resolve_cli();
         if !explicit_local && !remote_gateway::has_configured_gateway()? {
             // First-run setup belongs to the pending bootstrap reply. Navigating
             // here replaces its WebView and loses the local/remote choice.
-            let snapshot = match cli {
-                Ok(_) => GatewaySnapshot::unconfigured(),
-                Err(CliError::Missing) => GatewaySnapshot::missing_cli(),
-                Err(error) => return Err(error.to_string()),
+            let snapshot = if OpenClawCli::bundled_available() {
+                GatewaySnapshot::unconfigured()
+            } else {
+                match self.resolve_cli() {
+                    Ok(_) => GatewaySnapshot::unconfigured(),
+                    Err(CliError::Missing) => GatewaySnapshot::missing_cli(),
+                    Err(error) => return Err(error.to_string()),
+                }
             };
             self.update_tray(&snapshot);
             return Ok(snapshot);
         }
-        let cli = match cli {
+        let cli = match self.resolve_cli() {
             Ok(cli) => cli,
             Err(CliError::Missing) => {
                 return self.show_missing_cli(app, explicit_local, None);
@@ -765,6 +770,16 @@ impl DesktopState {
         };
         if explicit_local {
             self.inner.remote_tunnels.clear();
+        }
+        if explicit_local
+            && cli.bundled_service_launcher().is_some()
+            && !remote_gateway::has_configured_gateway()?
+        {
+            self.inner
+                .navigation
+                .lock()
+                .map_err(|_| "Navigation lock is unavailable.")?
+                .mark_onboarding_pending();
         }
         let ready = gateway::ensure_ready(&cli)?;
         self.finish_local_connection(app, cli, ready)
@@ -3209,6 +3224,7 @@ fn main() {
         );
 
     let builder = builder.setup(move |app| {
+        installer::configure_bundled_runtime(app.handle())?;
         let namespace = remote_gateway::config_path()?
             .to_string_lossy()
             .into_owned();

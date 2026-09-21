@@ -31,7 +31,7 @@ import time
 START_FAILURE = "Fixture: systemd user service is unavailable."
 
 
-def exercise(app, Atspi, GLib, *, remote_only, local_start_failure, inline_fixture, binary, gateway_switch):
+def exercise(app, Atspi, GLib, *, remote_only, local_start_failure, inline_fixture, binary, gateway_switch, bundled_runtime=False, connected_remote=False):
     last_headings = set()
     last_controls = set()
 
@@ -150,6 +150,12 @@ def exercise(app, Atspi, GLib, *, remote_only, local_start_failure, inline_fixtu
             inline_fixture.exercise(app, binary, wait, Atspi)
         return
 
+    if connected_remote:
+        wait("Connect a verified AI model", "heading")
+        wait("Check again", "push button")
+        print("PASS: native remote mode connected to the real Gateway", flush=True)
+        return
+
     wait("Welcome to OpenClaw", "heading")
     if local_start_failure:
         for attempt in range(2):
@@ -189,6 +195,11 @@ def exercise(app, Atspi, GLib, *, remote_only, local_start_failure, inline_fixtu
     click("Get started")
     click("On this computer", "toggle button", prefix=True)
     click("Continue")
+    if bundled_runtime:
+        wait("Connect a verified AI model", "heading")
+        wait("Check again", "push button")
+        print("PASS: included runtime created the local Gateway and opened model onboarding", flush=True)
+        return
     # Keeping missingCli (not unconfigured) is what preserves local installation.
     wait("Choose a release channel", "heading")
     click("RELEASE CHANNEL", "combo box")
@@ -199,6 +210,12 @@ def exercise(app, Atspi, GLib, *, remote_only, local_start_failure, inline_fixtu
         predicate=lambda node: node.get_state_set().contains(Atspi.StateType.SELECTED),
     )
     wait("Install OpenClaw", "push button")
+    for node in nodes():
+        if node.get_name() == "Dismiss update notice":
+            action = node.get_action_iface()
+            if action is not None and action.get_n_actions():
+                action.do_action(0)
+            break
     print("PASS: native first-run remote choices and local development channel", flush=True)
 
 
@@ -206,7 +223,7 @@ def interrupted(signum, _frame):
     raise RuntimeError(f"Native first-run smoke interrupted by signal {signum}")
 
 
-def drive(binary, *, remote_only, local_start_failure, inline_browser, window_chrome, gateway_switch, gateway_onboarding, quick_chat, desktop_sharing, artifacts_dir):
+def drive(binary, *, remote_only, local_start_failure, inline_browser, window_chrome, gateway_switch, gateway_onboarding, quick_chat, desktop_sharing, artifacts_dir, bundled_runtime=False, connected_remote=False):
     try:
         import gi
 
@@ -302,6 +319,8 @@ def drive(binary, *, remote_only, local_start_failure, inline_browser, window_ch
                 inline_fixture=inline_fixture,
                 binary=binary,
                 gateway_switch=gateway_switch or gateway_onboarding or desktop_sharing,
+                bundled_runtime=bundled_runtime,
+                connected_remote=connected_remote,
             )
         except BaseException:
             try:
@@ -333,6 +352,10 @@ def main():
         help="Retain a screenshot of the final native state (requires ImageMagick)",
     )
     scenarios = parser.add_mutually_exclusive_group()
+    scenarios.add_argument("--connected-remote", action="store_true",
+        help="Exercise a configured real remote Gateway under the disposable test account")
+    scenarios.add_argument("--bundled-runtime", action="store_true",
+        help="Exercise the real included runtime under a disposable OS account (--driver only)")
     scenarios.add_argument(
         "--remote-only",
         action="store_true",
@@ -394,6 +417,11 @@ def main():
         if not all(os.access(f"/usr/bin/{tool}", os.X_OK) for tool in ("import", "identify")):
             parser.error("Screenshot capture requires ImageMagick's import and identify")
 
+    if args.bundled_runtime or args.connected_remote:
+        import pwd
+        account = pwd.getpwuid(os.getuid())
+        if not args.driver or not account.pw_name.startswith("openclaw-sea-") or (args.bundled_runtime and Path.home() != Path(account.pw_dir)):
+            parser.error("Bundled service proof requires --driver and a disposable openclaw-sea-* OS account")
     if args.driver:
         drive(
             binary,
@@ -406,6 +434,8 @@ def main():
             quick_chat=args.quick_chat,
             desktop_sharing=args.desktop_sharing,
             artifacts_dir=args.artifacts_dir,
+            bundled_runtime=args.bundled_runtime,
+            connected_remote=args.connected_remote,
         )
         return
 

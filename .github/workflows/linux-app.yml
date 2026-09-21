@@ -186,6 +186,15 @@ jobs:
           if-no-files-found: warn
           path: ${{ runner.temp }}/linux-desktop-sharing
 
+      - name: Test bundled runtime extraction
+        run: node --test apps/linux/scripts/sea-runtime.test.mjs
+
+      - name: Build included Linux runtime
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          pnpm build
+          bash apps/linux/scripts/stage-sea-runtime.sh
+
       - name: Stage AppImage GStreamer plugins
         if: github.event_name == 'workflow_dispatch'
         run: |
@@ -215,7 +224,7 @@ jobs:
         # Validation builds have no TAURI_SIGNING_PRIVATE_KEY, and the configured updater
         # pubkey makes the bundler hard-require it. Skip updater artifacts here;
         # linux-app-release.yml builds the signed updater bundles.
-        run: pnpm dlx @tauri-apps/cli@2.11.4 build --bundles deb,appimage --config '{"bundle":{"createUpdaterArtifacts":false,"useLocalToolsDir":false}}'
+        run: pnpm dlx @tauri-apps/cli@2.11.4 build --bundles deb,appimage --config tauri.sea.conf.json --config '{"bundle":{"createUpdaterArtifacts":false,"useLocalToolsDir":false}}'
 
       - name: Finalize AppImage
         if: github.event_name == 'workflow_dispatch'
@@ -230,8 +239,16 @@ jobs:
         run: |
           xvfb-run -a -s '-screen 0 1280x1024x24' dbus-run-session -- \
             /usr/bin/python3 apps/linux/tests/first_run.py \
-            apps/linux/src-tauri/target/release/openclaw-desktop \
+            apps/linux/src-tauri/target/release/openclaw-desktop --remote-only \
             2>&1 | tee "${RUNNER_TEMP}/linux-first-run.log"
+          bash apps/linux/scripts/test-sea-native.sh \
+            apps/linux/src-tauri/target/release/bundle/deb/*.deb \
+            "${RUNNER_TEMP}/linux-sea-first-run"
+          bash apps/linux/scripts/test-sea-runtime-container.sh
+          xvfb-run -a -s '-screen 0 1280x1024x24' dbus-run-session -- \
+            /usr/bin/python3 apps/linux/tests/remote_connection_smoke.py \
+            apps/linux/src-tauri/target/release/openclaw-desktop \
+            --artifacts-dir "${RUNNER_TEMP}/linux-sea-remote" --unavailable-runtime
           xvfb-run -a -s '-screen 0 1280x1024x24' dbus-run-session -- \
             /usr/bin/python3 apps/linux/tests/first_run.py \
             apps/linux/src-tauri/target/release/openclaw-desktop --local-start-failure \

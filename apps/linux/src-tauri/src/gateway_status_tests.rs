@@ -75,6 +75,10 @@ fn cli_service_status_lifecycle_contract() {
     // A fresh process owns CLI discovery and HOME; parallel Rust tests never
     // observe a temporary override or share this test's service-call recorder.
     if let Some(root) = std::env::var_os(CHILD) {
+        if std::env::var_os("OPENCLAW_BUNDLED_STATUS_CASE").is_some() {
+            let root = PathBuf::from(&root);
+            crate::cli::configure_bundled_fixture(root.join("openclaw"), root.join("runtime"));
+        }
         let cli = OpenClawCli::discover().expect("discover isolated fixture CLI");
         let result = match ensure_ready(&cli) {
             Ok(ready) => json!({
@@ -113,7 +117,24 @@ fn cli_service_status_lifecycle_contract() {
         .unwrap()
         .remove("loaded");
 
+    let mut foreign = status(json!(true), false, false);
+    foreign["service"]["command"] =
+        json!({"programArguments": ["/operator/node", "/operator/openclaw.mjs", "gateway"]});
     let cases = [
+        (
+            "bundled-foreign-stopped",
+            foreign.to_string(),
+            Expected::Invalid,
+        ),
+        (
+            "bundled-foreign-healthy",
+            status(json!(true), true, true).to_string(),
+            Expected::Ready {
+                install: false,
+                start: false,
+                recover: false,
+            },
+        ),
         (
             "unknown-healthy",
             unknown_healthy.to_string(),
@@ -249,13 +270,19 @@ fn cli_service_status_lifecycle_contract() {
             .to_string(),
         )
         .unwrap();
-        let output = Command::new(std::env::current_exe().unwrap())
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
             .args(["--exact", TEST, "--nocapture"])
             .env_clear()
             .env(CHILD, root)
             .env("HOME", root)
-            .env("PATH", "/usr/bin:/bin")
-            .env("OPENCLAW_DESKTOP_CLI", &executable)
+            .env("PATH", "/usr/bin:/bin");
+        if name.starts_with("bundled-") {
+            command.env("OPENCLAW_BUNDLED_STATUS_CASE", "1");
+        } else {
+            command.env("OPENCLAW_DESKTOP_CLI", &executable);
+        }
+        let output = command
             .output()
             .expect("run isolated ensure_ready contract");
         assert!(

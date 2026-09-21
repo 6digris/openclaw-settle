@@ -349,6 +349,13 @@ jobs:
           .release-tooling/apps/linux/scripts/tauri-appimage-tools.sh prepare
           .release-tooling/apps/linux/scripts/tauri-appimage-tools.sh verify pre-build
 
+      - name: Build included Linux runtime
+        # Older release tags retain their original packaging contract.
+        if: hashFiles('apps/linux/scripts/stage-sea-runtime.sh') != ''
+        run: |
+          pnpm build
+          bash apps/linux/scripts/stage-sea-runtime.sh
+
       - name: Build Linux companion bundles
         working-directory: apps/linux/src-tauri
         env:
@@ -362,7 +369,11 @@ jobs:
           version="${RELEASE_TAG#v}"
           # Stamp the release version into the bundles; the committed manifests
           # keep a placeholder 0.1.0 so releases stay tag-driven.
-          pnpm dlx @tauri-apps/cli@2.11.4 build --bundles deb,appimage \
+          runtime_config=()
+          if [[ -f tauri.sea.conf.json ]]; then
+            runtime_config=(--config tauri.sea.conf.json)
+          fi
+          pnpm dlx @tauri-apps/cli@2.11.4 build --bundles deb,appimage "${runtime_config[@]}" \
             --config "{\"version\":\"${version}\",\"bundle\":{\"createUpdaterArtifacts\":false,\"useLocalToolsDir\":false}}"
 
       - name: Finalize AppImage

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "gen/runtime/openclaw-runtime": "runtime/openclaw-runtime",
+      "gen/runtime/manifest.json": "runtime/manifest.json"
+    }
+  }
+}

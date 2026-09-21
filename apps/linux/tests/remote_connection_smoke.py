@@ -427,6 +427,8 @@ def main():
     parser.add_argument("--label", choices=("before", "after"), default="after")
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--driver", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--unavailable-runtime", action="store_true",
+                        help="Prove remote startup does not need writable bundled-runtime storage")
     args = parser.parse_args()
     if sys.platform != "linux" or os.geteuid() == 0:
         parser.error("Run on Linux as a non-root user; keep the WebKit sandbox enabled")
@@ -472,6 +474,10 @@ def main():
             path = root / relative
             path.mkdir(mode=0o700, parents=True)
             env[variable] = str(path)
+        if args.unavailable_runtime:
+            runtime = root / ".local/share/ai.openclaw.linux/runtime"
+            runtime.parent.mkdir(parents=True, exist_ok=True)
+            runtime.write_text("fixture: runtime storage unavailable")
         command = [
             sys.executable, str(Path(__file__).resolve()), str(binary), "--driver",
             "--source", args.source, "--credential", args.credential,
@@ -511,5 +517,5 @@ if __name__ == "__main__":
         sys.exit(1)
     except Exception as error:
         # Never export native logs, raw HTTP payloads, config, or private paths.
-        print(f"FAIL: reconnect harness infrastructure error ({type(error).__name__})", file=sys.stderr)
+        print(f"FAIL: reconnect harness infrastructure error ({type(error).__name__}, errno={getattr(error, 'errno', None)})", file=sys.stderr)
         sys.exit(1)
