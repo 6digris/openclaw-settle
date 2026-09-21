@@ -185,7 +185,7 @@ function parseGeneratedAsyncAnswer(
     const separator = `\n\n${quoteQuestion(next.title)}\n\n`;
     const answerEnd = message.indexOf(separator, offset);
     // Free text can contain quoted headings. Do not guess a section boundary.
-    if (answerEnd < offset || message.indexOf(separator, answerEnd + separator.length) !== -1) {
+    if (answerEnd < offset || message.includes(separator, answerEnd + separator.length)) {
       return null;
     }
     answers.push(message.slice(offset, answerEnd));
