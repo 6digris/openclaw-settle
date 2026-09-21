@@ -1,9 +1,12 @@
 import { once } from "node:events";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, vi } from "vitest";
 import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js";
+import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
+import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import type { runCommandWithTimeout, runUtf8CommandWithTimeout } from "../../process/exec.js";
 import { createCommandResult as commandResult } from "../../test-utils/npm-spec-install-test-helpers.js";
 
@@ -122,7 +125,36 @@ export async function createUpdateUtf8CommandTransportFixture(
   const { spawnSync: spawnMetadata } =
     await vi.importActual<typeof import("node:child_process")>("node:child_process");
   const runDoctorFixture = await createUpdateCommandTransportFixture(transport);
+  const snapshotWorker = fileURLToPath(
+    resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.updateCandidateState),
+  );
+  // WAL/source-inode and worker settlement have process coverage. Keep worker
+  // effects fixture-owned while retaining admission and real rehearsal projection.
+  const runSnapshotFixture = await createUpdateCommandTransportFixture({
+    ...transport,
+    run: async (_argv, options) => {
+      if (typeof options === "number") {
+        throw new Error("Update snapshot fixture requires command options");
+      }
+      const input: unknown = JSON.parse(String(options.input));
+      const mode = isRecord(input) ? input.mode : undefined;
+      if (mode !== "inventory" && mode !== "snapshot") {
+        throw new Error("Unexpected update state worker mode");
+      }
+      return commandResult({
+        stdout: JSON.stringify(
+          mode === "inventory"
+            ? { databases: [], pluginBytes: 0, pluginPlan: "plugin-copy-plan.json" }
+            : { versions: [], pluginPaths: {} },
+        ),
+      });
+    },
+  });
   return async (argv, options) => {
+    if (argv.includes(snapshotWorker)) {
+      const result = await runSnapshotFixture(argv, options);
+      return { ...result, cleanup: result.cleanup ?? "normal" };
+    }
     if (argv.at(-1) === "--doctor" && typeof options !== "number" && options.beforeInput) {
       // Keep Doctor effects fixture-owned without bypassing live child admission.
       const result = await runDoctorFixture(argv, options);

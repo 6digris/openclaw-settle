@@ -8,7 +8,6 @@ import os from "node:os";
 import path from "node:path";
 import { CANCEL_SYMBOL, isCancel } from "@clack/core";
 import { expectDefined } from "@openclaw/normalization-core";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { Command } from "commander";
 import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { PLUGIN_CAPABILITY_CONSENT_REQUIRED } from "../../packages/gateway-protocol/src/capability-consent-error-details.js";
@@ -452,26 +451,6 @@ vi.mock("../process/exec.js", async (importOriginal) => {
     await import("./update-cli/update-command-transport.test-support.js");
   const actual = await importOriginal<typeof import("../process/exec.js")>();
   return {
-    // The real snapshot worker has separate WAL/source-inode boundary coverage.
-    // Retain real rehearsal config projection and drift checks in this CLI fixture.
-    runCommandBuffered: async (argv: string[], options: { input: string; timeoutMs?: number }) => {
-      const input: unknown = JSON.parse(options.input);
-      const mode = isRecord(input) ? input.mode : undefined;
-      if (mode !== "inventory" && mode !== "snapshot") {
-        throw new Error("Unexpected update state worker mode");
-      }
-      return {
-        code: 0,
-        stdout: Buffer.from(
-          JSON.stringify(
-            mode === "inventory"
-              ? { databases: [], pluginBytes: 0, pluginPlan: "plugin-copy-plan.json" }
-              : { versions: [], pluginPaths: {} },
-          ),
-        ),
-        stderr: Buffer.alloc(0),
-      };
-    },
     runCommandWithTimeout: await createUpdateCommandTransportFixture({
       ...commandTransport,
       get npmPrefix() {
