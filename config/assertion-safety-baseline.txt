@@ -118,7 +118,6 @@ extensions/buzz/src/qa/adapter.runtime.ts	2
 extensions/buzz/src/room-membership.ts	2
 extensions/buzz/src/setup-verify.ts	5
 extensions/buzz/src/types.ts	2
-extensions/byteplus/video-generation-provider.ts	1
 extensions/canvas/src/a2ui-jsonl.ts	1
 extensions/canvas/src/cli.ts	2
 extensions/canvas/src/config-migration.ts	2
@@ -1031,7 +1030,6 @@ extensions/reef/src/registration-state.ts	3
 extensions/reef/src/setup.ts	3
 extensions/reef/src/state.ts	3
 extensions/reef/src/transport.ts	3
-extensions/runway/video-generation-provider.ts	1
 extensions/searxng/src/config.ts	1
 extensions/searxng/src/searxng-client.ts	3
 extensions/signal/src/accounts.ts	3
