@@ -397,6 +397,7 @@ export async function prepareTelegramCommandDispatch(
     const ensured = await nativeCommandRuntime.ensureConfiguredBindingRouteReady({
       cfg: runtimeCfg,
       bindingResolution: bindingMode.binding,
+      assertActive: auth.assertOwnerCurrent,
     });
     if (!ensured.ok) {
       logVerbose(

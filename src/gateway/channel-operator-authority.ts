@@ -1,11 +1,11 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db-contract.js";
-import {
-  resolveUserChannelIdentity,
-  type UserChannelIdentity,
-  type UserChannelIdentityAuthorityFacts,
-} from "../state/user-channel-identities.js";
+import { resolveUserChannelIdentity } from "../state/user-channel-identities.js";
 import { prepareUserChannelIdentityAuthority } from "../state/user-channel-identity-operations.js";
+import type {
+  UserChannelIdentity,
+  UserChannelIdentityAuthorityFacts,
+} from "../state/user-profiles.types.js";
 import { resolveIdentityOperatorScopes } from "./operator-identity-scopes.js";
 import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.js";
 

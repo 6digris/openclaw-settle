@@ -8,10 +8,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
-import {
-  executeUserChannelIdentityChange,
-  type UserChannelIdentityWorkerOperations,
-} from "./user-channel-identities.worker.js";
+import { executeUserChannelIdentityChange } from "./user-channel-identities.worker.js";
 import { listUserProfileGitHubLogins } from "./user-profile-github-identity.js";
 import { listUserProfilesSync } from "./user-profile-list.js";
 import {
@@ -26,7 +23,11 @@ import {
   userProfilesDb,
 } from "./user-profiles-internal.js";
 import { ensureUserProfilesSchema } from "./user-profiles-schema.js";
-import type { ProfileDisplayRow, UserProfileAvatarMime } from "./user-profiles.types.js";
+import type {
+  ProfileDisplayRow,
+  UserProfileAvatarMime,
+  UserChannelIdentityWorkerOperations,
+} from "./user-profiles.types.js";
 
 type UserProfileReadWorkerOperations = {
   "userProfiles.list": { input: undefined; output: ReturnType<typeof listUserProfilesSync> };

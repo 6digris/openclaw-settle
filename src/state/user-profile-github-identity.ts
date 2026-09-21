@@ -17,6 +17,7 @@ import { publishUserProfileAuthorityChange } from "./user-profile-events.js";
 import type { UserProfileMutationContext } from "./user-profile-mutation.js";
 import { selectResolvedUserProfileMetadataById, userProfilesDb } from "./user-profiles-internal.js";
 import { ensureUserProfilesSchema, UserProfileOwnerError } from "./user-profiles-schema.js";
+import type { CachedGitHubIdentity } from "./user-profiles.types.js";
 
 const GITHUB_PROVIDER = "github";
 const GITHUB_LOGIN_SUBJECT_PREFIX = "login:";
@@ -101,7 +102,7 @@ export function selectStoredGitHubIdentities(
 export function resolveCachedGitHubIdentityInDatabase(
   db: DatabaseSync,
   params: { accountId: number; email: string },
-): { profileId: string; updatedAt: number } | undefined {
+): CachedGitHubIdentity | undefined {
   const email = params.email.trim().toLowerCase();
   if (
     !email ||

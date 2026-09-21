@@ -81,6 +81,9 @@ describe("tsgo core test shards", () => {
       ["src/gateway/worker-environments/computer-transport.test.ts", "gateway-server"],
       ["src/gateway/server-plugin-reload.recovery.test.ts", "gateway-server"],
       ["src/gateway/server-methods/plugins.decisions.test.ts", "gateway-methods"],
+      ["src/plugins/loader.native-module-loader.test.ts", "plugins-platform"],
+      ["src/acp/session-new-ordering.test.ts", "plugins-platform"],
+      ["src/system-agent/operations.test.ts", "services"],
     ] as const) {
       expect(
         shards.filter((shard) => shard.roots.includes(file)).map((shard) => shard.name),

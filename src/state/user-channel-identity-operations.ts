@@ -10,10 +10,7 @@ import { runOpenClawStateWorkerOperation } from "./openclaw-state-worker-store.j
 import {
   UserChannelIdentityConflictError,
   userChannelIdentitySubject,
-  type UserChannelIdentity,
-  type UserChannelIdentityLink,
 } from "./user-channel-identities.js";
-import type { UserChannelIdentityResult } from "./user-channel-identities.worker.js";
 import {
   captureUserProfileAuthorityRead,
   emitUserProfilesChanged,
@@ -21,6 +18,11 @@ import {
   publishUserProfileAliasChange,
 } from "./user-profile-events.js";
 import { UserProfileNotFoundError, UserProfileOwnerError } from "./user-profiles-schema.js";
+import type {
+  UserChannelIdentity,
+  UserChannelIdentityLink,
+  UserChannelIdentityResult,
+} from "./user-profiles.types.js";
 
 type IdentityOptions = Pick<OpenClawStateDatabaseOptions, "path" | "env">;
 

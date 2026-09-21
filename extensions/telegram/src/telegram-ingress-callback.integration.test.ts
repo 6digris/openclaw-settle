@@ -8,6 +8,7 @@ import path from "node:path";
 import type { Message } from "grammy/types";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { OpenAsyncKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
@@ -31,7 +32,6 @@ import {
   clearTelegramRuntimeForTest,
   resetTelegramAccountThrottlersForTest,
 } from "./runtime.test-support.js";
-import type { TelegramRuntime } from "./runtime.types.js";
 import { createTelegramTransportIngressMonitor } from "./telegram-ingress-drain-factory.js";
 import { openTelegramIngressQueue } from "./telegram-ingress-spool.js";
 
@@ -64,19 +64,17 @@ it.each(["none", "middleware", "handler"] as const)(
     process.env.OPENCLAW_STATE_DIR = stateDir;
     resetPluginStateStoreForTests({ closeDatabase: false });
     resetTelegramAccountThrottlersForTest();
-    setTelegramRuntime({
-      state: {
-        openChannelIngressQueue: (
-          options?: Omit<Parameters<typeof createChannelIngressQueueForTests>[0], "channelId">,
-        ) => createChannelIngressQueueForTests({ ...options, channelId: "telegram" }),
-        openKeyedStore: ((options) =>
-          createPluginStateKeyedStoreForTests(
-            "telegram",
-            options,
-          )) as TelegramRuntime["state"]["openKeyedStore"],
-      },
-      channel: { inbound: { ingress: createPluginRuntimeMock().channel.inbound.ingress } },
-    } as TelegramRuntime);
+    setTelegramRuntime(
+      createPluginRuntimeMock({
+        state: {
+          openChannelIngressQueue: (
+            options?: Omit<Parameters<typeof createChannelIngressQueueForTests>[0], "channelId">,
+          ) => createChannelIngressQueueForTests({ ...options, channelId: "telegram" }),
+          openKeyedStore: <T>(options: OpenAsyncKeyedStoreOptions) =>
+            createPluginStateKeyedStoreForTests<T>("telegram", options),
+        },
+      }),
+    );
 
     const requests: Array<{ method: string; payload: Record<string, unknown> }> = [];
     const runtimeErrors: unknown[] = [];

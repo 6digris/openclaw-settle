@@ -36,7 +36,7 @@ import {
   UserProfileNotFoundError,
   hasEnsuredUserProfileRoleSchema,
 } from "./user-profiles-schema.js";
-import type { ProfileDisplayRow } from "./user-profiles.types.js";
+import type { ProfileDisplayRow, UserProfileDisplay } from "./user-profiles.types.js";
 
 export function listUserProfilesSync(options: OpenClawStateDatabaseOptions = {}) {
   ensureUserProfilesSchema(options);
@@ -464,7 +464,9 @@ export function getUserProfileDisplay(
   return projectUserProfileDisplay(profile);
 }
 
-export function projectUserProfileDisplay(profile: Omit<ProfileDisplayRow, "role">) {
+export function projectUserProfileDisplay(
+  profile: Omit<ProfileDisplayRow, "role">,
+): UserProfileDisplay {
   const avatarMime = normalizeUserProfileAvatarMime(profile.avatar_mime);
   return {
     id: profile.id,

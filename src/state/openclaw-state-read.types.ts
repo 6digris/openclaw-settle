@@ -44,11 +44,11 @@ import type {
   UserChannelIdentity,
   UserChannelIdentityLink,
   UserChannelIdentityAuthorityFacts,
-} from "./user-channel-identities.js";
-import type { UserChannelIdentityResult } from "./user-channel-identities.worker.js";
-import type { resolveCachedGitHubIdentityInDatabase } from "./user-profile-github-identity.js";
-import type { getUserProfileDisplay } from "./user-profile-list.js";
-import type { ProfileDisplayRow } from "./user-profiles.types.js";
+  UserChannelIdentityResult,
+  CachedGitHubIdentity,
+  UserProfileDisplay,
+  ProfileDisplayRow,
+} from "./user-profiles.types.js";
 
 export type OpenClawStateReadLocation = {
   context: OpenClawStateWorkerContext;
@@ -174,7 +174,7 @@ export type OpenClawStateReadReply = (
             profileId: string;
             role: string | null;
             aliases: string[];
-            display: ReturnType<typeof getUserProfileDisplay>;
+            display: UserProfileDisplay;
           }
         | undefined;
     }
@@ -182,7 +182,7 @@ export type OpenClawStateReadReply = (
       ok: true;
       type: "userProfiles.githubIdentity.cached";
       sourceAdmitted: true;
-      identity: ReturnType<typeof resolveCachedGitHubIdentityInDatabase>;
+      identity: CachedGitHubIdentity | undefined;
     }
   | {
       ok: true;

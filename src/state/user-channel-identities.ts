@@ -26,9 +26,11 @@ import {
 } from "./user-profiles-internal.js";
 import { ensureUserProfilesSchema, UserProfileOwnerError } from "./user-profiles-schema.js";
 import { classifyTailscaleLogin } from "./user-profiles-tailscale-login.js";
-
-export type UserChannelIdentity = { channelId: string; accountId: string; senderId: string };
-export type UserChannelIdentityLink = { profileId: string; identity: UserChannelIdentity };
+import type {
+  UserChannelIdentity,
+  UserChannelIdentityLink,
+  UserChannelIdentityAuthorityFacts,
+} from "./user-profiles.types.js";
 
 // The dot keeps administrator-attested channel links outside Tailscale login namespaces.
 const CHANNEL_IDENTITY_PROVIDER = "channel.identity";
@@ -186,12 +188,6 @@ export function listUserChannelIdentitiesInDatabase(
 }
 
 /** Reads the current person and login grant subjects; channel links never become login aliases. */
-export type UserChannelIdentityAuthorityFacts = {
-  profileId: string;
-  role: string | null;
-  loginIdentities: string[];
-};
-
 export function resolveUserChannelIdentityInDatabase(
   db: DatabaseSync,
   identity: UserChannelIdentity,

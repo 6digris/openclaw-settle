@@ -14,7 +14,6 @@ import {
   linkUserChannelIdentity,
   resolveUserChannelIdentity,
   unlinkUserChannelIdentity,
-  type UserChannelIdentity,
 } from "./user-channel-identities.js";
 import {
   changeCanonicalUserChannelIdentity,
@@ -43,6 +42,7 @@ import {
   setUserProfileRole,
   syncGitHubIdentity,
 } from "./user-profiles.js";
+import type { UserChannelIdentity } from "./user-profiles.types.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(async () => {

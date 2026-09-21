@@ -6,6 +6,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
+import type { UserProfileOwnerErrorCode } from "./user-profiles.types.js";
 
 // Canonical additive schema for durable user profiles. Kept feature-local so
 // ordinary shared-state opens do not create identity tables until they are used.
@@ -53,7 +54,7 @@ export class UserProfileNotFoundError extends Error {
 }
 
 export class UserProfileOwnerError extends Error {
-  constructor(readonly code: "merge" | "role" | "repair-required") {
+  constructor(readonly code: UserProfileOwnerErrorCode) {
     super(
       code === "repair-required"
         ? "the shared owner profile requires repair; run openclaw doctor --fix and reconnect"

@@ -69,9 +69,20 @@ descriptors, access groups, policy, and conversation kind.
 The runtime exposes `createResolver`, `resolve`, and `resolveStable` with the
 same inputs as the standalone SDK helpers. Its resolver and `buildContext`
 share one host instance and plugin lifetime. Use both from the same runtime;
-another Gateway or a replacement plugin cannot redeem the result. The
-standalone SDK resolvers remain available for policy evaluation but carry no
-host identity or operator authority.
+another Gateway or a replacement plugin cannot redeem the result.
+
+The standalone `resolveChannelMessageIngress`,
+`resolveStableChannelMessageIngress`, and `createChannelIngressResolver`
+helpers retain the receive-path contract documented in OpenClaw 2026.9.5
+through the current Plugin SDK major. In a host-managed callback of a trusted,
+active channel plugin, they delegate to that exact plugin instance's registered
+runtime, preserving participant attribution when the result enters its
+`buildContext`. A factory created during registration retains its creating
+instance; calling it from another plugin does not borrow that plugin's authority.
+Unqualified calls remain policy-only. Retired instances and stale or mismatched
+handoffs cannot attach trusted identity. New receive paths should use the
+explicit runtime methods above; the standalone receive adapters are deprecated
+for removal in the next Plugin SDK major.
 
 For a result that will enter a host context, resolve after the channel's route
 owner has selected the final agent and session. `contextBinding` freezes those

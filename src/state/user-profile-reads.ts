@@ -1,14 +1,14 @@
 import { executeExistingOpenClawStateRead } from "./openclaw-state-db-readonly.js";
 import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
-import type { resolveCachedGitHubIdentityInDatabase } from "./user-profile-github-identity.js";
+import type { CachedGitHubIdentity } from "./user-profiles.types.js";
 
 type ProfileReadOptions = Pick<OpenClawStateDatabaseOptions, "path" | "env">;
 
 export async function resolveCanonicalCachedGitHubIdentity(
   params: { accountId: number; email: string },
   options: ProfileReadOptions = {},
-): Promise<ReturnType<typeof resolveCachedGitHubIdentityInDatabase>> {
+): Promise<CachedGitHubIdentity | undefined> {
   const reply = await executeExistingOpenClawStateRead(options, {
     type: "userProfiles.githubIdentity.cached",
     accountId: params.accountId,

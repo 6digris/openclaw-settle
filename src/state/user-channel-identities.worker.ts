@@ -12,19 +12,16 @@ import {
   unlinkUserChannelIdentity,
   UserChannelIdentityConflictError,
   userChannelIdentitySubject,
-  type UserChannelIdentity,
-  type UserChannelIdentityLink,
 } from "./user-channel-identities.js";
 import {
   ensureUserProfilesSchema,
   UserProfileNotFoundError,
   UserProfileOwnerError,
 } from "./user-profiles-schema.js";
-
-export type UserChannelIdentityResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; kind: "conflict" | "not-found" }
-  | { ok: false; kind: "owner"; code: UserProfileOwnerError["code"] };
+import type {
+  UserChannelIdentityResult,
+  UserChannelIdentityWorkerOperations,
+} from "./user-profiles.types.js";
 
 export function readUserChannelIdentityResult<T>(operation: () => T): UserChannelIdentityResult<T> {
   try {
@@ -42,15 +39,6 @@ export function readUserChannelIdentityResult<T>(operation: () => T): UserChanne
     throw error;
   }
 }
-
-export type UserChannelIdentityWorkerOperations = {
-  "userProfiles.channelIdentity.change": {
-    input: { action: "link" | "unlink"; profileId: string; identity: UserChannelIdentity };
-    output: UserChannelIdentityResult<
-      { kind: "linked"; link: UserChannelIdentityLink } | { kind: "unlinked"; removed: boolean }
-    >;
-  };
-};
 
 export function executeUserChannelIdentityChange(
   input: UserChannelIdentityWorkerOperations["userProfiles.channelIdentity.change"]["input"],

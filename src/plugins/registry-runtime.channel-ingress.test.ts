@@ -1,25 +1,33 @@
 import { describe, expect, it, vi } from "vitest";
-import type { BuildChannelInboundEventContextParams } from "../channels/inbound-event/context.js";
 import { buildChannelInboundEventContext } from "../channels/inbound-event/context.js";
 import {
   createChannelAdmissionAudit,
-  consumeChannelAdmissionEvidence,
-  readChannelContextAdmissionEvidence,
   readChannelContextGatewayContextResolver,
   type ChannelAdmissionAudit,
 } from "../channels/message-access/admission-evidence.js";
 import type { ResolvedChannelMessageIngress } from "../channels/message-access/runtime-types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type {
-  GatewayContextResolver,
-  GatewayRequestContext,
-} from "../gateway/server-methods/types.js";
-import type { PluginOrigin } from "./plugin-origin.types.js";
+import type { GatewayRequestContext } from "../gateway/server-methods/types.js";
+import {
+  createChannelIngressResolver,
+  defineStableChannelIngressIdentity,
+  resolveChannelMessageIngress,
+  resolveStableChannelMessageIngress,
+} from "../plugin-sdk/channel-ingress-runtime.js";
+import { recordAcceptedSessionParticipantInput } from "../sessions/session-participant-input-recording.js";
+import { createDeferredCore } from "../shared/deferred.js";
+import { createEmptyPluginRegistry } from "./registry-empty.js";
 import {
   markPluginRegistryActive,
   markPluginRegistryRetired,
   withPluginRegistryPreparationScope,
 } from "./registry-lifecycle.js";
+import {
+  contextParams,
+  createRuntimeBuilder,
+  inspect,
+  resolveIngressForRuntime,
+} from "./registry-runtime.channel-ingress.test-support.js";
 import { createPluginRegistry } from "./registry.js";
 import {
   bindGatewayContextResolver,
@@ -29,152 +37,241 @@ import { createPluginRuntime } from "./runtime/index.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import { createPluginRecord } from "./status.test-fixtures.js";
 
-function createRuntimeBuilder(params: {
-  origin: PluginOrigin;
-  id?: string;
-  trustedOfficialInstall?: boolean;
-  gatewayContextResolver?: GatewayContextResolver;
-  audit?: ChannelAdmissionAudit;
-}) {
-  const subagent = {} as PluginRuntime["subagent"];
-  const context = {
-    channelAdmissionAudit: params.audit,
-    getRuntimeConfig: () => ({}),
-  } as GatewayRequestContext;
-  bindGatewayContextResolver(subagent, params.gatewayContextResolver ?? (() => context));
-  const registryBuilder = createPluginRegistry({
-    logger: { info() {}, warn() {}, error() {}, debug() {} },
-    runtime: {
-      channel: { inbound: { buildContext: buildChannelInboundEventContext } },
-      subagent,
-    } as PluginRuntime,
-    activateGlobalSideEffects: false,
-  });
-  const record = createPluginRecord({
-    id: params.id ?? "channel-owner",
-    origin: params.origin,
-    trustedOfficialInstall: params.trustedOfficialInstall,
-  });
-  const api = registryBuilder.createApi(record, {
-    config: {} as OpenClawConfig,
-    registrationMode: "full",
-  });
-  api.registerChannel({
-    plugin: {
-      id: record.id,
-      meta: {
-        id: record.id,
-        label: record.id,
-        selectionLabel: record.id,
-        docsPath: `/channels/${record.id}`,
-        blurb: "test channel",
-      },
-      capabilities: { chatTypes: ["direct"] },
-      config: {
-        listAccountIds: () => [],
-        resolveAccount: () => ({ accountId: "default" }),
-      },
-      outbound: { deliveryMode: "direct" },
-    },
-  });
-  registryBuilder.registry.plugins.push(record);
-  markPluginRegistryActive(registryBuilder.registry);
-  const resolveChannelRuntime = () => {
-    const registration = registryBuilder.registry.channels.find(
-      (candidate) => candidate.plugin.id === record.id,
-    );
-    const runtime = registration?.resolveChannelRuntime?.();
-    if (!runtime) {
-      throw new Error(`missing registered channel runtime for ${record.id}`);
-    }
-    return runtime;
-  };
-  const runtime = resolveChannelRuntime();
-  return {
-    api,
-    buildContext: runtime.inbound.buildContext,
-    ingress: runtime.inbound.ingress,
-    resolveIngress: (
-      participantId: string,
-      overrides?: Parameters<typeof resolveIngressForRuntime>[2],
-    ) => resolveIngressForRuntime(runtime, participantId, overrides),
-    record,
-    registryBuilder,
-    resolveBuildContext: () => resolveChannelRuntime().inbound.buildContext,
-  };
-}
+const recordParticipant = vi.hoisted(() => vi.fn());
+vi.mock("../sessions/session-participant-recording.js", () => ({
+  recordSessionParticipantBestEffort: recordParticipant,
+}));
 
-async function resolveIngressForRuntime(
-  runtime: PluginRuntime["channel"],
-  participantId: string,
-  params: {
-    channelId?: string;
-    conversation?: {
-      kind: "direct" | "group" | "channel";
-      id: string;
-      parentId?: string;
-      threadId?: string;
-    };
-    contextBinding?: {
-      agentId: string;
-      sessionKey: string;
-      messageId: string;
-      nativeChannelId?: string;
-      inboundEventKind: "user_request" | "room_event";
-    };
-  } = {},
-) {
-  return await runtime.inbound.ingress.resolveStable({
-    channelId: params.channelId ?? "channel-owner",
+type LegacyIngressMethod = "direct" | "stable" | "factory";
+
+function createLegacyReceiver(params: {
+  audit: ChannelAdmissionAudit;
+  trusted?: boolean;
+  readStoreAllowFrom?: () => Promise<string[]>;
+}) {
+  const identity = {
+    resolveParticipant: (subject: { stableId?: string | number | null }) => ({
+      domain: "workspace-one",
+      idKind: "user-id",
+      id: String(subject.stableId),
+    }),
+  };
+  const input = {
+    channelId: "channel-owner",
     accountId: "default",
-    subject: { stableId: participantId },
-    conversation: params.conversation ?? { kind: "direct", id: "dm-1" },
-    dmPolicy: "allowlist",
-    allowFrom: [participantId],
-    contextBinding: params.contextBinding ?? {
+    subject: { stableId: "person-a" },
+    conversation: { kind: "direct" as const, id: "dm-1" },
+    contextBinding: {
       agentId: "main",
       sessionKey: "agent:main:channel-owner:dm:dm-1",
       messageId: "message-1",
-      inboundEventKind: "user_request",
+      inboundEventKind: "user_request" as const,
+    },
+    dmPolicy: params.readStoreAllowFrom ? ("pairing" as const) : ("allowlist" as const),
+    allowFrom: ["person-a"],
+    readStoreAllowFrom: params.readStoreAllowFrom,
+    useDefaultPairingStore: false,
+  };
+  let resolvers!: Record<LegacyIngressMethod, () => Promise<ResolvedChannelMessageIngress>>;
+  let receiveIngress!: () => Promise<ResolvedChannelMessageIngress>;
+  const channel = createRuntimeBuilder({
+    origin: "global",
+    trustedOfficialInstall: params.trusted !== false,
+    audit: params.audit,
+    prepare: (api) => {
+      const descriptor = defineStableChannelIngressIdentity(identity);
+      // The released factory is created before registerChannel publishes its owner.
+      const factory = createChannelIngressResolver({ ...input, identity: descriptor });
+      resolvers = {
+        direct: () =>
+          resolveChannelMessageIngress({
+            ...input,
+            identity: descriptor,
+            event: { kind: "message", authMode: "inbound", mayPair: true },
+            policy: { dmPolicy: input.dmPolicy, groupPolicy: "disabled" },
+          }),
+        stable: () => resolveStableChannelMessageIngress({ ...input, identity }),
+        factory: () => factory.message(input),
+      };
+      return {
+        startAccount: async () => {
+          const buildContext = api.runtime.channel.inbound.buildContext;
+          const ingress = await receiveIngress();
+          return buildContext(contextParams({ ingress }));
+        },
+      };
     },
   });
-}
-
-function contextParams(params: {
-  ingress: ResolvedChannelMessageIngress | readonly ResolvedChannelMessageIngress[];
-  channelId?: string;
-  conversation?: BuildChannelInboundEventContextParams["conversation"];
-  route?: BuildChannelInboundEventContextParams["route"];
-  reply?: BuildChannelInboundEventContextParams["reply"];
-  senderId?: string;
-  messageId?: string;
-  inboundEventKind?: BuildChannelInboundEventContextParams["message"]["inboundEventKind"];
-}): BuildChannelInboundEventContextParams {
   return {
-    channel: params.channelId ?? "channel-owner",
-    accountId: "default",
-    from: "test:dm-1",
-    sender: { id: params.senderId ?? "person-a" },
-    conversation: params.conversation ?? { kind: "direct", id: "dm-1" },
-    route: params.route ?? {
-      agentId: "main",
-      routeSessionKey: "agent:main:channel-owner:dm:dm-1",
+    ...channel,
+    resolvers,
+    receive: async (resolve: () => Promise<ResolvedChannelMessageIngress>) => {
+      receiveIngress = resolve;
+      const startAccount =
+        channel.registryBuilder.registry.channels[0]!.plugin.gateway!.startAccount!;
+      return (await startAccount({} as never)) as ReturnType<
+        typeof buildChannelInboundEventContext
+      >;
     },
-    reply: params.reply ?? { to: "channel-owner:dm-1" },
-    messageId: params.messageId ?? "message-1",
-    message: {
-      rawBody: "hello",
-      inboundEventKind: params.inboundEventKind ?? "user_request",
+    dispose: async () => {
+      markPluginRegistryRetired(channel.registryBuilder.registry);
+      await channel.instance!.dispose();
     },
-    channelIngress: params.ingress,
   };
 }
 
-function inspect(context: object) {
-  return consumeChannelAdmissionEvidence(readChannelContextAdmissionEvidence(context));
-}
-
 describe("bundled channel ingress runtime ownership", () => {
+  it.each(["direct", "stable", "factory"] as const)(
+    "preserves the released %s helper through a trusted external channel callback",
+    async (method) => {
+      const audit = createChannelAdmissionAudit({ enabled: true });
+      const channel = createLegacyReceiver({ audit });
+      try {
+        recordParticipant.mockClear();
+        const context = await channel.receive(channel.resolvers[method]);
+        expect(inspect(context)).toMatchObject({
+          ingressState: "present",
+          invoker: { state: "present", kind: "person" },
+          decisionCoverage: "enforced",
+        });
+        expect(readChannelContextGatewayContextResolver(context)?.()?.channelAdmissionAudit).toBe(
+          audit,
+        );
+        recordAcceptedSessionParticipantInput(context, {
+          agentId: "main",
+          sessionKey: "agent:main:channel-owner:dm:dm-1",
+          storePath: "/unused",
+        });
+        expect(recordParticipant).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            identity: {
+              type: "remote",
+              pluginId: "channel-owner",
+              domain: "workspace-one",
+              idKind: "user-id",
+              id: "person-a",
+            },
+          }),
+        );
+      } finally {
+        await channel.dispose();
+        audit.close();
+      }
+    },
+  );
+
+  it("never binds a registration-time factory to another live instance of the same channel", async () => {
+    const firstAudit = createChannelAdmissionAudit({ enabled: true });
+    const secondAudit = createChannelAdmissionAudit({ enabled: true });
+    const first = createLegacyReceiver({ audit: firstAudit });
+    const second = createLegacyReceiver({ audit: secondAudit });
+    try {
+      const foreign = await second.receive(first.resolvers.factory);
+      expect(inspect(foreign)).toMatchObject({ ingressState: "unknown" });
+      expect(readChannelContextGatewayContextResolver(foreign)).toBeUndefined();
+      const original = await first.receive(first.resolvers.factory);
+      expect(inspect(original)).toMatchObject({ ingressState: "present" });
+      expect(readChannelContextGatewayContextResolver(original)?.()?.channelAdmissionAudit).toBe(
+        firstAudit,
+      );
+      const independent = await second.receive(second.resolvers.factory);
+      expect(inspect(independent)).toMatchObject({ ingressState: "present" });
+      expect(readChannelContextGatewayContextResolver(independent)?.()?.channelAdmissionAudit).toBe(
+        secondAudit,
+      );
+      await first.dispose();
+      const retired = await second.receive(first.resolvers.factory);
+      expect(inspect(retired)).toMatchObject({ ingressState: "unknown" });
+      expect(readChannelContextGatewayContextResolver(retired)).toBeUndefined();
+    } finally {
+      await first.dispose();
+      await second.dispose();
+      firstAudit.close();
+      secondAudit.close();
+    }
+  });
+
+  it("drops released-helper provenance when its owner retires during policy resolution", async () => {
+    const audit = createChannelAdmissionAudit({ enabled: true });
+    const entered = createDeferredCore<void>();
+    const allowFrom = createDeferredCore<string[]>();
+    const channel = createLegacyReceiver({
+      audit,
+      readStoreAllowFrom: () => {
+        entered.resolve();
+        return allowFrom.promise;
+      },
+    });
+    try {
+      const pending = channel.receive(channel.resolvers.direct);
+      await entered.promise;
+      markPluginRegistryRetired(channel.registryBuilder.registry);
+      allowFrom.resolve([]);
+      const context = await pending;
+      expect(inspect(context)).toMatchObject({ ingressState: "unknown" });
+      expect(readChannelContextGatewayContextResolver(context)).toBeUndefined();
+    } finally {
+      allowFrom.resolve([]);
+      await channel.dispose();
+      audit.close();
+    }
+  });
+
+  it("retains released helpers when the exact channel instance moves to a new registry", async () => {
+    const audit = createChannelAdmissionAudit({ enabled: true });
+    const channel = createLegacyReceiver({ audit });
+    const next = createEmptyPluginRegistry();
+    next.plugins.push(channel.record);
+    next.channels.push(...channel.registryBuilder.registry.channels);
+    try {
+      markPluginRegistryActive(next);
+      markPluginRegistryRetired(channel.registryBuilder.registry);
+      for (const method of ["direct", "stable", "factory"] as const) {
+        const context = await channel.receive(channel.resolvers[method]);
+        expect(inspect(context)).toMatchObject({ ingressState: "present" });
+        expect(readChannelContextGatewayContextResolver(context)?.()?.channelAdmissionAudit).toBe(
+          audit,
+        );
+      }
+      next.channels.splice(0);
+      const removed = await channel.receive(channel.resolvers.factory);
+      expect(inspect(removed)).toMatchObject({ ingressState: "unknown" });
+      expect(readChannelContextGatewayContextResolver(removed)).toBeUndefined();
+    } finally {
+      markPluginRegistryRetired(next);
+      await channel.dispose();
+      audit.close();
+    }
+  });
+
+  it("keeps unqualified released helpers policy-only even beside a trusted channel", async () => {
+    const audit = createChannelAdmissionAudit({ enabled: true });
+    const trusted = createLegacyReceiver({ audit });
+    const untrusted = createLegacyReceiver({ audit, trusted: false });
+    try {
+      for (const method of ["direct", "stable", "factory"] as const) {
+        const outside = await trusted.resolvers[method]();
+        expect(outside.ingress.admission).toBe("dispatch");
+        const context = trusted.buildContext(contextParams({ ingress: outside }));
+        expect(inspect(context)).toMatchObject({ ingressState: "unknown" });
+        expect(readChannelContextGatewayContextResolver(context)).toBeUndefined();
+        const external = await untrusted.receive(untrusted.resolvers[method]);
+        expect(readChannelContextGatewayContextResolver(external)).toBeUndefined();
+        recordParticipant.mockClear();
+        recordAcceptedSessionParticipantInput(external, {
+          agentId: "main",
+          sessionKey: "agent:main:channel-owner:dm:dm-1",
+          storePath: "/unused",
+        });
+        expect(recordParticipant).not.toHaveBeenCalled();
+      }
+    } finally {
+      await trusted.dispose();
+      await untrusted.dispose();
+      audit.close();
+    }
+  });
+
   it.each(["bundled", "global", "config"] as const)(
     "retains the host Gateway resolver for a trusted %s channel ingress",
     async (origin) => {
