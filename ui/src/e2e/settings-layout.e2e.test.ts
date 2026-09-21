@@ -50,9 +50,19 @@ const settingsGuidanceLinks: ReadonlyArray<{
   route: string;
   container: string;
   section?: string;
+  accessibleName: string;
 }> = [
-  { route: "cloud-workers", container: ".page-subtitle" },
-  { route: "mcp", section: "Configured servers", container: ".settings-section__desc" },
+  {
+    route: "cloud-workers",
+    container: ".page-subtitle",
+    accessibleName: "Learn more opens in a new tab",
+  },
+  {
+    route: "mcp",
+    section: "Configured servers",
+    container: ".settings-section__desc",
+    accessibleName: "Learn more",
+  },
 ];
 
 const sectionAlignmentRoutes = [
@@ -896,7 +906,9 @@ suite.define(() => {
         }
 
         if ((learnMoreRoutes as readonly string[]).includes(route)) {
-          const link = page.getByRole("link", { name: "Learn more", exact: true }).first();
+          const link = page
+            .getByRole("link", { name: "Learn more opens in a new tab", exact: true })
+            .first();
           await link.waitFor();
           expect(
             await link.evaluate((element) => getComputedStyle(element).textDecorationLine),
@@ -918,7 +930,7 @@ suite.define(() => {
             })
           : page;
         const link = (guidanceLink.container ? root.locator(guidanceLink.container) : root)
-          .getByRole("link", { name: "Learn more", exact: true })
+          .getByRole("link", { name: guidanceLink.accessibleName, exact: true })
           .first();
         await link.waitFor();
         expect(await link.evaluate((element) => getComputedStyle(element).textDecorationLine)).toBe(

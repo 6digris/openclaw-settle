@@ -258,7 +258,10 @@ suite.define(() => {
             body: "<!doctype html><title>Pairing help</title>",
           }),
         );
-        const help = page.getByRole("link", { name: "Pairing help (opens in a new tab)" });
+        const help = page.getByRole("link", {
+          name: "Pairing help opens in a new tab",
+          exact: true,
+        });
         expect(await help.getAttribute("href")).toBe(helpUrl);
         expect(await help.getAttribute("target")).toBe("_blank");
         expect((await help.getAttribute("rel"))?.split(" ")).toEqual(

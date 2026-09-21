@@ -95,7 +95,10 @@ suite.define(() => {
       expect((await page.goto(`${suite.server.baseUrl}settings/cloud-workers`))?.status()).toBe(
         200,
       );
-      const docsLink = page.getByRole("link", { name: "Learn more", exact: true });
+      const docsLink = page.getByRole("link", {
+        name: "Learn more opens in a new tab",
+        exact: true,
+      });
       await docsLink.waitFor();
       expect(await docsLink.getAttribute("href")).toBe(
         "https://docs.openclaw.ai/gateway/cloud-workers",
