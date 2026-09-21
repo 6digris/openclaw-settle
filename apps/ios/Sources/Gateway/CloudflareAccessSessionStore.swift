@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import OpenClawKit
 
-/// One ingress session and browser attempt per authority; Gateway pairing remains separately owned.
+/// One ingress session per authority; matching Access applications share a browser attempt.
 @MainActor
 @Observable
 final class CloudflareAccessSessionStore {
@@ -38,6 +38,7 @@ final class CloudflareAccessSessionStore {
 
     private struct Attempt {
         let id: UUID
+        let application: CloudflareAccessApplication
         let task: Task<Snapshot, Error>
     }
 
@@ -103,7 +104,12 @@ final class CloudflareAccessSessionStore {
 
     func signIn(application: CloudflareAccessApplication, openBrowser: @escaping Browser) -> Task<Snapshot, Error> {
         let origin = application.origin
-        if let attempt = self.attempts[origin] { return attempt.task }
+        if let attempt = self.attempts[origin] {
+            // Paths on one authority can belong to different Access applications.
+            // Only matching signed metadata can share a browser transfer.
+            if attempt.application == application { return attempt.task }
+            self.cancelSignIn(for: origin)
+        }
         let id = UUID()
         let task = Task { @MainActor in
             do {
@@ -141,7 +147,7 @@ final class CloudflareAccessSessionStore {
                 throw error
             }
         }
-        self.attempts[origin] = Attempt(id: id, task: task)
+        self.attempts[origin] = Attempt(id: id, application: application, task: task)
         self.states[origin] = .signingIn
         self.revision &+= 1
         return task

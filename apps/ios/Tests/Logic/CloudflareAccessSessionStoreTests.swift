@@ -73,6 +73,67 @@ struct CloudflareAccessSessionStoreTests {
         #expect(store.snapshot(for: application.origin)?.session.subject == session.subject)
     }
 
+    @Test(arguments: [false, true])
+    func `different applications on one origin replace the browser attempt`(differentIssuer: Bool) async throws {
+        let memory = MemoryStore()
+        let firstGate = LoginGate()
+        let secondGate = LoginGate()
+        let tokens = try CloudflareAccessTestTokens()
+        let firstApplication = try CloudflareAccessTestTokens.application()
+        let firstSession = try tokens.session()
+        let secondApplication = try CloudflareAccessApplication(
+            origin: firstApplication.origin,
+            issuer: differentIssuer
+                ? #require(URL(string: "https://other.cloudflareaccess.com")) : firstApplication.issuer,
+            audience: differentIssuer ? firstApplication.audience : "other-audience")
+        let expires = Date().addingTimeInterval(3600)
+        let token = try tokens.token([
+            "iss": secondApplication.issuer.absoluteString, "aud": [secondApplication.audience],
+            "type": "app", "sub": "replacement-subject", "exp": expires.timeIntervalSince1970,
+        ])
+        let secondSession = CloudflareAccessSession(
+            application: secondApplication, subject: "replacement-subject", token: token, expiresAt: expires)
+        let store = CloudflareAccessSessionStore(
+            persistence: memory.persistence,
+            authenticate: { application, _ in
+                if application == firstApplication { return try await firstGate.login() }
+                #expect(application == secondApplication)
+                return try await secondGate.login()
+            },
+            retireTransports: { _ in memory.events.append("retire") })
+        let first = store.signIn(application: firstApplication, openBrowser: { _ in })
+        defer {
+            first.cancel()
+            firstGate.complete(firstSession)
+            secondGate.complete(secondSession)
+        }
+        await firstGate.waitUntilStarted()
+        let second = store.signIn(application: secondApplication, openBrowser: { _ in })
+        defer { second.cancel() }
+        try #require(first.isCancelled)
+        await secondGate.waitUntilStarted()
+        #expect(firstGate.count == 1)
+        #expect(secondGate.count == 1)
+        secondGate.complete(secondSession)
+        let snapshot = try await second.value
+        #expect(snapshot.session.issuer == secondApplication.issuer)
+        #expect(snapshot.session.audience == secondApplication.audience)
+        #expect(snapshot.session.subject == secondSession.subject)
+
+        // The canceled authentication deliberately returns after its replacement
+        // commits. Its late completion must not persist or retire that grant.
+        firstGate.complete(firstSession)
+        await #expect(throws: CancellationError.self) { try await first.value }
+        #expect(store.snapshot(for: secondApplication.origin)?.revision == snapshot.revision)
+        #expect(store.state(for: secondApplication.origin) == .authenticated)
+        #expect(memory.events == ["retire", "delete", "save"])
+        let encoded = try #require(memory.values[secondApplication.origin]?.data(using: .utf8))
+        let persisted = try JSONDecoder().decode(CloudflareAccessSession.self, from: encoded)
+        #expect(persisted.issuer == secondApplication.issuer)
+        #expect(persisted.audience == secondApplication.audience)
+        #expect(persisted.subject == secondSession.subject)
+    }
+
     @Test func `forget rejects late login completion and removes only ingress state`() async throws {
         let memory = MemoryStore()
         let gate = LoginGate()
