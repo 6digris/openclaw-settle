@@ -1,10 +1,10 @@
 import type { Page } from "playwright";
+import type { MockGatewayControls, MockGatewayWindow } from "./control-ui-e2e-contract.ts";
 import {
   captureControlUiE2eFailureDiagnostics,
   type ControlUiE2eDiagnosticEvent,
 } from "./control-ui-e2e-diagnostics.ts";
 import { controlUiE2eWaitTimeoutMs } from "./control-ui-e2e-readiness.ts";
-import type { MockGatewayControls, MockGatewayWindow } from "./control-ui-e2e.ts";
 
 export function createMockGatewayControls(
   page: Page,
