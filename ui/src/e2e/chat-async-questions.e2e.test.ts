@@ -349,6 +349,25 @@ suite.define(() => {
         await summary.waitFor();
         expect(await summary.textContent()).toContain("Include one practical example.");
         await expectRequestCountStable(gateway, "chat.send", 1);
+        if (!active) {
+          // Stop overriding the old run's history: startup must recover the answer
+          // committed by the default chat.send boundary, not an injected answer row.
+          await gateway.setMethodResponse("chat.history", { cases: [] });
+          await page.reload();
+          await expectBrowser(summary).toContainText("Include one practical example.");
+          await expectBrowser(summary).toContainText("/stop is an example for the whole team");
+          await expectBrowser(card).toHaveCount(0);
+          await expectBrowser(
+            page.locator(".chat-group.user .chat-bubble").filter({
+              hasText: "/stop is an example for the whole team",
+            }),
+          ).toHaveCount(1);
+          await expectRequestCountStable(gateway, "chat.send", 0);
+          await page.screenshot({
+            path: path.join(artifactDir, "submitted-after-reload.png"),
+            animations: "disabled",
+          });
+        }
       } finally {
         await suite.closeBrowserContext(context);
       }

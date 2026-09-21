@@ -441,7 +441,7 @@ it("does not retain derived completion after authoritative history replaces the 
 });
 
 it("restores every answer in a multi-question submission with UTF-8-bounded quoted titles", () => {
-  const question = {
+  const promptMessage = {
     role: "assistant",
     openclawAsyncDelivery: {
       itemId: "multiple-questions",
@@ -460,21 +460,21 @@ it("restores every answer in a multi-question submission with UTF-8-bounded quot
       },
     ],
   };
-  const presentation = historyPresentation([question, answer]);
+  const presentation = historyPresentation([promptMessage, answer]);
   expect(presentation.pending).toHaveLength(0);
-  render(renderAsyncQuestionSummary(question.openclawAsyncDelivery, presentation), container);
+  render(renderAsyncQuestionSummary(promptMessage.openclawAsyncDelivery, presentation), container);
   expect(container.textContent).toContain("Two");
   expect(container.textContent).toContain("First line\nSecond line");
   expect(
     historyPresentation([
-      question,
+      promptMessage,
       { ...historicalAnswer, content: `> ${"界".repeat(170)}\n\nTwo` },
     ]).pending,
   ).toHaveLength(1);
 });
 
 it("leaves an answer with ambiguous embedded question headings pending", () => {
-  const question = {
+  const promptMessage = {
     role: "assistant",
     openclawAsyncDelivery: {
       itemId: "ambiguous-multiline",
@@ -486,7 +486,7 @@ it("leaves an answer with ambiguous embedded question headings pending", () => {
     content:
       "> First?\n\nQuote this:\n\n> Second?\n\nStill the first answer\n\n> Second?\n\nThe second answer",
   };
-  expect(historyPresentation([question, answer]).pending).toHaveLength(1);
+  expect(historyPresentation([promptMessage, answer]).pending).toHaveLength(1);
 });
 
 it.each(["old", "new"])(
@@ -518,16 +518,17 @@ it.each(["old", "new"])(
       new Set(["Everyone"]),
     );
     // An archived older question remains a valid reply target; never prefer the newest title.
-    if (target === "old")
+    if (target === "old") {
       expect(presentation.pending.map((entry) => entry.itemId)).toEqual(["new"]);
+    }
   },
 );
 
 it("does not use quoted text to override a canonical reply to an unrelated message", () => {
-  const question = { ...historicalQuestion(), __openclaw: { id: "question-source", seq: 1 } };
+  const promptMessage = { ...historicalQuestion(), __openclaw: { id: "question-source", seq: 1 } };
   const answer = {
     ...historicalAnswer,
     __openclaw: { id: "answer", seq: 2, replyToId: "unrelated-source" },
   };
-  expect(historyPresentation([question, answer]).pending).toHaveLength(1);
+  expect(historyPresentation([promptMessage, answer]).pending).toHaveLength(1);
 });

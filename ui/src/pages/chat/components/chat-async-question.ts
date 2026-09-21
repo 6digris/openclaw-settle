@@ -138,11 +138,14 @@ function questionHistory(messages: readonly unknown[]) {
         const replyToId = typeof rawReplyToId === "string" ? rawReplyToId.trim() : "";
         const matches = [...questions.values()]
           .filter(
-            ({ question }) =>
-              !resolved.has(question.itemId) &&
-              (!replyToId || question.sourceMessageId === replyToId),
+            ({ question: candidate }) =>
+              !resolved.has(candidate.itemId) &&
+              (!replyToId || candidate.sourceMessageId === replyToId),
           )
-          .map(({ question }) => ({ question, answers: parseGeneratedAsyncAnswer(question, text) }))
+          .map(({ question: candidate }) => ({
+            question: candidate,
+            answers: parseGeneratedAsyncAnswer(candidate, text),
+          }))
           .filter((match) => match.answers !== null);
         const match = matches.length === 1 ? matches[0] : undefined;
         if (match?.answers) {
