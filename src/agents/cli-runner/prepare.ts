@@ -111,10 +111,7 @@ import {
   applyEmbeddedAttemptToolsAllow,
   mergeForcedEmbeddedAttemptToolsAllow,
 } from "../embedded-agent-runner/run/attempt-tool-construction-plan.js";
-import {
-  buildCurrentInboundPrompt,
-  buildRuntimeContextCustomMessage,
-} from "../embedded-agent-runner/run/runtime-context-prompt.js";
+import { buildCurrentInboundPrompt } from "../embedded-agent-runner/run/runtime-context-prompt.js";
 import {
   mapSandboxSkillEntriesForPrompt,
   remapSkillReferencePaths,
@@ -134,7 +131,6 @@ import {
   type PreparedRootedExecutionCapability,
 } from "../rooted-run-params.js";
 import { collectRuntimeChannelCapabilities } from "../runtime-capabilities.js";
-import { buildMediaTaskRuntimeContext } from "../runtime-facts-prompt.js";
 import { ensureSandboxWorkspaceForSession } from "../sandbox.js";
 import { resolveSandboxRuntimeStatus } from "../sandbox/runtime-status.js";
 import { buildSystemPromptReport } from "../system-prompt-report.js";
@@ -170,7 +166,11 @@ import {
   normalizeOptionalMcpContextValue,
 } from "./mcp-grant-context.js";
 import { CLAUDE_CLI_CONTEXT_MODEL_ALIASES, detectNodeClaudePlacement } from "./prepare-claude.js";
-import { composeCliPromptContext, prepareCliSystemPrompt } from "./prompt-context.js";
+import {
+  buildCliTurnAppendContext,
+  composeCliPromptContext,
+  prepareCliSystemPrompt,
+} from "./prompt-context.js";
 import {
   buildCliSessionHistoryPrompt,
   hasCliSessionTranscript,
@@ -178,11 +178,12 @@ import {
   loadCliSessionPromptContext,
   resolveAutoCliSessionReseedHistoryChars,
 } from "./session-history.js";
-import type {
-  CliReusableSession,
-  CliSecretInput,
-  PreparedCliRunContext,
-  RunCliAgentParams,
+import {
+  captureCliRunStartTime,
+  type CliReusableSession,
+  type CliSecretInput,
+  type PreparedCliRunContext,
+  type RunCliAgentParams,
 } from "./types.js";
 
 type PrivateCliBackendPreparedExecution = CliBackendPreparedExecution & {
@@ -552,7 +553,9 @@ async function prepareCliRunContextWithinReadFence(
           entries: { [sessionOwner]: { default: true } },
         },
       } satisfies OpenClawConfig);
-  const started = Date.now();
+  const { started, startedMonotonicMs } = captureCliRunStartTime();
+  // Recovery retry budgets measure elapsed time; keep a monotonic anchor so a
+  // wall-clock correction cannot shorten or extend an operator-configured timeout.
   const executionMode = params.executionMode ?? "agent";
   const isSideQuestion = executionMode === "side-question";
   const isControlOperation = params.controlOperation !== undefined;
@@ -2106,18 +2109,16 @@ async function prepareCliRunContextWithinReadFence(
         ]
           .filter((value): value is string => Boolean(value?.trim()))
           .join("\n\n");
-        const mediaTaskContext = await buildMediaTaskRuntimeContext({
+        const appendContext = await buildCliTurnAppendContext({
           capabilityToolNames: new Set(promptTools.map((tool) => tool.name)),
           sessionKey: params.sessionKey,
           agentId: sessionAgentId,
+          backend: preparedBackendFinal.backend,
+          isNewSession:
+            !reusableCliSessionId?.trim() || reusableCliSession.mode === "reuse-with-drift",
+          systemPrompt,
+          context: [hookResult?.appendContext, authorizedPromptBuildResult?.appendContext],
         });
-        const appendContext = [
-          hookResult?.appendContext,
-          authorizedPromptBuildResult?.appendContext,
-          buildRuntimeContextCustomMessage(mediaTaskContext)?.content,
-        ]
-          .filter((value): value is string => Boolean(value?.trim()))
-          .join("\n\n");
         const logicalPrompt = composeCliPromptContext(preparedPrompt, {
           prependContext,
           appendContext,
@@ -2230,15 +2231,14 @@ async function prepareCliRunContextWithinReadFence(
           .join("\n\n").length,
       },
     });
-    const buildPreparedContext = (
-      preparedParams: PreparedCliRunContext["params"],
-    ): Omit<PreparedCliRunContext, "hadSessionFile"> => ({
+    const buildPreparedContext = (preparedParams: PreparedCliRunContext["params"]) => ({
       params: preparedParams,
       bindQuestionAnswerAuthority,
       effectiveAuthProfileId,
       ...(authStore ? { authProfileStore: authStore } : {}),
       agentDir,
       started,
+      startedMonotonicMs,
       workspaceDir,
       cwd,
       backendResolved,
@@ -2256,14 +2256,14 @@ async function prepareCliRunContextWithinReadFence(
       ...(cliHistoryWriter ? { cliHistoryWriter } : {}),
       authEpoch,
       authBindingFingerprint,
-      ...(skipLocalCredentialEpoch ? { authBindingSkipsLocalCredential: true } : {}),
+      ...(skipLocalCredentialEpoch ? { authBindingSkipsLocalCredential: true as const } : {}),
       authEpochVersion: CLI_AUTH_EPOCH_VERSION,
       extraSystemPromptHash,
       messageToolPolicyHash,
       promptToolNamesHash,
       ...(resultContentSourceByToolName.size > 0 ? { resultContentSourceByToolName } : {}),
       cwdHash,
-      ...(mcpDeliveryCaptureEnabled ? { mcpDeliveryCapture: true } : {}),
+      ...(mcpDeliveryCaptureEnabled ? { mcpDeliveryCapture: true as const } : {}),
     });
     const admitFinalParams = () =>
       admitPreparedParams({

@@ -1,5 +1,6 @@
 import { render } from "lit";
 import { expect, vi } from "vitest";
+import type { QuestionPrompt } from "../../app/question-prompt.ts";
 import { i18n } from "../../i18n/index.ts";
 import { renderChatComposer, resetChatComposerState } from "./components/chat-composer.ts";
 
@@ -70,4 +71,30 @@ export async function resetComposerFixture(afterStateReset?: () => void): Promis
   vi.unstubAllGlobals();
   await i18n.setLocale("en");
   vi.restoreAllMocks();
+}
+
+export function questionPrompt(id: string, question: string): QuestionPrompt {
+  return {
+    id,
+    questions: [
+      {
+        questionId: "choice",
+        header: "Choice",
+        question,
+        options: [{ label: "Yes" }, { label: "No" }],
+        isOther: false,
+      },
+    ],
+    sessionKey: "queue-test",
+    createdAtMs: 1_000,
+    expiresAtMs: Date.now() + 60_000,
+    status: "pending",
+    answeredElsewhere: false,
+    localResolutionConfirmed: false,
+    locallyExpired: false,
+    submitting: false,
+    error: null,
+    drafts: new Map(),
+    revision: 1,
+  };
 }

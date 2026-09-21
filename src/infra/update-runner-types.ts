@@ -9,17 +9,20 @@ import type {
   UpdateDoctorConfigChange,
   UpdateDoctorConfigWriteRefusal,
 } from "./update-doctor-config.js";
+import type { UpdateDoctorLintFinding } from "./update-doctor-lint-schema.js";
 import type { PackageUpdateStepAdvisory } from "./update-doctor-result.js";
 import type { UpdateFailureFact } from "./update-failure-facts.js";
 import type { GlobalInstallManager } from "./update-global.js";
 import type { UpdateRecovery } from "./update-recovery.js";
+import type { UpdateRollbackOutcome } from "./update-run-schema.js";
 import type { UpdateSnapshotCapacity } from "./update-snapshot-capacity.js";
 
-export type UpdateStepAdvisory =
+type UpdateStepAdvisory =
   | PackageUpdateStepAdvisory
   | { kind: "candidate-runtime-unavailable" | "recoverable-maintenance"; message: string };
 
 export type UpdateStepResult = {
+  /** Stable public identifier; released recovery keys retain their persisted spelling. */
   name: string;
   command: string;
   cwd: string;
@@ -29,6 +32,7 @@ export type UpdateStepResult = {
   stderrTail?: string | null;
   signal?: NodeJS.Signals | null;
   killed?: boolean;
+  outputLimitExceeded?: boolean;
   termination?: "exit" | "timeout" | "no-output-timeout" | "signal";
   advisory?: UpdateStepAdvisory;
   /** Complete owner-classified warnings when one step reports several outcomes. */
@@ -36,6 +40,7 @@ export type UpdateStepResult = {
   /** Suggested operator actions, distinct from executed update steps. */
   recoverySteps?: readonly UpdateRecoveryStep[];
   failureFacts?: UpdateFailureFact[];
+  doctorLintFindings?: UpdateDoctorLintFinding[];
   configChanges?: UpdateDoctorConfigChange[];
   configWriteRefusal?: UpdateDoctorConfigWriteRefusal;
   snapshotCapacity?: UpdateSnapshotCapacity;
@@ -60,9 +65,11 @@ export type UpdateRunResult = {
   steps: UpdateStepResult[];
   durationMs: number;
   recovery?: UpdateRecovery;
+  rollbackOutcome?: UpdateRollbackOutcome;
   postUpdate?: {
     plugins?: {
       failureFacts?: UpdateFailureFact[];
+      doctorLint?: UpdateStepResult;
       status: "ok" | "warning" | "skipped" | "error";
       reason?: string;
       changed: boolean;
@@ -120,6 +127,7 @@ export type UpdateStepInfo = {
 type UpdateStepCompletion = UpdateStepInfo & Omit<UpdateStepResult, "cwd">;
 
 export type UpdateStepProgress = {
+  onRollbackOutcome?: (outcome: NonNullable<UpdateRunResult["rollbackOutcome"]>) => void;
   onHeartbeat?: () => void;
   onStepStart?: (step: UpdateStepInfo) => void;
   onStepComplete?: (step: UpdateStepCompletion) => void;
@@ -162,6 +170,7 @@ export type UpdateRunnerOptions = {
     allowGatewayServiceRepair?: boolean;
     allowGatewayActivation?: boolean;
   } | void>;
+  /** Operator-selected work deadline; omission leaves work unbounded, not probes or cleanup. */
   timeoutMs?: number;
   runCommand?: CommandRunner;
   progress?: UpdateStepProgress;
@@ -178,7 +187,7 @@ export type RunStepOptions = {
   name: string;
   argv: string[];
   cwd: string;
-  timeoutMs: number;
+  timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   progress?: UpdateStepProgress;
   stepIndex: number;

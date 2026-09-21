@@ -8,6 +8,7 @@ import type { MentionsCapability } from "../app/mentions.ts";
 import { isMobileNavLayout } from "../app/mobile-nav-layout.ts";
 import type { UpdateProgress } from "../app/update-confirmation.ts";
 import { t } from "../i18n/index.ts";
+import { registerSidebarAttentionEnglish } from "../i18n/locales/en-sidebar-attention.ts";
 import { shouldHandleNavigationClick } from "../lib/navigation-click.ts";
 import "../styles/sidebar-issues.css";
 import { renderHubTabs } from "./hub-tabs.ts";
@@ -28,6 +29,9 @@ import {
 } from "./sidebar-issue-item.ts";
 import { ISSUE_TABS, issueTabLabel, type IssueTab } from "./sidebar-issues-tabs.ts";
 import "./menu-surface.ts";
+
+registerSidebarAttentionEnglish();
+
 // Keep request orchestration behind the same lazy boundary as its Inbox UI;
 // ApplicationContext retains the activated controller across presenters.
 export { ScopeUpgradeController } from "../app/device-scope-upgrade-controller.runtime.ts";
@@ -160,6 +164,7 @@ export function renderSidebarAttentionPanel(params: SidebarAttentionPanelParams)
               style=${hasVisibleDismissals ? nothing : "visibility:hidden"}
               ?disabled=${!canDismissShown}
               aria-hidden=${hasVisibleDismissals ? nothing : "true"}
+              aria-describedby="sidebar-issues-dismiss-help"
               @click=${() => {
                 for (const dismissal of visibleDismissals) {
                   params.onDismiss(dismissal);
@@ -212,6 +217,9 @@ export function renderSidebarAttentionPanel(params: SidebarAttentionPanelParams)
           variant: "sub",
           onSelect: params.onSelectTab,
         })}
+        <p id="sidebar-issues-dismiss-help" class="sidebar-issues-panel__dismiss-help">
+          ${t("attention.dismissHelp")}
+        </p>
         <div class="sidebar-issues-panel__list-wrap">
           <div
             id="sidebar-issues-tabpanel"

@@ -27,6 +27,7 @@ import {
   pollLocatorText,
   replaceGatewayClient,
   waitForCommittedChatRoute,
+  waitForGatewayRecoveryScope,
 } from "./new-session-page.test-support.ts";
 
 const suite = createNewSessionPageE2eSuite();
@@ -74,6 +75,8 @@ suite.define(() => {
       await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
       const composer = page.locator(".agent-chat__composer-combobox openclaw-composer-editor");
       await expect.poll(() => composerDisabled(composer)).toBe(false);
+      // Pending history permits editing before the authenticated recovery scope is ready.
+      await waitForGatewayRecoveryScope(page);
       const owner = await page.evaluate(() => {
         const app = document.querySelector("openclaw-app") as HTMLElement & {
           runtime: { context: ApplicationContext };

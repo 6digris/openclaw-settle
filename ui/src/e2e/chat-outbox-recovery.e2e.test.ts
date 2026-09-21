@@ -321,7 +321,7 @@ suite.define(() => {
         const composer = page.locator(".agent-chat__composer-combobox openclaw-composer-editor");
         await composer.waitFor();
         await gateway.setOnline(false);
-        await page.locator('.agent-chat__composer-underlaps[data-tone="warn"]').waitFor();
+        await page.locator('.agent-chat__composer-status[data-tone="info"]').waitFor();
         await fillComposer(composer, `retain destination ${sessionKey}`);
         await page.getByRole("button", { name: "Send message" }).click();
         await page.locator(".chat-queue").getByText("Waiting for reconnect").waitFor();

@@ -132,6 +132,14 @@ export const sharedVitestConfig = {
   root: repoRoot,
   envDir: false as const,
   plugins: [
+    {
+      name: "openclaw:node-worker-policy",
+      config: () => ({
+        test: {
+          globalSetup: [resolveRepoRootPath("test/vitest/vitest.node-policy.global-setup.ts")],
+        },
+      }),
+    },
     createStateSchemaInlinePlugin(repoRoot),
     compiledSubprocessesPlugin(),
     createRedactingReporterPlugin(),
@@ -452,6 +460,7 @@ export const sharedVitestConfig = {
       sourcePackageAlias("media-core"),
       sourcePackageAlias("retry"),
       sourcePackageAlias("session-url-contract", "parse"),
+      sourcePackageAlias("session-url-contract", "session-key-normalization"),
       sourcePackageAlias("session-url-contract", "share-build"),
       sourcePackageAlias("session-url-contract", "public-share"),
       sourcePackageAlias("session-url-contract"),

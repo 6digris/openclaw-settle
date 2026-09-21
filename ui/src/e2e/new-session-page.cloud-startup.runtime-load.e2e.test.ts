@@ -19,6 +19,7 @@ import {
   installMockGateway,
   navigateInApp,
   waitForCommittedChatRoute,
+  waitForGatewayRecoveryScope,
 } from "./new-session-page.test-support.ts";
 
 const buildId = "startup-recovery-proof";
@@ -98,6 +99,7 @@ suite.define(() => {
         const pane = page.locator(".chat-pane-cache__pane--active");
         const composer = page.locator(".agent-chat__composer-combobox openclaw-composer-editor");
         await expect.poll(() => composerDisabled(composer)).toBe(false);
+        await waitForGatewayRecoveryScope(page);
         const owner = await page.evaluate(() => {
           const app = document.querySelector("openclaw-app") as HTMLElement & {
             runtime: { context: ApplicationContext };

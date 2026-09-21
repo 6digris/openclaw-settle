@@ -86,3 +86,13 @@ export function registerItemOnlyOutcomeTest(
     );
   });
 }
+
+export function failedTool(timestamp: number) {
+  return {
+    role: "toolResult",
+    toolName: "shell",
+    content: JSON.stringify({ status: "failed", exitCode: 1, error: "Command could not finish" }),
+    isError: true,
+    timestamp,
+  };
+}

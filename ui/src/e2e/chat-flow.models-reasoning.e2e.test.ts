@@ -1,11 +1,8 @@
-import { writeFile } from "node:fs/promises";
-import type { Locator } from "playwright";
 import { expect, it } from "vitest";
 import type { ChatPaneElement } from "../pages/chat/route-draft-focus-handoff.ts";
 import { fillComposer } from "../test-helpers/composer-editor.ts";
-import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
-import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import type { ControlUiMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import { revealChatModelOption, selectChatModelOption } from "../test-helpers/select-picker-e2e.ts";
 import {
   chatSessionListResponse,
   createChatFlowE2eSuite,
@@ -18,29 +15,9 @@ import {
 import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
-const rosterMatch = { includeGlobal: true };
+import { createReasoningProofPage } from "./chat-flow.models-reasoning.test-support.ts";
 
-async function createReasoningProofPage(scope: string) {
-  const parent = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim();
-  const artifactDir = parent ? createControlUiE2eArtifactDir(scope, parent) : undefined;
-  const viewport = { height: 900, width: 1280 };
-  const context = await suite.newBrowserContext({
-    locale: "en-US",
-    serviceWorkers: "block",
-    viewport,
-    ...(artifactDir ? { recordVideo: { dir: artifactDir, size: viewport } } : {}),
-  });
-  const page = await context.newPage();
-  const capture = async (fileName: string, surface: Locator, content: Locator) => {
-    if (artifactDir) {
-      await writeFile(
-        `${artifactDir}/${fileName}.png`,
-        await takeControlUiViewportScreenshot(page, surface, [content]),
-      );
-    }
-  };
-  return { context, page, capture };
-}
+const rosterMatch = { includeGlobal: true };
 
 suite.define(() => {
   it("patches a selectable Claude CLI context window", async () => {
@@ -551,7 +528,7 @@ suite.define(() => {
       const selectModel = async (value: string) => {
         await activePane.locator('[data-chat-model-select="true"]').click();
         const option = activePane.locator(`[data-chat-model-option="${value}"]`);
-        await option.waitFor({ state: "visible", timeout: 10_000 });
+        await revealChatModelOption(option, { timeout: 10_000 });
         await option.click();
       };
 
@@ -681,7 +658,7 @@ suite.define(() => {
         .toBe("true");
 
       await modelSelect.click();
-      await main.locator('[data-chat-model-option="openai/gpt-5.5"]').click();
+      await selectChatModelOption(main.locator('[data-chat-model-option="openai/gpt-5.5"]'));
       const firstPatch = await gateway.waitForRequest("sessions.patch");
       expect(requireRecord(firstPatch.params)).toEqual({
         key: "agent:ops:session-a",
@@ -695,7 +672,7 @@ suite.define(() => {
       const defaultModel = main.locator(
         '[data-chat-model-option="anthropic/claude-opus-4-5"][data-chat-model-default="true"]',
       );
-      await defaultModel.waitFor({ state: "visible", timeout: 10_000 });
+      await revealChatModelOption(defaultModel, { timeout: 10_000 });
       expect(await defaultModel.textContent()).toContain("Default");
       expect(await main.locator('[data-chat-model-option=""]').count()).toBe(0);
       await defaultModel.click();
@@ -713,7 +690,10 @@ suite.define(() => {
   });
 
   it("shows one canonical default model with matching inherited reasoning", async () => {
-    const { context, page, capture } = await createReasoningProofPage("chat-flow.models-reasoning");
+    const { context, page, capture } = await createReasoningProofPage(
+      suite,
+      "chat-flow.models-reasoning",
+    );
     const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].map(
       (id) => ({ id, label: id }),
     );
@@ -804,6 +784,7 @@ suite.define(() => {
         .poll(() => thinkingSlider.getAttribute("data-chat-thinking-values"))
         .toBe(expectedThinkingValues);
       const defaultThinkingValue = await effortSelect.getAttribute("data-chat-thinking-value");
+      await revealChatModelOption(modelOption);
       await capture("default-sol", modelPopup, modelOption);
 
       await page.keyboard.press("Escape");
@@ -826,6 +807,7 @@ suite.define(() => {
       expect(await effortSelect.getAttribute("data-chat-thinking-value")).toBe(
         defaultThinkingValue,
       );
+      await revealChatModelOption(modelOption);
       await capture("explicit-sol", modelPopup, modelOption);
 
       expect(await gateway.getRequests("sessions.patch")).toHaveLength(0);
@@ -836,6 +818,7 @@ suite.define(() => {
 
   it("does not reuse catalog reasoning for a different session runtime", async () => {
     const { context, page, capture } = await createReasoningProofPage(
+      suite,
       "chat-flow.runtime-reasoning",
     );
     const sessionKey = "agent:main:codex-luna";
@@ -932,6 +915,9 @@ suite.define(() => {
 
       const main = page.getByRole("main");
       await main.locator(setting.trigger).click();
+      if (setting.label === "model override") {
+        await revealChatModelOption(main.locator(setting.option));
+      }
       await main.locator(setting.option).click();
       const patchRequest = await gateway.waitForRequest("sessions.patch");
       expect(requireRecord(patchRequest.params)).toMatchObject({

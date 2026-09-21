@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { fillComposer } from "../test-helpers/composer-editor.ts";
+import { selectChatModelOption } from "../test-helpers/select-picker-e2e.ts";
 import { tooltipTitleText } from "./control-ui-e2e-suite.test-support.ts";
 import {
   WORKSPACE,
@@ -181,7 +182,7 @@ suite.define(() => {
       await expect.poll(() => start.isEnabled()).toBe(true);
 
       await model.click();
-      await page.locator('[data-chat-model-option="openai/gpt-5.6-luna"]').click();
+      await selectChatModelOption(page.locator('[data-chat-model-option="openai/gpt-5.6-luna"]'));
       await expect.poll(() => model.textContent()).toContain("GPT-5.6 Luna");
       await expect.poll(() => where.getAttribute("data-cloud-profile")).toBe("aws");
       await expect.poll(() => where.getAttribute("data-machine-class")).toBe("fast");
@@ -196,12 +197,14 @@ suite.define(() => {
       await expect
         .poll(() => tooltipTitleText(profile))
         .toBe(
-          "The codex runtime cannot use this cloud worker. Choose a compatible cloud worker or run locally.",
+          "Cloud worker provider: crabbox, The codex runtime cannot use this cloud worker. Choose a compatible cloud worker or run locally.",
         );
       await page.keyboard.press("Escape");
 
       await model.click();
-      await page.locator('[data-chat-model-option="anthropic/claude-sonnet-4-6"]').click();
+      await selectChatModelOption(
+        page.locator('[data-chat-model-option="anthropic/claude-sonnet-4-6"]'),
+      );
       await expect.poll(() => where.getAttribute("data-cloud-profile")).toBe("aws");
       await expect.poll(() => where.getAttribute("data-machine-class")).toBe("fast");
       await expect.poll(() => start.isEnabled()).toBe(true);

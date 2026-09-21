@@ -355,8 +355,10 @@ suite.define(() => {
           expect(await composerValue(mainInput)).toBe("");
         } else if (intent === "command palette") {
           await page.keyboard.press("ControlOrMeta+k");
-          foregroundInput = page.getByRole("combobox", { name: "Search chats and commands…" });
-          await fillComposer(foregroundInput, "Keep typing here");
+          foregroundInput = page
+            .locator("openclaw-command-palette")
+            .getByRole("textbox", { name: "Search or start a task…" });
+          await foregroundInput.fill("Keep typing here");
         } else if (intent === "sidebar menu" || intent === "sidebar menu before mount") {
           await page
             .getByRole("button", { name: "Open session menu: Sidebar focus", exact: true })

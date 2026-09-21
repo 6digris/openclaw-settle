@@ -23,7 +23,7 @@ type Fixture = {
   finalPatch?: Record<string, unknown>;
   failure?: "empty" | "exit" | "non-json" | "null" | "quota" | "forbidden";
   failureCount?: number;
-  failureTarget?: "pull" | "reread" | "files" | "graphql" | "permission" | "browse" | "checks";
+  failureTarget?: "pull" | "reread" | "files" | "user" | "permission" | "browse" | "checks";
   notify?: boolean;
   ghRepo?: string;
   ghHost?: string;
@@ -32,6 +32,8 @@ type Fixture = {
   probeGit?: boolean;
   protectedGh?: boolean;
   cleanupFailure?: boolean;
+  authorSources?: unknown;
+  authorPages?: unknown[];
 };
 
 function readPrMetadata(fixture: Fixture = {}, command = "pr_meta_json 42") {
@@ -113,12 +115,19 @@ if (args[0] === "pr" && args[1] === "checks") {
   out([{name:"RATE_LIMIT",bucket:"pending",state:"PENDING"}]);
   process.exit(8);
 }
-const endpoint = args.find((arg) => arg.startsWith("repos/") || ["graphql", "rate_limit"].includes(arg));
-if (args[0] !== "api" || !endpoint) throw new Error("Only explicit REST/GraphQL endpoints are supported");
+const endpoint = args.find((arg) => arg.startsWith("repos/") || ["user", "rate_limit"].includes(arg));
+if (args[0] !== "api" || !endpoint) throw new Error("Only explicit REST endpoints are supported");
 const hostFlag = args.indexOf("--hostname");
 const apiHost = hostFlag >= 0 ? args[hostFlag + 1] : defaultHost;
 const repoURL = "https://" + apiHost + "/base-owner/base-repo";
 if (fixture.notify) fs.writeSync(3, endpoint + "\\n");
+if (endpoint.startsWith("repos/base-owner/base-repo/commits?")) {
+  const count = Number(fs.readFileSync(path.join(root, "count"), "utf8"));
+  fs.writeFileSync(path.join(root, "count"), String(count + 1));
+  if (!fixture.authorPages || count >= fixture.authorPages.length) throw new Error("Unexpected author request");
+  out(fixture.authorPages[count]);
+  process.exit(0);
+}
 if (endpoint === "rate_limit") {
   out({resources:{graphql:{remaining:0,limit:5000,reset:1800000000},core:{remaining:4900,limit:5000,reset:1800000300}}});
   process.exit(0);
@@ -127,7 +136,7 @@ const isPull = endpoint === "repos/base-owner/base-repo/pulls/42";
 let count = Number(fs.readFileSync(path.join(root,"count"),"utf8"));
 if (isPull) fs.writeFileSync(path.join(root,"count"), String(++count));
 const failureTarget = fixture.failureTarget || "pull";
-const fail = failureTarget === "pull" ? isPull : failureTarget === "reread" ? isPull && count > 1 : failureTarget === "graphql" ? endpoint === "graphql" : failureTarget === "permission" ? endpoint.includes("/collaborators/") : endpoint.includes("/files?");
+const fail = failureTarget === "pull" ? isPull : failureTarget === "reread" ? isPull && count > 1 : failureTarget === "user" ? endpoint === "user" : failureTarget === "permission" ? endpoint.includes("/collaborators/") : endpoint.includes("/files?");
 if (fixture.failure && fail && (fixture.failureCount === undefined || count <= fixture.failureCount)) {
   if (fixture.failure === "forbidden") {
     console.error("HTTP 403: Resource not accessible by integration; secret-response-must-not-escape");
@@ -159,11 +168,6 @@ if (endpoint === "repos/base-owner/base-repo") {
   const count = fixture.changedFiles === undefined ? 101 : fixture.changedFiles || 0;
   const files = fixture.files === undefined ? Array.from({length:count},(_,i)=>({filename:"src/file-"+i+".ts",additions:1,deletions:0,status:i===count-1?"removed":"modified"})) : fixture.files;
   out(Array.isArray(files) ? [files.slice(0,100), ...(files.length > 100 ? [files.slice(100)] : [])] : [files]);
-} else if (endpoint.includes("/check-runs?")) {
-  if (!args.includes("--paginate") || !args.includes("--slurp")) throw new Error("Checks must be paginated");
-  out([{check_runs:[{name:"ci",status:"completed",conclusion:"success",details_url:"https://example.test/check"}]},{check_runs:[{name:"lint",status:"in_progress",conclusion:null}]}]);
-} else if (endpoint.includes("/status?")) {
-  out([{statuses:[{context:"external",state:"pending",target_url:"https://example.test/status"}]}]);
 } else throw new Error("Unexpected endpoint " + endpoint);
 `,
   );
@@ -228,6 +232,128 @@ if (endpoint === "repos/base-owner/base-repo") {
 }
 
 describe("PR metadata through REST", () => {
+  describe("pinned source authors", () => {
+    const command =
+      'printf "%s\\n" "$FAKE_GH_FIXTURE" | jq .authorSources | pr_gh commit-authors base-owner/base-repo github.enterprise.invalid';
+    const sha = (index: number) => index.toString(16).padStart(40, "0");
+    const source = (index: number) => ({ oid: sha(index), changesTree: index % 2 === 0 });
+    const record = (index: number) => ({
+      sha: sha(index),
+      commit: { author: { name: `Author ${index}`, email: `author${index}@example.com` } },
+      author: { login: `author${index}`, type: "User" },
+    });
+    const requests = (calls: string[][]) =>
+      calls.map((args) => {
+        expect(args.slice(0, 3)).toEqual(["api", "--hostname", "github.enterprise.invalid"]);
+        const endpoint = args[3];
+        if (endpoint === undefined) {
+          throw new Error("Expected a commit-author API endpoint");
+        }
+        const query = new URL(endpoint, "https://github.enterprise.invalid/").searchParams;
+        return { sha: query.get("sha"), limit: Number(query.get("per_page")) };
+      });
+
+    it("does not read GitHub for an empty source selection", () => {
+      const result = readPrMetadata({ authorSources: [] }, command);
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([]);
+      expect(result.calls).toEqual([]);
+    });
+
+    it("resolves 101 pinned authors in two requests and retains original source order", () => {
+      const sources = Array.from({ length: 101 }, (_, index) => source(index + 1));
+      const records = Array.from({ length: 101 }, (_, index) => record(index + 1));
+      const result = readPrMetadata(
+        { authorSources: sources, authorPages: [records.slice(1).toReversed(), [records[0]]] },
+        command,
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(
+        records.map((commit, index) => ({
+          name: commit.commit.author.name,
+          email: commit.commit.author.email,
+          user: commit.author,
+          changesTree: source(index + 1).changesTree,
+        })),
+      );
+      expect(requests(result.calls)).toEqual([
+        { sha: sha(101), limit: 100 },
+        { sha: sha(1), limit: 1 },
+      ]);
+    });
+
+    it("ignores unrelated ancestry and uses singleton requests for every remaining author", () => {
+      const result = readPrMetadata(
+        {
+          authorSources: [source(1), source(2), source(3), source(4)],
+          authorPages: [
+            [record(4), record(99), record(98), record(97)],
+            [record(3)],
+            [record(2)],
+            [record(1)],
+          ],
+        },
+        command,
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout).map((author: { name: string }) => author.name)).toEqual([
+        "Author 1",
+        "Author 2",
+        "Author 3",
+        "Author 4",
+      ]);
+      expect(requests(result.calls)).toEqual([
+        { sha: sha(4), limit: 4 },
+        { sha: sha(3), limit: 1 },
+        { sha: sha(2), limit: 1 },
+        { sha: sha(1), limit: 1 },
+      ]);
+    });
+
+    it.each([
+      null,
+      {},
+      [source(1), source(1)],
+      [{ oid: "main", changesTree: true }],
+      [{ oid: sha(1) }],
+    ])("rejects invalid source selections before reading GitHub: %j", (authorSources) => {
+      const result = readPrMetadata({ authorSources }, command);
+      expect(result.status).toBe(65);
+      expect(result.stdout).toBe("");
+      expect(result.calls).toEqual([]);
+    });
+
+    it.each([
+      null,
+      {},
+      [],
+      [record(2)],
+      [record(1), record(1)],
+      [{ ...record(1), sha: "main" }],
+      [{ ...record(1), author: undefined }],
+      [{ ...record(1), author: { login: "bot", type: null } }],
+      [{ ...record(1), commit: { author: { name: null, email: "author1@example.com" } } }],
+    ])("rejects malformed or unbound author evidence without retrying: %j", (page) => {
+      const result = readPrMetadata({ authorSources: [source(1)], authorPages: [page] }, command);
+      expect(result.status).toBe(65);
+      expect(result.stdout).toBe("");
+      expect(result.calls).toHaveLength(1);
+    });
+
+    it("rejects duplicate authors even when the batch has the requested size and tip", () => {
+      const result = readPrMetadata(
+        {
+          authorSources: [source(1), source(2)],
+          authorPages: [[record(2), record(2)]],
+        },
+        command,
+      );
+      expect(result.status).toBe(65);
+      expect(result.stdout).toBe("");
+      expect(result.calls).toHaveLength(1);
+    });
+  });
+
   it.each([
     {
       name: "qualified repo URL",
@@ -374,10 +500,16 @@ describe("PR metadata through REST", () => {
       );
     },
   );
-  it.each(["GH_REPO", "--repo"])(
-    "uses the configured enterprise host for an unqualified %s with GH_HOST unset",
-    (selection) => {
-      const enterpriseHost = "github.enterprise.invalid";
+  it.each(
+    ["GH_REPO", "--repo"].flatMap((selection) =>
+      ["github.enterprise.invalid", "github.enterprise.invalid:8443"].map((enterpriseHost) => ({
+        selection,
+        enterpriseHost,
+      })),
+    ),
+  )(
+    "uses the configured enterprise host $enterpriseHost for unqualified $selection with GH_HOST unset",
+    ({ selection, enterpriseHost }) => {
       const repoURL = `https://${enterpriseHost}/base-owner/base-repo`;
       const explicit = selection === "--repo" ? " --repo base-owner/base-repo" : "";
       const result = readPrMetadata(
@@ -428,6 +560,10 @@ describe("PR metadata through REST", () => {
       expect(result.stderr).toContain(
         "graphql 0/5000 reset=2027-01-15T08:00:00Z core 4900/5000 reset=2027-01-15T08:05:00Z",
       );
+      expect(result.stderr).toContain(
+        "Supplemental quota probe (remaining/limit; not the failing response)",
+      );
+      expect(result.stderr).not.toContain("Wait until");
       expect(result.stderr).not.toContain("secret-response-must-not-escape");
       expect(result.calls.filter((args) => args.includes("rate_limit"))).toHaveLength(1);
     },
@@ -470,7 +606,7 @@ describe("PR metadata through REST", () => {
     expect(result.notifications).toBe("repos/base-owner/base-repo/pulls/42\nrate_limit\n");
     expect(result.stderr).toContain("resource=core");
   });
-  it("collects complete paginated files and exact-head checks without consuming GraphQL", () => {
+  it("collects complete paginated files without requesting unrelated checks or GraphQL", () => {
     const result = readPrMetadata();
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
@@ -497,11 +633,11 @@ describe("PR metadata through REST", () => {
       deletions: 0,
       changeType: "DELETED",
     });
-    expect(metadata.statusCheckRollup).toMatchObject([
-      { __typename: "CheckRun", name: "ci", status: "COMPLETED", conclusion: "SUCCESS" },
-      { __typename: "CheckRun", name: "lint", status: "IN_PROGRESS" },
-      { __typename: "StatusContext", context: "external", state: "PENDING" },
-    ]);
+    expect(
+      result.calls.some((args) =>
+        args.some((arg) => arg.includes("/check-runs?") || arg.includes("/status?")),
+      ),
+    ).toBe(false);
   });
 
   it("accepts an explicit empty diff", () => {
@@ -650,7 +786,7 @@ describe("PR metadata through REST", () => {
 
   it.each([
     { command: "pr_meta_json 42", failureTarget: "pull", resource: "core", exitCode: 1 },
-    { command: "ensure_gh_api_auth", failureTarget: "graphql", resource: "graphql", exitCode: 1 },
+    { command: "ensure_gh_api_auth", failureTarget: "user", resource: "core", exitCode: 1 },
     {
       command: "pr_gh pr view 42 --json headRefOid --jq .headRefOid",
       failureTarget: "pull",
@@ -664,11 +800,15 @@ describe("PR metadata through REST", () => {
       exitCode: 75,
     },
   ] as const)(
-    "reports both quotas for a $resource failure without retrying: $command",
+    "labels supplemental quotas for a $resource failure without retrying: $command",
     ({ command, failureTarget, resource, exitCode }) => {
       const result = readPrMetadata({ failure: "quota", failureTarget }, command);
       expect(result.status).toBe(exitCode);
       expect(result.stdout).toBe("");
+      expect(result.stderr).toContain(
+        "Supplemental quota probe (remaining/limit; not the failing response)",
+      );
+      expect(result.stderr).not.toContain("Wait until");
       expect(result.stderr).toContain(`resource=${resource}`);
       expect(result.stderr).toContain(
         "graphql 0/5000 reset=2027-01-15T08:00:00Z core 4900/5000 reset=2027-01-15T08:05:00Z",
@@ -728,13 +868,14 @@ describe("merge outcome API diagnostics", () => {
 });
 
 describe("PR GitHub helper snapshot trust", () => {
-  it.each(["changed source", "redirected import root"])(
+  it.each(["changed source", "redirected import root", "changed response parser"])(
     "rejects %s before loading snapshot code",
     (kind) => {
       const root = tempDirs.make("openclaw-pr-gh-snapshot-");
       for (const file of [
         "pr-lib/github.sh",
         "pr-lib/github.mjs",
+        "pr-lib/gh-api-preflight.mjs",
         "lib/plain-gh.mjs",
         "lib/direct-run.mjs",
       ]) {
@@ -742,8 +883,12 @@ describe("PR GitHub helper snapshot trust", () => {
         mkdirSync(dirname(target), { recursive: true });
         copyFileSync(join(process.cwd(), "scripts", file), target);
       }
-      const target = join(root, "scripts/pr-lib/github.mjs");
-      if (kind === "changed source") {
+      const target = join(
+        root,
+        "scripts/pr-lib",
+        kind === "changed response parser" ? "gh-api-preflight.mjs" : "github.mjs",
+      );
+      if (kind !== "redirected import root") {
         writeFileSync(target, "throw new Error('unverified source ran');\n");
       } else {
         const outside = join(root, "outside/github.mjs");

@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 import type { SessionsListParams } from "../../packages/gateway-protocol/src/index.js";
-import { listAgentIds, withAgentRosterFactsBatch } from "../agents/agent-scope-config.js";
+import { withAgentRosterFactsBatch } from "../agents/agent-scope-config.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import { isConfiguredGatewaySessionEntry } from "../config/sessions/combined-store-gateway.js";
 import { canonicalSessionKeyMigrationRequiredError } from "../config/sessions/session-canonical-key.js";
@@ -227,7 +227,6 @@ export function prepareSessionRowSelection(
     modelCatalog,
     entries,
     storePath: selectedScope.path,
-    configuredAgentIds: new Set(listAgentIds(cfg)),
     userProfileIdentityById: rowContext.userProfileIdentityById,
     getRowContext: () => rowContext,
     getTarget: (
@@ -266,11 +265,12 @@ export function filterAndSortSessionEntries(params: SessionListFilterParams): Se
 export function prepareProjectedSessionList(params: {
   projection: SessionRowProjection;
   opts: SessionsListParams;
+  key?: string;
   context?: GatewayRequestContext;
   client?: GatewayClient | null;
   now: number;
 }) {
-  const { projection, opts, context, client, now } = params;
+  const { projection, opts, key: exactKey, context, client, now } = params;
   const presentation = prepareProjectedSessionPresentation(
     projection,
     client,
@@ -283,6 +283,7 @@ export function prepareProjectedSessionList(params: {
       : undefined,
   );
   const prepared = prepareSessionRowSelection(projection, opts, {
+    key: exactKey,
     now,
     rowContext: presentation.rowContext,
   });
@@ -317,12 +318,13 @@ export function prepareProjectedSessionList(params: {
 export async function listProjectedSessions(params: {
   projection: SessionRowProjection;
   opts: SessionsListParams;
+  key?: string;
   context?: GatewayRequestContext;
   client?: GatewayClient | null;
   diagnostics?: SessionListDiagnostics;
   onResult?: (result: SessionsListResult) => void;
 }): Promise<SessionsListResult> {
-  const { projection, opts, context, client, diagnostics } = params;
+  const { projection, opts, key: exactKey, context, client, diagnostics } = params;
   const dirtyRowCount = projection.dirtyRowCount;
   const materializedBefore = projection.materializedCount;
   diagnostics?.mark("materialize");
@@ -341,6 +343,7 @@ export async function listProjectedSessions(params: {
     const { presentation, prepared, filters } = prepareProjectedSessionList({
       projection,
       opts,
+      key: exactKey,
       context,
       client,
       now,
@@ -375,12 +378,10 @@ export async function listProjectedSessions(params: {
       const row = presentation.present(record, {
         includeDerivedTitles: opts.includeDerivedTitles && includeTranscriptFields,
         includeLastMessage: opts.includeLastMessage && includeTranscriptFields,
+        includeActivitySummary: opts.includeActivitySummary === true,
       });
       if (!row) {
         return [];
-      }
-      if (!opts.includeActivitySummary) {
-        delete row.activitySummary;
       }
       if ((record.materializedSequence ?? 0) > materializedBefore) {
         materializedRowCount++;

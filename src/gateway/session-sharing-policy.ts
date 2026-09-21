@@ -19,7 +19,6 @@ import {
 } from "./operator-role-policy.js";
 import {
   authenticatedProfileUnavailableError,
-  gatewayClientSessionCreator,
   isGatewayClientProfilePending,
 } from "./server-methods/gateway-client-identity.js";
 import type { GatewayClient } from "./server-methods/types.js";
@@ -173,7 +172,8 @@ export function sharingIdentity(
   actor: ReturnType<typeof resolveGatewayOperatorRoleActor>,
 ) {
   const operator = actor?.kind === "operator" ? { id: actor.profileId } : undefined;
-  const identity = gatewayClientSessionCreator(client) ?? operator;
+  const profile = client?.authenticatedUserProfile;
+  const identity = profile ? { id: profile.profileId } : operator;
   // Owner attribution never narrows sharing; solo deployments stay owner-equivalent.
   return identity?.id === GATEWAY_OWNER_PROFILE_ID ? undefined : identity;
 }
@@ -338,7 +338,9 @@ export function authorizeResolvedSessionMutation(params: {
 export function authorizeSessionAgentRun(params: {
   cfg: OpenClawConfig;
   client: GatewayClient | null;
-  target: SessionSharingTarget;
+  target: Pick<SessionSharingTarget, "agentId" | "canonicalKey"> & {
+    entry?: Pick<SessionEntry, "sandbox">;
+  };
 }): ErrorShape | null {
   const agentError = authorizeGatewaySessionCreation({
     cfg: params.cfg,
@@ -350,7 +352,7 @@ export function authorizeSessionAgentRun(params: {
   }
   if (
     params.cfg.gateway?.roles &&
-    params.target.entry.sandbox !== "required" &&
+    params.target.entry?.sandbox !== "required" &&
     resolveOperatorRolePolicy(params.client, params.cfg)?.sandbox === "required"
   ) {
     return errorShape(

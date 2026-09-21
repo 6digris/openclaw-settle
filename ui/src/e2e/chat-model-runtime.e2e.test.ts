@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 import type { ModelCatalogEntry } from "../api/types.ts";
 import { fillComposer } from "../test-helpers/composer-editor.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import { selectChatModelOption } from "../test-helpers/select-picker-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "Model runtime selection" });
@@ -89,7 +90,7 @@ suite.define(() => {
         expect(await picker.locator('[data-chat-model-option="fixture/manual"]').count()).toBe(
           hasAllowedModel ? 0 : 1,
         );
-        await reset.click();
+        await selectChatModelOption(reset);
         expect((await gateway.waitForRequest("sessions.patch")).params).toMatchObject({
           key,
           model: null,
@@ -143,7 +144,7 @@ suite.define(() => {
       const embedded = picker.locator('[data-chat-model-runtime="openclaw"]');
       expect(await codex.textContent()).toContain("200k · Codex");
       expect(await embedded.textContent()).toContain("1M · OpenClaw");
-      await codex.click();
+      await selectChatModelOption(codex);
       if (route === "new") {
         await expect.poll(() => codex.getAttribute("aria-selected")).toBe("true");
         await fillComposer(
@@ -183,7 +184,7 @@ suite.define(() => {
         const after = (await gateway.getRequests("sessions.patch", reset)).length;
         await gateway.deferNext("sessions.patch", reset);
         await trigger.click();
-        await embedded.click();
+        await selectChatModelOption(embedded);
         expect(
           (await gateway.waitForRequest("sessions.patch", { after, match: reset })).params,
         ).toMatchObject(reset);

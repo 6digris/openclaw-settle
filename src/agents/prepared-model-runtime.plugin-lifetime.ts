@@ -21,9 +21,13 @@ import {
   PluginRuntimeCloseRetainedError,
 } from "../plugins/runtime-close-error.js";
 import { disposePluginRegistryInstances } from "../plugins/runtime.js";
+import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import { registerPreparedPluginRetirement } from "./prepared-model-runtime.lifecycle.js";
+import {
+  registerPreparedPluginRetirement,
+  retirePreparedModelRuntimeGeneration,
+} from "./prepared-model-runtime.lifecycle.js";
 import {
   closeEphemeralPreparedModelRuntimeResources,
   retainPreparedModelRuntimeSnapshotResources,
@@ -53,6 +57,7 @@ const { generations, registries, active, retirements, publications } = resolveGl
 );
 
 function createLifetime(dispose: () => Promise<unknown>, retainWork?: () => () => void) {
+  const cleanupWork = new AsyncWorkScope();
   const references = new Set<object>();
   let closing: Deferred | undefined;
   let disposing = false;
@@ -98,12 +103,14 @@ function createLifetime(dispose: () => Promise<unknown>, retainWork?: () => () =
       if (references.size === 0 && !disposing) {
         disposing = true;
         const completion = closing;
-        // Close admission immediately; physical disposal waits for the final borrower.
-        try {
-          void dispose().then(() => completion.resolve(), completion.reject);
-        } catch (error) {
-          completion.reject(error);
-        }
+        // A catalog lease can outlive its requesting RPC; this lifetime owns its cleanup.
+        void (async () => {
+          try {
+            await cleanupWork.track(dispose);
+          } finally {
+            await cleanupWork.run(() => cleanupWork.drain());
+          }
+        })().then(() => completion.resolve(), completion.reject);
       }
       return closing.promise;
     },
@@ -248,6 +255,7 @@ export function publishPreparedPluginGeneration(
       // leases retain the same generation independently until their work finishes.
       if (owner.generation === version) {
         owner.generation++;
+        retirePreparedModelRuntimeGeneration(owner);
         owner.needsRefresh = true;
         owner.refreshError = new Error("Prepared model runtime plugin generation retired");
         owner.pluginGeneration = undefined;
