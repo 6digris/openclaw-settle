@@ -29,6 +29,7 @@ type PreRegisteredAgentDedupePayload = {
   ownerDeviceId?: unknown;
   runId?: unknown;
   sessionKey?: unknown;
+  sessionId?: unknown;
   sessionKeyAliases?: unknown;
   status?: unknown;
   turnKind?: unknown;
@@ -89,6 +90,7 @@ export function readPreRegisteredAgentDedupePayloadForSession(params: {
   agentId?: string;
   defaultAgentId?: string;
   includeHidden?: boolean;
+  requiredSessionId?: string;
 }): PreRegisteredAgentDedupePayload | undefined {
   if (!params.entry?.ok) {
     return undefined;
@@ -111,6 +113,13 @@ export function readPreRegisteredAgentDedupePayloadForSession(params: {
       : []),
   ]);
   const hasPayloadSessionKey = [...payloadSessionKeys].some(Boolean);
+  if (
+    params.requiredSessionId !== undefined &&
+    (!payloadSessionKeys.has(params.sessionKey) ||
+      normalizeUnknownText(payload.sessionId) !== params.requiredSessionId)
+  ) {
+    return undefined;
+  }
   if (
     (hasPayloadSessionKey && !payloadSessionKeys.has(params.sessionKey)) ||
     (!hasPayloadSessionKey && payloadRunId !== params.runId)
@@ -192,10 +201,23 @@ export function writePreRegisteredAgentAbort(params: {
   payload: PreRegisteredAgentDedupePayload;
   stopReason: string;
   endedAt?: number;
+  expectedPayload?: PreRegisteredAgentDedupePayload;
 }) {
+  if (
+    params.expectedPayload &&
+    params.context.dedupe.get(`agent:${params.runId}`)?.payload !== params.expectedPayload
+  ) {
+    return false;
+  }
   const endedAt = params.endedAt ?? Date.now();
   const payloadAgentId = normalizeUnknownText(params.payload.agentId);
   for (const key of resolvePreRegisteredAgentDedupeKeys(params.payload, params.runId)) {
+    if (
+      params.expectedPayload &&
+      params.context.dedupe.get(key)?.payload !== params.expectedPayload
+    ) {
+      continue;
+    }
     setGatewayDedupeEntry({
       dedupe: params.context.dedupe,
       key,
@@ -215,6 +237,7 @@ export function writePreRegisteredAgentAbort(params: {
       },
     });
   }
+  return true;
 }
 
 export function writePreRegisteredChatAbort(params: {
@@ -223,7 +246,15 @@ export function writePreRegisteredChatAbort(params: {
   stopReason: string;
   endedAt?: number;
   attemptId?: string;
+  expectedPayload?: PreRegisteredAgentDedupePayload;
 }) {
+  if (
+    params.expectedPayload &&
+    params.context.dedupe.get(pendingChatSendDedupeKey(params.runId))?.payload !==
+      params.expectedPayload
+  ) {
+    return false;
+  }
   const endedAt = params.endedAt ?? Date.now();
   const payload = buildAbortedChatSendPayload({
     runId: params.runId,
@@ -253,12 +284,14 @@ export function writePreRegisteredChatAbort(params: {
         : {}),
     },
   });
+  return true;
 }
 
 export function resolveAuthorizedPreRegisteredRunsForSessionKeys(params: {
   context: GatewayRequestContext;
   sessionKeys: Iterable<string>;
   agentId?: string;
+  requiredSessionId?: string;
   defaultAgentId?: string;
   requester: ChatAbortRequester;
   keyPrefix: string;
@@ -284,6 +317,12 @@ export function resolveAuthorizedPreRegisteredRunsForSessionKeys(params: {
       includeHidden: true,
     });
     if (!run) {
+      continue;
+    }
+    if (
+      params.requiredSessionId !== undefined &&
+      normalizeUnknownText(run.payload.sessionId) !== params.requiredSessionId
+    ) {
       continue;
     }
     if (params.excludeRunIds?.has(run.runId)) {
@@ -349,6 +388,7 @@ export function resolveAuthorizedRunsForSessionKeys(params: {
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
   sessionKeys: Iterable<string>;
   sessionIds?: Iterable<string | undefined>;
+  requiredSessionId?: string;
   agentId?: string;
   defaultAgentId?: string;
   requester: ChatAbortRequester;
@@ -370,6 +410,8 @@ export function resolveAuthorizedRunsForSessionKeys(params: {
   const authorizedRuns: Array<{
     runId: string;
     sessionKey: string;
+    sessionId: string;
+    agentId?: string;
     entry: ChatAbortControllerEntry;
   }> = [];
   const matchedRunIds: string[] = [];
@@ -381,6 +423,12 @@ export function resolveAuthorizedRunsForSessionKeys(params: {
       continue;
     }
     if (!sessionKeys.has(active.sessionKey) && !sessionIds.has(active.sessionId)) {
+      continue;
+    }
+    if (
+      params.requiredSessionId !== undefined &&
+      (!sessionKeys.has(active.sessionKey) || active.sessionId !== params.requiredSessionId)
+    ) {
       continue;
     }
     if (
@@ -411,7 +459,13 @@ export function resolveAuthorizedRunsForSessionKeys(params: {
       continue;
     }
     if (requesterCanAbort) {
-      authorizedRuns.push({ runId, sessionKey: active.sessionKey, entry: active });
+      authorizedRuns.push({
+        runId,
+        sessionKey: active.sessionKey,
+        sessionId: active.sessionId,
+        agentId: active.agentId,
+        entry: active,
+      });
     } else {
       hasUnauthorizedRuns = true;
     }

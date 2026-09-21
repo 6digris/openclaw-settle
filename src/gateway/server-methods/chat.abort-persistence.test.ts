@@ -9,6 +9,7 @@ import { makeUserMessage } from "../../../test/helpers/user-message.js";
 import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqlite-marker.js";
 import {
   appendTranscriptMessageSync,
+  loadSessionEntry,
   loadTranscriptEvents,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
@@ -16,6 +17,7 @@ import { onAgentEvent, resetAgentEventsForTest } from "../../infra/agent-events.
 import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { createWorkerInferenceCancellationService } from "../worker-environments/inference-control.test-helpers.js";
 import { handleChatAbortRequest } from "./chat-abort-handler.js";
 import {
   captureAbortedPartial,
@@ -287,6 +289,67 @@ afterEach(async () => {
 });
 
 describe("chat abort transcript persistence", () => {
+  it("commits an already-cancelled parent partial when revocation fences later worker cancellation", async () => {
+    const { transcriptPath, sessionId, storePath } = await createTranscriptFixture(
+      "openclaw-chat-abort-reentrant-",
+    );
+    const revision = "original-generation";
+    await replaceSessionEntry(
+      { agentId: "main", sessionKey: "main", storePath },
+      {
+        sessionId,
+        lifecycleRevision: revision,
+        updatedAt: 1,
+      },
+    );
+    sessionEntryState.lifecycleRevision = revision;
+    let current = true;
+    const parent = createActiveRun("main", { sessionId });
+    parent.controller.signal.addEventListener(
+      "abort",
+      () => {
+        current = false;
+      },
+      { once: true },
+    );
+    const cancelWorker = vi.fn(() => ["parent"]);
+    const context = createChatAbortContext({
+      chatAbortControllers: new Map([["parent", parent]]),
+      workerEnvironmentService: createWorkerInferenceCancellationService(
+        sessionId,
+        ["parent"],
+        cancelWorker,
+      ),
+    });
+    context.chatRunState.getOrCreate("parent").buffer = "Keep the cancelled parent partial";
+    await expect(
+      invokeChatAbortHandler({
+        handler: (options) =>
+          handleChatAbortRequest({ ...options, hasCurrentClientAuthority: () => current }),
+        context,
+        request: { sessionKey: "main" },
+        client: { connect: { scopes: ["operator.admin"] } },
+      }),
+    ).rejects.toThrow("requester authority changed");
+    expect(parent.controller.signal.aborted).toBe(true);
+    expect(cancelWorker).not.toHaveBeenCalled();
+    const lines = await readTranscriptLines(transcriptPath);
+    const committed = collectMessagesWithIdempotencyKey(lines, "parent:assistant");
+    expect(committed).toHaveLength(1);
+    expectPersistedAbortMessage(committed[0], {
+      idempotencyKey: "parent:assistant",
+      origin: "rpc",
+      runId: "parent",
+    });
+    expect(collectAssistantRowsWithText(lines, "Keep the cancelled parent partial")).toHaveLength(
+      1,
+    );
+    expect(loadSessionEntry({ agentId: "main", sessionKey: "main", storePath })).toMatchObject({
+      sessionId,
+      lifecycleRevision: revision,
+    });
+  });
+
   it("publishes one run-owned transcript row for an abandoned placement partial", async () => {
     const { transcriptPath, sessionId } = await createTranscriptFixture(
       "openclaw-chat-placement-abandon-",

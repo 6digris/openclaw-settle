@@ -9,6 +9,7 @@ import {
 } from "../../infra/agent-run-registry.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { hashWorkerCredential } from "./credential.js";
+import { captureWorkerInferenceCancellation } from "./inference-control-internal.js";
 import type { WorkerSessionTurnClaim } from "./placement-record.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
 import { bindWorkerTurnOwner } from "./placement-turn-claim-events.js";
@@ -513,6 +514,12 @@ describe("worker environment service", () => {
     });
     expect(signals[0]?.aborted).toBe(false);
 
+    const originalCancellation = captureWorkerInferenceCancellation(
+      workerService,
+      sessionId,
+      first.runId,
+    );
+    expect(originalCancellation?.runIds).toEqual([first.runId]);
     store.releaseTurn(first);
     expect(signals[0]?.aborted).toBe(true);
     const placement = store.get(sessionId)!;
@@ -535,6 +542,11 @@ describe("worker environment service", () => {
     }
     replacement.launch();
     await support.waitForFast(() => expect(signals).toHaveLength(2));
+    expect(originalCancellation?.cancel()).toEqual([]);
+    expect(signals[1]?.aborted).toBe(false);
+    expect(
+      captureWorkerInferenceCancellation(workerService, sessionId, first.runId)?.runIds,
+    ).toEqual([first.runId]);
     signalWorkerTurnClaimClosed(support.testState.stateDb.path, first);
     expect(signals[1]?.aborted).toBe(false);
     store.releaseTurn(second);

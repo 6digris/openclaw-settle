@@ -8,6 +8,7 @@ import { AgentSelectionRequiredError } from "../agents/agent-scope.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
+import type { SessionOperatorScope } from "../shared/session-method-scopes-base.js";
 import { prepareGatewayRecipientProfile } from "./expected-profile.js";
 import {
   authorizeGatewaySessionCreation,
@@ -40,6 +41,7 @@ import type { SessionRowReadView } from "./session-row-prepared-read.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
 import {
   authorizeIncognitoSessionTarget,
+  authorizeOwnSessionMutation,
   authorizeSessionAgentRun,
   authorizeSessionSharingTarget,
   canManageSessionSharing,
@@ -60,9 +62,10 @@ import {
   resolveTalkSessionTargetInput,
   type SessionMutationTarget,
 } from "./session-sharing-target-input.js";
-import type {
-  GatewaySessionStoreCache,
-  GatewaySessionStoreDiscoveryCache,
+import {
+  resolveGatewaySessionStoreTarget,
+  type GatewaySessionStoreCache,
+  type GatewaySessionStoreDiscoveryCache,
 } from "./session-utils-store-lookup.js";
 import { prepareTalkSessionTarget, assertTalkSessionStorageTarget } from "./talk/session-target.js";
 import type { PreparedTalkSessionTarget } from "./talk/session-target.types.js";
@@ -71,6 +74,8 @@ type AuthorizedSessionMutationTarget = SessionMutationTarget & {
   resolved: Omit<SessionSharingTarget, "entry" | "storeKeys"> | null;
   sessionId: string | null;
   lifecycleRevision?: string;
+  created?: true;
+  absentTarget?: ReturnType<typeof resolveGatewaySessionStoreTarget>;
 };
 
 type ExpectedSessionMutationTarget = Readonly<{
@@ -137,6 +142,8 @@ export function resolveSessionMutationAuthorization(params: {
   context: GatewayRequestContext;
   /** Trusted prepared identity; never adopt a later target while capturing authority. */
   expectedTarget?: ExpectedSessionMutationTarget;
+  /** The router's actual alternative admission, not other grants on the same client. */
+  sessionScope?: SessionOperatorScope;
   sessionRowRead?: SessionRowReadView;
 }): { authorization?: SessionMutationAuthorization; error: ErrorShape | null } {
   const authorizesAgentRun = isAgentRunStartMethod(params.method, params.requestParams);
@@ -288,6 +295,29 @@ export function resolveSessionMutationAuthorization(params: {
       return { error: hiddenSessionNotFound(targetRef.sessionKey) };
     }
   }
+  const bindsOwnProfile = params.sessionScope === "operator.sessions.write";
+  const actor = resolveGatewayOperatorRoleActor(params.client);
+  const ownSessionProfileId =
+    bindsOwnProfile && actor?.kind === "operator" ? actor.profileId : undefined;
+  const ownProfileError = bindsOwnProfile
+    ? ownSessionProfileId
+      ? authorizeOwnSessionMutation({
+          client: params.client,
+          target: null,
+          expectedProfileId: ownSessionProfileId,
+        })
+      : authenticatedProfileUnavailableError()
+    : null;
+  if (ownProfileError) {
+    return { error: ownProfileError };
+  }
+  const requestedCreateKey =
+    params.requestParams &&
+    typeof params.requestParams === "object" &&
+    "key" in params.requestParams
+      ? normalizeOptionalString(params.requestParams.key)
+      : undefined;
+  const permitsGeneratedSession = params.method === "sessions.create" && !requestedCreateKey;
   const targetRefs =
     talkTargets ??
     resolveSessionMutationTargets({
@@ -295,7 +325,9 @@ export function resolveSessionMutationAuthorization(params: {
       requestParams: params.requestParams,
       context: params.context,
       getCfg,
-    });
+    }) ??
+    // Creation may not have a row yet, but it must retain its original person until commit.
+    (bindsOwnProfile && !isRequiredSessionTargetMethod(params.method) ? [] : undefined);
   if (params.expectedTarget && targetRefs?.length !== 1) {
     return {
       error: sessionMutationTargetChanged(params.method, params.expectedTarget.sessionKey).error,
@@ -330,6 +362,11 @@ export function resolveSessionMutationAuthorization(params: {
     const target = resolved.target;
     const error =
       expectedSessionMutationTargetError(params.expectedTarget, target, params.method) ??
+      authorizeOwnSessionMutation({
+        client: params.client,
+        target,
+        expectedProfileId: ownSessionProfileId,
+      }) ??
       (target && authorizesAgentRun
         ? authorizeSessionAgentRun({
             cfg: getCfg(),
@@ -363,12 +400,23 @@ export function resolveSessionMutationAuthorization(params: {
           }
         : null,
       sessionId: target?.entry.sessionId?.trim() || null,
-      ...(bindsProgressLifecycle ? { lifecycleRevision: target?.entry.lifecycleRevision } : {}),
+      ...(!target && ["sessions.send", "sessions.create"].includes(params.method)
+        ? {
+            absentTarget: resolveGatewaySessionStoreTarget({
+              cfg: getCfg(),
+              key: targetRef.sessionKey,
+              agentId: targetRef.agentId,
+            }),
+          }
+        : {}),
+      ...(bindsProgressLifecycle || bindsOwnProfile
+        ? { lifecycleRevision: target?.entry.lifecycleRevision }
+        : {}),
     });
   }
   return {
     error: null,
-    authorization: (() => {
+    authorization: ((): SessionMutationAuthorization => {
       const targetChanged = (sessionKey: string) =>
         sessionMutationTargetChanged(params.method, sessionKey);
       const assertTalkTargetCurrent = (cfg: OpenClawConfig) => {
@@ -411,6 +459,22 @@ export function resolveSessionMutationAuthorization(params: {
         currentLookupCaches?: ReturnType<typeof createLookupCaches>,
         ensuredSessionId?: string,
       ) => {
+        if (expected?.absentTarget && !expected.created) {
+          const currentRoute = resolveGatewaySessionStoreTarget({
+            cfg: currentCfg,
+            key: targetRef.sessionKey,
+            agentId: targetRef.agentId,
+          });
+          // Absence is bound to its original store too. Checking the creation
+          // notification would discover a redirected write only after COMMIT.
+          if (
+            currentRoute.agentId !== expected.absentTarget.agentId ||
+            currentRoute.canonicalKey !== expected.absentTarget.canonicalKey ||
+            currentRoute.storePath !== expected.absentTarget.storePath
+          ) {
+            throw targetChanged(targetRef.sessionKey);
+          }
+        }
         const current = resolveSessionSharingTarget({
           cfg: currentCfg,
           sessionKey: targetRef.sessionKey,
@@ -445,10 +509,18 @@ export function resolveSessionMutationAuthorization(params: {
               current.storeKey === expectedResolved.storeKey &&
               current.storePath === expectedResolved.storePath &&
               (current.entry.sessionId?.trim() || null) === expectedSessionId &&
-              (!bindsProgressLifecycle ||
+              (!(bindsProgressLifecycle || bindsOwnProfile || expected.created) ||
                 current.entry.lifecycleRevision === expected.lifecycleRevision));
         if (!sameResolvedTarget) {
           throw targetChanged(targetRef.sessionKey);
+        }
+        const ownershipError = authorizeOwnSessionMutation({
+          client: params.client,
+          target: current,
+          expectedProfileId: ownSessionProfileId,
+        });
+        if (ownershipError) {
+          throw new SessionMutationAuthorizationChangedError(ownershipError);
         }
         if (!current) {
           return;
@@ -475,9 +547,67 @@ export function resolveSessionMutationAuthorization(params: {
           throw new SessionMutationAuthorizationChangedError(error);
         }
       };
+      let createdSessionRecorded = false;
       return {
         ...(talkSessionTarget ? { talkSessionTarget } : {}),
+        ...(authorizedTargets.length === 1 &&
+        authorizedTargets[0]?.resolved &&
+        authorizedTargets[0].sessionId
+          ? {
+              admittedTarget: Object.freeze({
+                agentId: authorizedTargets[0].resolved.agentId,
+                sessionKey: authorizedTargets[0].resolved.canonicalKey,
+                sessionId: authorizedTargets[0].sessionId,
+              }),
+            }
+          : {}),
+        recordCreatedSession: (created) => {
+          // Only the creation owner's COMMIT notification may replace an absent snapshot.
+          // Never adopt a response/reload result, or a later incarnation of the same key.
+          if (createdSessionRecorded) {
+            return;
+          }
+          let expected = authorizedTargets.find(
+            (target) =>
+              target.sessionId === null &&
+              target.absentTarget?.agentId === created.agentId &&
+              target.absentTarget.canonicalKey === created.sessionKey &&
+              target.absentTarget.storePath === created.storePath,
+          );
+          if (!expected && permitsGeneratedSession) {
+            expected = {
+              sessionKey: created.sessionKey,
+              agentId: created.agentId,
+              resolved: null,
+              sessionId: null,
+            };
+            authorizedTargets.push(expected);
+          }
+          if (!expected) {
+            return;
+          }
+          createdSessionRecorded = true;
+          expected.resolved = {
+            agentId: created.agentId,
+            canonicalKey: created.sessionKey,
+            storeKey: created.sessionKey,
+            storePath: created.storePath,
+          };
+          expected.sessionId = created.sessionId;
+          expected.lifecycleRevision = created.lifecycleRevision;
+          expected.created = true;
+        },
         assertCurrent: () => {
+          const error = ownSessionProfileId
+            ? authorizeOwnSessionMutation({
+                client: params.client,
+                target: null,
+                expectedProfileId: ownSessionProfileId,
+              })
+            : null;
+          if (error) {
+            throw new SessionMutationAuthorizationChangedError(error);
+          }
           const currentCfg = params.context.getRuntimeConfig();
           assertTalkTargetCurrent(currentCfg);
           const currentLookupCaches = createLookupCaches();

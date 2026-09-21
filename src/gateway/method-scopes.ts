@@ -8,6 +8,10 @@ import {
 import { getPluginRegistryForContext } from "../plugins/runtime/gateway-request-scope.js";
 import { resolveReservedGatewayMethodScope } from "../shared/gateway-method-policy.js";
 import { operatorScopeSatisfied } from "../shared/operator-scope-compat.js";
+import {
+  resolveSessionMethodScope,
+  type SessionOperatorScope,
+} from "../shared/session-method-scopes-base.js";
 import { resolveDynamicSessionMutationRequiredScope } from "../shared/session-method-scopes.js";
 import { isAgentSessionResetCommand } from "./agent-command-policy.js";
 import {
@@ -230,7 +234,9 @@ export function authorizeOperatorScopesForMethod(
   method: string,
   scopes: readonly string[],
   params?: unknown,
-): { allowed: true } | { allowed: false; missingScope: OperatorScope } {
+):
+  | { allowed: true; sessionScope?: SessionOperatorScope }
+  | { allowed: false; missingScope: OperatorScope } {
   if (scopes.includes(ADMIN_SCOPE)) {
     return { allowed: true };
   }
@@ -255,20 +261,41 @@ export function authorizeOperatorScopesForMethod(
       resolveDynamicLeastPrivilegeOperatorScopesForMethod(method, params),
       scopes,
     );
-    return missingScope ? { allowed: false, missingScope } : { allowed: true };
+    return missingScope
+      ? authorizeOperatorScopesForRequiredScope(
+          missingScope,
+          scopes,
+          resolveSessionMethodScope(method, params),
+        )
+      : { allowed: true };
   }
   const requiredScope = resolveScopedMethod(method) ?? ADMIN_SCOPE;
-  return authorizeOperatorScopesForRequiredScope(requiredScope, scopes);
+  return authorizeOperatorScopesForRequiredScope(
+    requiredScope,
+    scopes,
+    resolveSessionMethodScope(method, params),
+  );
 }
 
 /** Checks a method registry's already-resolved static scope against presented operator scopes. */
 export function authorizeOperatorScopesForRequiredScope(
   requiredScope: OperatorScope,
   scopes: readonly string[],
-): { allowed: true } | { allowed: false; missingScope: OperatorScope } {
-  return operatorScopeSatisfied(requiredScope, scopes)
-    ? { allowed: true }
-    : { allowed: false, missingScope: requiredScope };
+  sessionScope?: SessionOperatorScope,
+):
+  | { allowed: true; sessionScope?: SessionOperatorScope }
+  | { allowed: false; missingScope: OperatorScope } {
+  if (operatorScopeSatisfied(requiredScope, scopes)) {
+    return { allowed: true };
+  }
+  if (
+    ((requiredScope === READ_SCOPE && sessionScope === "operator.sessions.read") ||
+      (requiredScope === WRITE_SCOPE && sessionScope === "operator.sessions.write")) &&
+    operatorScopeSatisfied(sessionScope, scopes)
+  ) {
+    return { allowed: true, sessionScope };
+  }
+  return { allowed: false, missingScope: requiredScope };
 }
 
 /** Returns true when a method has any core, node, dynamic, reserved, or plugin scope policy. */

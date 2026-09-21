@@ -1,4 +1,5 @@
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
+import type { SessionOperatorScope } from "../../shared/session-method-scopes-base.js";
 import { readGatewayDeviceRevocationGuard } from "../device-revocation.js";
 import type { ExpectedProfileBinding } from "../expected-profile.js";
 import {
@@ -20,6 +21,8 @@ type RequestMutationOptions = Pick<
 type RequestMutationAuthorityBase = {
   assertCurrent: () => void;
   expectedProfileBinding?: ExpectedProfileBinding;
+  /** Recorded by the scope owner only when this invocation uses its narrow alternative. */
+  sessionScope?: SessionOperatorScope;
 };
 
 /** Request lifetime only; method owners retain target and policy checks. */
@@ -117,8 +120,11 @@ export function bindGatewayRequestHandlerMutationAuthority<T extends GatewayRequ
   request: GatewayRequestOptions,
   handler: T,
   expectedProfileBinding: ExpectedProfileBinding | undefined,
+  sessionScope?: SessionOperatorScope,
 ): T {
   const source = readGatewayRequestMutationAuthority(request);
+  expectedProfileBinding ??= source.expectedProfileBinding;
+  sessionScope ??= source.sessionScope;
   const { req, client, context, signal, hasCurrentClientAuthority, sessionMutationCommitGuard } =
     handler;
   const assertHandlerCurrent = () => {
@@ -146,12 +152,13 @@ export function bindGatewayRequestHandlerMutationAuthority<T extends GatewayRequ
           family: "worker",
           assertCurrent,
           expectedProfileBinding,
+          sessionScope,
           assertWorkerCurrent: () => {
             assertHandlerCurrent();
             source.assertWorkerCurrent();
           },
         }
-      : { family: "native-compatibility", assertCurrent, expectedProfileBinding };
+      : { family: "native-compatibility", assertCurrent, expectedProfileBinding, sessionScope };
   requestMutationAuthorities.set(handler, authority);
   return handler;
 }

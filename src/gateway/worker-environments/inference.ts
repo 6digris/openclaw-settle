@@ -22,6 +22,7 @@ import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gat
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
 import {
   WorkerInferenceSessionDrainBusyError,
+  type WorkerInferenceCancellation,
   type WorkerInferenceSessionDrain,
 } from "./inference-control-internal.js";
 import {
@@ -597,20 +598,44 @@ export function createWorkerInferenceManager(options: {
     return { ok: true, result: { status: "cancelled" } };
   };
 
-  const cancelWhere = (
-    predicate: (entry: ActiveInference) => boolean,
+  const captureCancellationEntries = (predicate: (entry: ActiveInference) => boolean) =>
+    [...active.values()].filter(predicate).map((entry) => ({
+      entry,
+      claimKey: entry.claimKey,
+      sessionId: entry.request.sessionId,
+      runId: entry.request.runId,
+      turnId: entry.request.turnId,
+    }));
+
+  const cancelCaptured = (
+    captured: ReturnType<typeof captureCancellationEntries>,
     reason: WorkerInferenceErrorReason,
-    onCancel?: (entry: ActiveInference) => void,
+    control?: Parameters<WorkerInferenceCancellation["cancel"]>[0],
   ): boolean => {
     let terminalPersistenceFailed = false;
-    for (const entry of active.values()) {
-      if (predicate(entry)) {
-        onCancel?.(entry);
-        terminalPersistenceFailed = !settleAbort(entry, reason) || terminalPersistenceFailed;
+    for (const { entry, claimKey, sessionId, runId, turnId } of captured) {
+      control?.assertCurrent?.();
+      if (
+        active.get(claimKey) !== entry ||
+        entry.claimKey !== claimKey ||
+        entry.request.sessionId !== sessionId ||
+        entry.request.runId !== runId ||
+        entry.request.turnId !== turnId
+      ) {
+        continue;
       }
+      // Terminal delivery can synchronously admit a successor with the same claim.
+      // Only this captured registration owns the accepted cancellation.
+      terminalPersistenceFailed = !settleAbort(entry, reason) || terminalPersistenceFailed;
+      control?.onCancelled?.(runId);
     }
     return terminalPersistenceFailed;
   };
+
+  const cancelWhere = (
+    predicate: (entry: ActiveInference) => boolean,
+    reason: WorkerInferenceErrorReason,
+  ) => cancelCaptured(captureCancellationEntries(predicate), reason);
 
   const cancelEnvironment = (
     environmentId: string,
@@ -624,17 +649,33 @@ export function createWorkerInferenceManager(options: {
     cancelWhere((entry) => entry.claimKey === claimKey, "session-not-attached");
   };
 
-  const cancelSession = (sessionId: string, runId?: string): string[] => {
-    const cancelledRunIds = new Set<string>();
-    cancelWhere(
+  const captureSessionCancellation = (
+    sessionId: string,
+    runId?: string,
+  ): WorkerInferenceCancellation => {
+    const captured = captureCancellationEntries(
       (entry) =>
         entry.request.sessionId === sessionId &&
         (runId === undefined || entry.request.runId === runId),
-      "cancelled",
-      (entry) => cancelledRunIds.add(entry.request.runId),
     );
-    return [...cancelledRunIds].toSorted();
+    return {
+      runIds: [...new Set(captured.map((entry) => entry.runId))].toSorted(),
+      cancel: (control) => {
+        const cancelledRunIds = new Set<string>();
+        cancelCaptured(captured, "cancelled", {
+          assertCurrent: control?.assertCurrent,
+          onCancelled: (cancelledRunId) => {
+            cancelledRunIds.add(cancelledRunId);
+            control?.onCancelled?.(cancelledRunId);
+          },
+        });
+        return [...cancelledRunIds].toSorted();
+      },
+    };
   };
+
+  const cancelSession = (sessionId: string, runId?: string): string[] =>
+    captureSessionCancellation(sessionId, runId).cancel();
 
   const hasSession = (sessionId: string, runId?: string): boolean => {
     for (const entry of active.values()) {
@@ -717,6 +758,7 @@ export function createWorkerInferenceManager(options: {
     cancelEnvironment,
     cancelClaim,
     cancelSession,
+    captureSessionCancellation,
     beginSessionDrain,
     hasSession,
     resolveSessionIdForRunId,

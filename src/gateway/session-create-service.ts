@@ -283,6 +283,8 @@ export async function createGatewaySession(params: {
   /** Arms local checkout attribution in the authoritative create/reset commit. */
   armSessionDiffBaselineCapture?: boolean;
   afterCreate?: (created: CreatedGatewaySession) => Promise<void>;
+  /** Non-throwing notification of the exact newly committed row, before initial-turn work. */
+  onCreatedSessionCommitted?: (created: CreatedGatewaySession) => void;
   /** Synchronous caller-authority guard checked by each durable owner boundary. */
   commitGuard?: () => void;
 }): Promise<CreateGatewaySessionResult> {
@@ -1520,8 +1522,17 @@ export async function createGatewaySession(params: {
           : {}),
         ...(commitGuard ? { commitGuard } : {}),
         ...(preparedLifecycle?.withCommit ? { withCommit: preparedLifecycle.withCommit } : {}),
-        onLifecycleCommitted: () => {
+        onLifecycleCommitted: (entry) => {
           lifecyclePreparationCommitted = true;
+          if (createdNewEntry) {
+            params.onCreatedSessionCommitted?.({
+              key: target.canonicalKey,
+              agentId: target.agentId,
+              storePath: target.storePath,
+              entry,
+              isNew: true,
+            });
+          }
         },
         ...(runtimeCwd ? { cwd: runtimeCwd } : {}),
       },
