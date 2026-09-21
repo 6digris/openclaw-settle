@@ -248,7 +248,12 @@ export function resolveGatewayScopedTools(
       : [];
   const ownerOnlyGatewayDeny =
     params.senderIsOwner === false || (surface === "http" && params.senderIsOwner !== true)
-      ? [...GATEWAY_OWNER_ONLY_CORE_TOOLS]
+      ? [
+          ...GATEWAY_OWNER_ONLY_CORE_TOOLS,
+          // Standalone invocation is not an admitted agent turn. Keep the
+          // existing owner gate rather than minting agent identity for a caller.
+          ...(surface === "http" ? ["sessions"] : []),
+        ]
       : [];
   // HTTP callers start with additional surface denies because they cross auth only.
   const workspaceDir =

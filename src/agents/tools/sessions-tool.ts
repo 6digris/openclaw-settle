@@ -200,7 +200,17 @@ const SessionsToolSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const SessionOwnerToolSchema = Type.Object(
+  {
+    ...Type.Required(Type.Pick(SessionsToolSchema, ["ownerType", "ownerId"])).properties,
+    action: stringEnum(["assign_owner"]),
+    sessionKey: SessionsToolSchema.properties.sessionKey,
+  },
+  { additionalProperties: false },
+);
+
 type SessionsToolOptions = {
+  senderIsOwner?: boolean;
   agentSessionKey?: string;
   agentSessionId?: string;
   requesterAgentIdOverride?: string;
@@ -339,6 +349,7 @@ async function resolvePatchTarget(
 }
 
 export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool {
+  const assignmentOnly = opts.senderIsOwner !== true;
   const gatewayRequest = opts.callGateway ?? callAgentToolGatewayRequest;
   const callGateway = <T = Record<string, unknown>>(
     method: string,
@@ -347,12 +358,18 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
   return {
     label: "Sessions",
     name: "sessions",
-    description:
-      "cloud_profiles lists configured cloud profiles; pass profileId for their OS and machine choices. Session settings, ownership, reset, delete, and custom sidebar groups: patch label/icon/group/status, pin, archive/restore, model/thinking override. patch with group files sessions into a group; targets applies the same patch to up to 100 visible sessions; group_list shows the catalog; group_set replaces the whole ordered catalog; group_rename/group_delete change one group everywhere. assign_owner hands responsibility to a human or agent; reset/delete visible sessions.",
-    parameters: SessionsToolSchema,
+    description: assignmentOnly
+      ? "Assign responsibility for a visible session to a human or agent with assign_owner, ownerType, and ownerId. Default target: current session. Does not change creator attribution or access."
+      : "cloud_profiles lists configured cloud profiles; pass profileId for their OS and machine choices. Session settings, ownership, reset, delete, and custom sidebar groups: patch label/icon/group/status, pin, archive/restore, model/thinking override. patch with group files sessions into a group; targets applies the same patch to up to 100 visible sessions; group_list shows the catalog; group_set replaces the whole ordered catalog; group_rename/group_delete change one group everywhere. assign_owner hands responsibility to a human or agent; reset/delete visible sessions.",
+    parameters: assignmentOnly ? SessionOwnerToolSchema : SessionsToolSchema,
     execute: async (_toolCallId, rawArgs) => {
       const params = rawArgs as Record<string, unknown>;
       const action = readToolStringParam(params, "action", { required: true });
+      // Responsibility is visibility-authorized; every other action retains the
+      // original owner gate, including direct calls that bypass schema validation.
+      if (assignmentOnly && action !== "assign_owner") {
+        throw new ToolAuthorizationError("Only assign_owner is available to non-owner callers");
+      }
       if (
         params.targets !== undefined &&
         (action !== "patch" ||
@@ -486,7 +503,7 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
           },
         });
       }
-      // Group catalog is global by contract. Owner-only tool gating protects mutations.
+      // Group catalog is global by contract. The action-level owner gate protects mutations.
       if (action === "group_set") {
         const names = readGroupNames(params.names);
         return jsonResult(await callGateway("sessions.groups.put", { names }));
