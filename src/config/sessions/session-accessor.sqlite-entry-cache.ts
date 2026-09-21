@@ -489,7 +489,12 @@ export function publishSessionEntryCacheInvalidation(
     publishTrackedCacheUpdate(database, () => sessionEntryCaches.delete(database.db));
   }
   sessionChanges.emit(
-    { agentId: database.agentId, storePath: database.path, sessionKey: update.sessionKey },
+    {
+      agentId: database.agentId,
+      storePath: database.path,
+      sessionKey: update.sessionKey,
+      scope: "session-entry",
+    },
     database.db,
   );
 }

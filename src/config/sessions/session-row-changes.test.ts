@@ -56,14 +56,16 @@ it("publishes row changes after the complete entry transaction and discards roll
       );
       expect(seen).toEqual(
         Array.from({ length: 2 }, () => ({
-          change: { ...scope, storePath: database.path },
+          change: { ...scope, storePath: database.path, scope: "session-entry" },
           label: "committed",
           transaction: false,
         })),
       );
       seen.length = 0;
       publishSessionEntryCacheInvalidation(database, { sessionKey: scope.sessionKey });
-      expect(seen.map(({ change }) => change)).toEqual([{ ...scope, storePath: database.path }]);
+      expect(seen.map(({ change }) => change)).toEqual([
+        { ...scope, storePath: database.path, scope: "session-entry" },
+      ]);
       unsubscribe();
       replaceSessionEntrySync(scope, entry);
       expect(seen).toHaveLength(1);
@@ -103,7 +105,7 @@ it.each(["delete", "retain-windows", "first-transcript"] as const)(
           }
           expect(changes).toEqual([]);
         }, scope);
-        expect(changes).toEqual([{ ...scope, storePath: database.path }]);
+        expect(changes).toEqual([{ ...scope, storePath: database.path, scope: "session-entry" }]);
       } finally {
         unsubscribe();
       }

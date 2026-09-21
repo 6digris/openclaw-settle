@@ -309,7 +309,7 @@ export async function createSessionRowProjection(params: {
       const exact = matching(query);
       const found = new Set([...exact, ...matching(query, "id")]);
       for (const previous of found) {
-        if (previous.entry) {
+        if (previous.entry && change.scope !== "session-entry") {
           placementFacts.invalidate(previous.entry.sessionId);
         }
         markRelated(previous);
