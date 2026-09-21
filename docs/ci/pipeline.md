@@ -284,7 +284,11 @@ small set of security policy and enforcement files that require SecOps approval.
 The **Security Review** workflow runs both guards from trusted repository code.
 It publishes a commit status named `openclaw/ci-gate` that requires both the
 applicable approvals and a successful native CI gate from the latest CI run for
-the current PR head. The existing CI job retains its check with the same name.
+the current PR head. Completed, fully skipped pull-request workflows are excluded
+from that selection; skipped-only CI stays pending. Newer failed, canceled, or
+running CI still blocks approval. Skipped runs are rechecked before success so a
+newly started rerun cannot be hidden. The existing CI job retains its check with
+the same name.
 GitHub requires both the check and the commit status when both share a required
 context. Missing approval, failed CI, or evaluation errors fail the review status.
 Missing or running CI leaves it pending and keeps merging blocked. CI completion

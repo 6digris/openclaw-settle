@@ -41,6 +41,14 @@ const jobs = {
   total_count: 1,
   jobs: [{ name: "openclaw/ci-gate", status: "completed", conclusion: "success" }],
 };
+const skippedRun = { ...run, id: 11, conclusion: "skipped" };
+const skippedRunRoutes = {
+  [`GET ${actions}/runs/11`]: skippedRun,
+  [`GET ${actions}/runs/11/attempts/1/jobs`]: {
+    ...jobs,
+    jobs: [{ ...jobs.jobs[0], conclusion: "skipped" }],
+  },
+};
 const rolePath = "GET /repos/openclaw/openclaw/collaborators/maintainer/permission";
 const runsPath = `GET ${actions}/workflows/ci.yml/runs`;
 const jobsPath = `GET ${actions}/runs/10/attempts/1/jobs`;
@@ -448,6 +456,68 @@ describe("combined security review entry point", () => {
   });
 
   it.each([
+    { name: "a successful real run", priorRun: run, gate: "success", expected: "success" },
+    { name: "a failed real run", priorRun: run, gate: "failure", expected: "failure" },
+    { name: "no real run", priorRun: undefined, gate: "success", expected: "pending" },
+  ])("ignores a skipped PR workflow after $name", ({ priorRun, gate, expected }) => {
+    const candidates = [...(priorRun ? [priorRun] : []), skippedRun];
+    const result = evaluate({
+      ...skippedRunRoutes,
+      [runsPath]: { total_count: candidates.length, workflow_runs: candidates },
+      [jobsPath]: { ...jobs, jobs: [{ ...jobs.jobs[0], conclusion: gate }] },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.combined).toEqual(["pending", expected]);
+    expect(result.requests.some((entry) => `GET ${entry.path}` === jobsPath)).toBe(
+      priorRun !== undefined,
+    );
+    if (expected === "success") {
+      const realRunRead = result.requests.findIndex((entry) => entry.path === `${actions}/runs/10`);
+      const skippedRunRead = result.requests.findIndex(
+        (entry) => entry.path === `${actions}/runs/11`,
+      );
+      expect(realRunRead).toBeGreaterThanOrEqual(0);
+      expect(skippedRunRead).toBeGreaterThan(realRunRead);
+    }
+  });
+
+  it("does not discard a skipped exact-head release-gate dispatch", () => {
+    const fallback = {
+      ...skippedRun,
+      event: "workflow_dispatch",
+      display_title: `CI release gate ${head}`,
+    };
+    const result = evaluate({
+      ...skippedRunRoutes,
+      [runsPath]: { total_count: 2, workflow_runs: [run, fallback] },
+      [`GET ${actions}/runs/11`]: fallback,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.combined).toEqual(["pending", "failure"]);
+  });
+
+  it.each([
+    { name: "rerun queued", current: { status: "queued", run_attempt: 2 }, expected: "pending" },
+    { name: "running", current: { status: "in_progress" }, expected: "pending" },
+    { name: "attempt", current: { run_attempt: 2 }, expected: "failure" },
+    { name: "ID", current: { id: 12 }, expected: "failure" },
+    { name: "head", current: { head_sha: "d".repeat(40) }, expected: "failure" },
+    { name: "event", current: { event: "workflow_dispatch" }, expected: "failure" },
+    { name: "workflow", current: { path: ".github/workflows/other.yml" }, expected: "failure" },
+    { name: "branch", current: { head_branch: "another-branch" }, expected: "failure" },
+    { name: "repository", current: { repository: { id: 2 } }, expected: "failure" },
+    { name: "conclusion", current: { conclusion: "success" }, expected: "failure" },
+  ])("cannot reuse older success after a skipped run changes $name", ({ current, expected }) => {
+    const result = evaluate({
+      ...skippedRunRoutes,
+      [runsPath]: { total_count: 2, workflow_runs: [skippedRun, run] },
+      [`GET ${actions}/runs/11`]: { ...skippedRun, ...current },
+    });
+    expect(result.status, result.stderr).toBe(expected === "pending" ? 0 : 1);
+    expect(result.combined).toEqual(["pending", expected]);
+  });
+
+  it.each([
     { name: "missing CI", response: { total_count: 0, workflow_runs: [] } },
     {
       name: "unfinished CI",
@@ -467,6 +537,13 @@ describe("combined security review entry point", () => {
     {
       name: "newer unfinished run",
       response: { total_count: 2, workflow_runs: [run, { ...run, id: 11, status: "queued" }] },
+    },
+    {
+      name: "newer waiting run after a skipped workflow",
+      response: {
+        total_count: 3,
+        workflow_runs: [run, skippedRun, { ...run, id: 12, status: "waiting" }],
+      },
     },
   ])("does not turn $name into a passing combined gate", ({ response }) => {
     const result = evaluate({ [runsPath]: response });
@@ -508,12 +585,41 @@ describe("combined security review entry point", () => {
     },
   );
 
+  it.each([
+    { field: "id", value: 0 },
+    { field: "run_attempt", value: 0 },
+    { field: "status", value: "unknown" },
+  ])("validates skipped CI metadata before excluding it: $field", ({ field, value }) => {
+    const result = evaluate({
+      ...skippedRunRoutes,
+      [runsPath]: {
+        total_count: 2,
+        workflow_runs: [run, { ...skippedRun, [field]: value }],
+      },
+    });
+    expect(result.status).toBe(1);
+    expect(result.combined).toEqual(["pending", "failure"]);
+  });
+
   it.each(["failure", "cancelled", "skipped", "neutral"])(
     "does not hide a %s CI gate",
     (conclusion) => {
-      const result = evaluate({ [jobsPath]: { ...jobs, jobs: [{ ...jobs.jobs[0], conclusion }] } });
+      const current = {
+        ...run,
+        id: 12,
+        conclusion: conclusion === "skipped" ? "success" : conclusion,
+      };
+      const result = evaluate({
+        ...skippedRunRoutes,
+        [runsPath]: { total_count: 3, workflow_runs: [run, current, skippedRun] },
+        [`GET ${actions}/runs/12`]: current,
+        [`GET ${actions}/runs/12/attempts/1/jobs`]: {
+          ...jobs,
+          jobs: [{ ...jobs.jobs[0], conclusion }],
+        },
+      });
       expect(result.status, result.stderr).toBe(0);
-      expect(result.combined).not.toContain("success");
+      expect(result.combined).toEqual(["pending", "failure"]);
     },
   );
 

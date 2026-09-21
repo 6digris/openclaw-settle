@@ -39,6 +39,29 @@ function ciRunState(run) {
   }
 }
 
+function isSkippedPullRequestCiRun(run) {
+  return run.event === "pull_request" && run.status === "completed" && run.conclusion === "skipped";
+}
+
+async function readCurrentCiRun(api, root, run) {
+  const current = await api.request(`${root}/runs/${run.id}`);
+  const currentState = ciRunState(current);
+  if (
+    current.id !== run.id ||
+    current.head_sha !== run.head_sha ||
+    current.event !== run.event ||
+    current.path !== run.path ||
+    current.head_branch !== run.head_branch ||
+    current.repository?.id !== run.repository?.id
+  ) {
+    throw new Error("The CI run identity changed during security review.");
+  }
+  if (currentState !== "pending" && current.run_attempt !== run.run_attempt) {
+    throw new Error("The completed CI attempt changed during security review; rerun this review.");
+  }
+  return current;
+}
+
 async function ciState(review) {
   const { api, owner, repo, pullRequest } = review;
   const root = `/repos/${owner}/${repo}/actions`;
@@ -64,7 +87,17 @@ async function ciState(review) {
   for (const candidate of candidates) {
     ciRunState(candidate);
   }
-  const run = candidates.toSorted((left, right) => right.id - left.id)[0];
+  const skippedRuns = [];
+  let run;
+  for (const candidate of candidates.toSorted((left, right) => right.id - left.id)) {
+    // A delayed draft event executes no CI and must not displace its ready run.
+    if (isSkippedPullRequestCiRun(candidate)) {
+      skippedRuns.push(candidate);
+      continue;
+    }
+    run = candidate;
+    break;
+  }
   if (!run || run.status !== "completed") {
     return "pending";
   }
@@ -84,21 +117,25 @@ async function ciState(review) {
       throw new Error("CI did not return the complete job list.");
     }
   }
-  const current = await api.request(`${root}/runs/${run.id}`);
-  const currentState = ciRunState(current);
-  if (current.id !== run.id || current.head_sha !== run.head_sha) {
-    throw new Error("The CI run identity changed during security review.");
-  }
-  if (currentState === "pending") {
+  const current = await readCurrentCiRun(api, root, run);
+  if (current.status !== "completed") {
     return "pending";
   }
-  if (current.run_attempt !== run.run_attempt) {
-    throw new Error("The completed CI attempt changed during security review; rerun this review.");
-  }
   const gates = jobs.filter((job) => job.name === "openclaw/ci-gate");
-  return gates.length === 1 && gates[0].status === "completed" && gates[0].conclusion === "success"
-    ? "success"
-    : "failure";
+  if (gates.length !== 1 || gates[0].status !== "completed" || gates[0].conclusion !== "success") {
+    return "failure";
+  }
+  for (const skipped of skippedRuns) {
+    // A rerun may start while the earlier run's complete gate evidence is read.
+    const currentSkipped = await readCurrentCiRun(api, root, skipped);
+    if (currentSkipped.status !== "completed") {
+      return "pending";
+    }
+    if (!isSkippedPullRequestCiRun(currentSkipped)) {
+      throw new Error("The skipped CI run changed during security review; rerun this review.");
+    }
+  }
+  return "success";
 }
 
 async function main() {
