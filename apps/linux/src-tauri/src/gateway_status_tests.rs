@@ -12,7 +12,7 @@ const BROWSER_URL: &str = "http://127.0.0.1:18789/#bootstrapToken=fixture-status
 const INSPECTION_ERROR: &str = "systemctl is-enabled timed out";
 const RPC_ERROR: &str = "Gateway authentication failed: fixture token rejected";
 const CLI: &str = r#"#!/bin/sh
-root=$(dirname "$0")
+root="$OPENCLAW_STATUS_CONTRACT_CHILD"
 printf '%s\n' "$*" >> "$root/calls"
 case "$*" in
   --version) printf '0.0.0-test\n' ;;

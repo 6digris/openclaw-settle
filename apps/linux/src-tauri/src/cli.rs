@@ -30,12 +30,23 @@ pub(crate) fn configure_bundled_runtime(source: PathBuf, directory: PathBuf, ver
 
 #[cfg(test)]
 pub(crate) fn configure_bundled_fixture(executable: PathBuf, directory: PathBuf) {
+    #[cfg(target_os = "linux")]
+    {
+        use sha2::{Digest, Sha256};
+        let hash: String = Sha256::digest(std::fs::read(&executable).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        std::fs::write(
+            executable.with_file_name("manifest.json"),
+            serde_json::json!({"version":"0.1.0","sha256":hash}).to_string(),
+        )
+        .unwrap();
+        configure_bundled_runtime(executable, directory, "0.1.0".into());
+    }
+    #[cfg(not(target_os = "linux"))]
     let _ = BUNDLED_RUNTIME.set(BundledRuntime {
-        #[cfg(target_os = "linux")]
-        source: executable.clone(),
         directory,
-        #[cfg(target_os = "linux")]
-        version: "0.1.0".into(),
         prepared: Mutex::new(Some(executable)),
     });
 }
@@ -140,19 +151,29 @@ impl OpenClawCli {
         }
     }
 
-    pub(crate) fn bundled_service_launcher(&self) -> Option<&std::path::Path> {
+    pub(crate) fn bundled_service_launcher(&self) -> Option<PathBuf> {
         self.runtime_directory
             .as_ref()
-            .map(|_| self.executable.as_path())
+            .map(|directory| directory.join("openclaw-runtime"))
+    }
+
+    pub(crate) fn activate_bundled(&self) -> Result<(), CliError> {
+        #[cfg(target_os = "linux")]
+        if let Some(directory) = &self.runtime_directory {
+            crate::bundled_runtime::activate(&self.executable, directory)
+                .map_err(CliError::Environment)?;
+        }
+        Ok(())
     }
 
     pub fn is_available(&self) -> bool {
         self.available.load(Ordering::Acquire)
     }
 
-    fn verify(&self) -> Result<(), CliError> {
+    pub(crate) fn verify(&self) -> Result<(), CliError> {
         let output = self.output(["--version"])?;
         if output.status.success() {
+            self.activate_bundled()?;
             return Ok(());
         }
         Err(CliError::Spawn(format!(
@@ -302,6 +323,52 @@ mod tests {
         );
         assert!(!environment.contains_key(std::ffi::OsStr::new("OPENCLAW_STATE_DIR")));
         assert!(!environment.contains_key(std::ffi::OsStr::new("OPENCLAW_CONFIG_PATH")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_candidate_probe_keeps_the_previous_launcher_restartable() {
+        use sha2::{Digest, Sha256};
+        use std::fs;
+        let root =
+            std::env::temp_dir().join(format!("openclaw-cli-activation-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("resource");
+        let base = root.join("runtime");
+        let candidate = |body: &str| {
+            fs::write(&source, body).unwrap();
+            let hash: String = Sha256::digest(body.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            fs::write(
+                root.join("manifest.json"),
+                serde_json::json!({"version":"0.1.0","sha256":hash}).to_string(),
+            )
+            .unwrap();
+            let executable = crate::bundled_runtime::prepare(&source, &base, "0.1.0").unwrap();
+            let mut cli = OpenClawCli::new(executable, root.clone());
+            cli.runtime_directory = Some(base.clone());
+            cli
+        };
+        let good = candidate("#!/bin/sh\nprintf working\n");
+        let stable = good.bundled_service_launcher().unwrap();
+        assert!(!stable.exists());
+        good.verify().unwrap();
+        let previous = fs::read_link(&stable).unwrap();
+        let failed = candidate("#!/bin/sh\nprintf 'fixture extraction failure\\n' >&2\nexit 1\n");
+        assert_eq!(
+            fs::read_link(&stable).unwrap(),
+            previous,
+            "staging changed the active launcher"
+        );
+        assert!(failed.verify().is_err());
+        assert_eq!(fs::read_link(&stable).unwrap(), previous);
+        assert_eq!(
+            std::process::Command::new(&stable).output().unwrap().stdout,
+            b"working"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

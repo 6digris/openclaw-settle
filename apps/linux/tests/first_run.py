@@ -31,7 +31,7 @@ import time
 START_FAILURE = "Fixture: systemd user service is unavailable."
 
 
-def exercise(app, Atspi, GLib, *, remote_only, local_start_failure, inline_fixture, binary, gateway_switch, bundled_runtime=False, connected_remote=False):
+def exercise(app, Atspi, GLib, *, remote_only, local_start_failure, inline_fixture, binary, gateway_switch, bundled_runtime=False, connected_remote=False, managed_reinstall=False, failed_update=False):
     last_headings = set()
     last_controls = set()
 
@@ -150,6 +150,17 @@ def exercise(app, Atspi, GLib, *, remote_only, local_start_failure, inline_fixtu
             inline_fixture.exercise(app, binary, wait, Atspi)
         return
 
+    if managed_reinstall:
+        wait("OpenClaw needs attention", "heading")
+        click("Install OpenClaw")
+        wait("Fixture: managed reinstall selected.", prefix=True)
+        print("PASS: bundled app retained explicit managed-CLI reinstall", flush=True)
+        return
+    if failed_update:
+        wait("OpenClaw needs attention", "heading")
+        wait("OpenClaw CLI exited with", prefix=True)
+        print("PASS: failed bundled candidate was rejected by native startup", flush=True)
+        return
     if connected_remote:
         wait("Connect a verified AI model", "heading")
         wait("Check again", "push button")
@@ -223,7 +234,7 @@ def interrupted(signum, _frame):
     raise RuntimeError(f"Native first-run smoke interrupted by signal {signum}")
 
 
-def drive(binary, *, remote_only, local_start_failure, inline_browser, window_chrome, gateway_switch, gateway_onboarding, quick_chat, desktop_sharing, artifacts_dir, bundled_runtime=False, connected_remote=False):
+def drive(binary, *, remote_only, local_start_failure, inline_browser, window_chrome, gateway_switch, gateway_onboarding, quick_chat, desktop_sharing, artifacts_dir, bundled_runtime=False, connected_remote=False, managed_reinstall=False, failed_update=False):
     try:
         import gi
 
@@ -321,6 +332,8 @@ def drive(binary, *, remote_only, local_start_failure, inline_browser, window_ch
                 gateway_switch=gateway_switch or gateway_onboarding or desktop_sharing,
                 bundled_runtime=bundled_runtime,
                 connected_remote=connected_remote,
+                managed_reinstall=managed_reinstall,
+                failed_update=failed_update,
             )
         except BaseException:
             try:
@@ -352,6 +365,8 @@ def main():
         help="Retain a screenshot of the final native state (requires ImageMagick)",
     )
     scenarios = parser.add_mutually_exclusive_group()
+    scenarios.add_argument("--managed-reinstall", action="store_true", help="Exercise legacy managed-CLI recovery in a bundled app")
+    scenarios.add_argument("--failed-update", action="store_true", help="Reject a fault-injected bundled runtime candidate")
     scenarios.add_argument("--connected-remote", action="store_true",
         help="Exercise a configured real remote Gateway under the disposable test account")
     scenarios.add_argument("--bundled-runtime", action="store_true",
@@ -417,7 +432,7 @@ def main():
         if not all(os.access(f"/usr/bin/{tool}", os.X_OK) for tool in ("import", "identify")):
             parser.error("Screenshot capture requires ImageMagick's import and identify")
 
-    if args.bundled_runtime or args.connected_remote:
+    if args.bundled_runtime or args.connected_remote or args.managed_reinstall or args.failed_update:
         import pwd
         account = pwd.getpwuid(os.getuid())
         if not args.driver or not account.pw_name.startswith("openclaw-sea-") or (args.bundled_runtime and Path.home() != Path(account.pw_dir)):
@@ -436,6 +451,8 @@ def main():
             artifacts_dir=args.artifacts_dir,
             bundled_runtime=args.bundled_runtime,
             connected_remote=args.connected_remote,
+            managed_reinstall=args.managed_reinstall,
+            failed_update=args.failed_update,
         )
         return
 

@@ -93,9 +93,12 @@ pub(crate) fn configure_bundled_runtime(app: &AppHandle) -> Result<(), String> {
 #[cfg(not(target_os = "windows"))]
 pub fn install(app: &AppHandle, channel: InstallChannel) -> Result<(), String> {
     if crate::cli::OpenClawCli::bundled_available() {
-        return crate::cli::OpenClawCli::discover()
-            .map(|_| ())
-            .map_err(|error| error.to_string());
+        let selected = crate::cli::OpenClawCli::locate().map_err(|error| error.to_string())?;
+        if selected.bundled_service_launcher().is_some() {
+            return selected.verify().map_err(|error| error.to_string());
+        }
+        // An explicit reinstall repairs the selected managed/external CLI even
+        // when this app also carries an unused fallback runtime.
     }
     let script = app
         .path()

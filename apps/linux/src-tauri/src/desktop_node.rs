@@ -385,6 +385,12 @@ fn prepare(
     if !probe(&["--version"])?.status.success() {
         return Err("Install or update the local OpenClaw CLI to prepare desktop sharing.".into());
     }
+    if cancelled() {
+        return Err("Desktop sharing setup was superseded.".into());
+    }
+    // The cancellable probe above owns SEA extraction and Node startup. Never
+    // publish the service launcher from locate() before that probe succeeds.
+    cli.activate_bundled().map_err(|error| error.to_string())?;
     let config_file_output = probe(&["config", "file", "--json"])?;
     if !config_file_output.status.success() {
         return Err("Could not resolve this computer's config file. Run openclaw config file --json and try again.".into());

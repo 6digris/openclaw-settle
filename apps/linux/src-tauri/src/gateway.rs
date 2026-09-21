@@ -383,7 +383,7 @@ fn assert_bundled_service_owner(cli: &OpenClawCli) -> Result<(), String> {
         .and_then(|value| value.as_array())
         .and_then(|values| values.first())
         .and_then(|value| value.as_str());
-    if command.map(std::path::Path::new) != Some(launcher) {
+    if command.map(std::path::Path::new) != Some(launcher.as_path()) {
         return Err("This local Gateway is managed by another installation. Use its installer or service manager; the included runtime has left it unchanged.".into());
     }
     Ok(())
