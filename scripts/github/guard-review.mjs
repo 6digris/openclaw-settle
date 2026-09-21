@@ -10,6 +10,19 @@ import { securityReviewRollout } from "./security-review-rollout.mjs";
 
 const requestMarker = "<!-- openclaw:approval-request ";
 
+export class SupersededReviewError extends Error {
+  constructor() {
+    super(
+      "Superseded by a newer PR head; skipping this evaluation. Its automatic event will evaluate it.",
+    );
+  }
+}
+
+function isSupersededHead(expected, current) {
+  const validHead = (sha) => typeof sha === "string" && /^[a-f0-9]{40}$/u.test(sha);
+  return validHead(expected) && validHead(current) && expected !== current;
+}
+
 function pullRequestNumber(event) {
   if (event.pull_request) {
     return event.pull_request.number;
@@ -43,6 +56,12 @@ function snapshot(pr) {
 
 export async function assertGuardUnchanged(guard, { allowFileCountChange = false } = {}) {
   const current = await guard.api.request(guard.pullPath);
+  if (
+    current.number === guard.pullRequest.number &&
+    isSupersededHead(guard.pullRequest.head?.sha, current.head?.sha)
+  ) {
+    throw new SupersededReviewError();
+  }
   const expected = allowFileCountChange
     ? { ...guard.pullRequest, changed_files: current.changed_files }
     : guard.pullRequest;
@@ -103,6 +122,9 @@ export async function readGuardReview() {
   const pullRequest = await api.request(pullPath);
   const expectedHead = process.env.OPENCLAW_SECURITY_REVIEW_HEAD_SHA;
   if (expectedHead !== undefined && expectedHead !== pullRequest.head?.sha) {
+    if (pullRequest.number === number && isSupersededHead(expectedHead, pullRequest.head?.sha)) {
+      throw new SupersededReviewError();
+    }
     throw new Error(
       "The PR head changed after scheduling; its next automatic event will evaluate it.",
     );

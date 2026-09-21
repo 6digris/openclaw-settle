@@ -63,6 +63,7 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
 }) {
   const {
     connId,
+    clients,
     getRequiredSharedGatewaySessionGeneration,
     extraHandlers,
     getMethodRegistry,
@@ -198,6 +199,9 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
         : undefined,
     );
     const hasCurrentClientAuthority = clientAuthority.isCurrent;
+    // Origin/profile policy still enumerates clients; keep this invocation visible
+    // after transport closure without adding it to presence or message fanout.
+    const releaseAuthority = clients.retainRequest(client);
     try {
       const expectedProfileBinding =
         req.expectedProfileId === undefined
@@ -452,6 +456,7 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
       }
       await requestDispatch;
     } finally {
+      releaseAuthority();
       clientAuthority.release();
     }
   };

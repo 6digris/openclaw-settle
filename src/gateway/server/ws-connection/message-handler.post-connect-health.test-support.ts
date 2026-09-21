@@ -13,10 +13,6 @@ export function useGatewayTestConfig<T>(mock: Mock<() => T>, implementation: () 
   mock.mockImplementation(implementation);
 }
 
-export function createLogger() {
-  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-}
-
 export function createHealthSummary(): HealthSummary {
   return {
     ok: true,

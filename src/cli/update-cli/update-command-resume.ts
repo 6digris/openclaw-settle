@@ -22,6 +22,7 @@ import {
 } from "../../infra/update-post-core-context.js";
 import {
   createManagedUpdateRequesterAuthority,
+  createManagedUpdateRequesterContinuationAuthority,
   resolveManagedUpdateRequester,
 } from "../../infra/update-requester-authority.js";
 import { recordPostCoreUpdateEvidence } from "../../infra/update-run-interruption.js";
@@ -152,9 +153,15 @@ export async function resumePostCoreUpdate(params: ResumePostCoreUpdateParams): 
         async (executor) => {
           const fence = await executor.enter(root);
           const requester = resolveManagedUpdateRequester(record.origin.requester);
-          const requesterAuthority = requester
-            ? await createManagedUpdateRequesterAuthority(requester, env)
-            : undefined;
+          const requesterAuthority = requester?.authorizationSource?.startsWith("profile:")
+            ? await createManagedUpdateRequesterContinuationAuthority(
+                requester,
+                { runId, executor: fence },
+                env,
+              )
+            : requester
+              ? await createManagedUpdateRequesterAuthority(requester, env)
+              : undefined;
           fence.assertCurrent();
           const current = getUpdateRun(runId, { env });
           if (!inPostCore(current) || current?.createdAtMs !== record.createdAtMs) {

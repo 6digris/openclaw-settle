@@ -14,7 +14,8 @@ import { normalizeAnyChannelId, normalizeChatChannelId } from "../channels/regis
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   prepareChannelOperatorAdmin,
-  resolveChannelOperatorAdmin,
+  resolveChannelOperatorAdminAuthority,
+  resolveUpdateChannelOperatorAdminIdentityAuthority,
 } from "../gateway/channel-operator-authority.js";
 import { normalizeAccountId } from "../routing/account-id.js";
 import { resolveChannelAccountEntry } from "../routing/account-lookup.js";
@@ -549,34 +550,75 @@ export function isConfiguredCommandOwner(
   );
 }
 
-/** Synchronous kernel for one-shot updater/Doctor owners; Gateway ingress prepares in a worker. */
-export function resolveCommandOwner(
+/** Synchronous CLI capture; deferred effects retain its original person-access grant. */
+export function resolveCommandOwnerAuthority(
   cfg: OpenClawConfig,
   requester: { channel?: string; accountId?: string; senderId?: string },
   stateOptions: OpenClawStateDatabaseOptions = {},
-): string | undefined {
-  if (isConfiguredCommandOwner(cfg, requester)) {
-    return "configured-owner";
-  }
-  const providerId = normalizeAnyChannelId(requester.channel) ?? requester.channel;
-  if (!providerId || !requester.senderId) {
-    return undefined;
-  }
-  const profileId = resolveChannelOperatorAdmin(
+): PreparedCommandOwnerAuthority {
+  return captureCommandOwnerIdentity(
     cfg,
-    {
-      channelId: providerId,
-      accountId: normalizeAccountId(requester.accountId),
-      senderId: requester.senderId,
-    },
+    requester,
     stateOptions,
+    resolveChannelOperatorAdminAuthority,
   );
-  return profileId ? `profile:${profileId}` : undefined;
+}
+
+/** Additional person policy stays with the original Gateway's accepted update operation. */
+export function resolveUpdateRequesterIdentityAuthority(
+  cfg: OpenClawConfig,
+  requester: { channel?: string; accountId?: string; senderId?: string },
+  stateOptions: OpenClawStateDatabaseOptions = {},
+): PreparedCommandOwnerAuthority {
+  return captureCommandOwnerIdentity(
+    cfg,
+    requester,
+    stateOptions,
+    resolveUpdateChannelOperatorAdminIdentityAuthority,
+  );
+}
+
+function captureCommandOwnerIdentity(
+  cfg: OpenClawConfig,
+  requester: { channel?: string; accountId?: string; senderId?: string },
+  stateOptions: OpenClawStateDatabaseOptions,
+  resolveProfile: typeof resolveChannelOperatorAdminAuthority,
+): PreparedCommandOwnerAuthority {
+  const captured = { ...requester };
+  if (isConfiguredCommandOwner(cfg, captured)) {
+    return Object.freeze({
+      source: "configured-owner",
+      isCurrent: (currentCfg: OpenClawConfig) => isConfiguredCommandOwner(currentCfg, captured),
+    });
+  }
+  const providerId = normalizeAnyChannelId(captured.channel) ?? captured.channel;
+  const authority =
+    providerId && captured.senderId
+      ? resolveProfile(
+          cfg,
+          {
+            channelId: providerId,
+            accountId: normalizeAccountId(captured.accountId),
+            senderId: captured.senderId,
+          },
+          stateOptions,
+        )
+      : undefined;
+  return Object.freeze({
+    source: authority ? `profile:${authority.profileId}` : undefined,
+    ...(authority?.signal ? { signal: authority.signal } : {}),
+    isCurrent: (currentCfg: OpenClawConfig) =>
+      authority !== undefined &&
+      !isConfiguredCommandOwner(currentCfg, captured) &&
+      authority.isCurrent(currentCfg),
+  });
 }
 
 export type PreparedCommandOwnerAuthority = Readonly<{
   source: string | undefined;
   isCurrent: (currentCfg: OpenClawConfig) => boolean;
+  /** The original additional person-policy grant, never a substitute for the current check. */
+  signal?: AbortSignal;
 }>;
 
 /** Worker admission fixes the original person; synchronous final checks never touch SQLite. */
@@ -607,6 +649,7 @@ export async function prepareCommandOwnerAuthority(
       : undefined;
   return Object.freeze({
     source: prepared ? `profile:${prepared.profileId}` : undefined,
+    ...(prepared?.signal ? { signal: prepared.signal } : {}),
     isCurrent: (currentCfg: OpenClawConfig) =>
       prepared !== undefined &&
       !isConfiguredCommandOwner(currentCfg, captured) &&

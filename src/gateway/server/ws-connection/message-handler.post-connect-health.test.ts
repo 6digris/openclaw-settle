@@ -51,11 +51,12 @@ import {
   enforceSharedGatewaySessionGenerationForConfigWrite,
   SharedGatewaySessionGenerationState,
 } from "../../server-shared-auth-generation.js";
+import { GatewayClientRegistry } from "../client-registry.js";
+import { createGatewayWsTestLogger as createLogger } from "../ws-connection.test-helpers.js";
 import { resolveSharedGatewaySessionGeneration } from "../ws-shared-generation.js";
 import {
   createConnectedTestClient,
   createGatewayAttachmentCompletion,
-  createLogger,
   createHealthSummary,
   useGatewayTestConfig,
 } from "./message-handler.post-connect-health.test-support.js";
@@ -400,6 +401,7 @@ function attachGatewayHarness(options: {
     return true;
   });
   attachGatewayWsMessageHandler({
+    clients: new GatewayClientRegistry(),
     socket,
     prepareAuthenticatedReceive: () => ({ ok: true, value: handoffAuthenticatedReceive }),
     connectionWork,

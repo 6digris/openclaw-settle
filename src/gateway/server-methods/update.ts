@@ -81,6 +81,7 @@ import { wakeUpdateRunWatcher } from "../update-run-watcher.js";
 import { parseRestartRequestParams } from "./restart-request.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import {
+  retainUpdateRequesterAuthority,
   createUnexpectedUpdateFailureResult,
   recordHandoffFailure,
   resolveGatewayUpdateAdmission,
@@ -94,7 +95,7 @@ const MANAGED_HANDOFF_ALREADY_RUNNING_REASON = "managed-service-handoff-already-
 export const updateHandlers: GatewayRequestHandlers = {
   ...updateStatusHandlers,
   "update.report": updateReportHandler,
-  "update.run": async ({ params, respond, client, context }) => {
+  "update.run": async ({ params, respond, client, context, sessionMutationCommitGuard }) => {
     if (!assertValidParams(params, validateUpdateRunParams, "update.run", respond)) {
       return;
     }
@@ -148,6 +149,11 @@ export const updateHandlers: GatewayRequestHandlers = {
       ...requesterInput,
       ...(requesterAuthority ? { authorizationSource: requesterAuthority.source ?? "" } : {}),
     };
+    const retainedRequesterAuthority = retainUpdateRequesterAuthority(
+      requester,
+      requesterAuthority,
+      getConfig,
+    );
     const noticeTarget = await resolveUpdateRunNoticeTarget({
       cfg: config,
       sessionKey,
@@ -205,6 +211,15 @@ export const updateHandlers: GatewayRequestHandlers = {
     let ackQueued = false;
     let acknowledgement: string | undefined;
     let outcomeMessage: string | undefined;
+    const assertUpdateAdmissionCurrent = () => {
+      try {
+        sessionMutationCommitGuard?.();
+      } catch {
+        outcomeMessage =
+          "This update no longer has a live requester principal or scheduled operator admission. Ask the operator to run the update again.";
+        throw new UpdatePreMutationError("owner_required", outcomeMessage);
+      }
+    };
     let ownsUpdateOutcome = false;
     let adoptedCampaignId: string | undefined;
     const refuseUnauthorizedChatUpdate = () => {
@@ -469,24 +484,23 @@ export const updateHandlers: GatewayRequestHandlers = {
             return;
           }
           assertForegroundRespawnEnabled();
+          assertUpdateAdmissionCurrent();
           const started = await startManagedServiceUpdateHandoff({
             runId,
+            requesterAuthority: retainedRequesterAuthority,
             beforePark: async () => {
               const assertMayPark = () => {
                 const current = getUpdateRun(runId);
                 if (current?.status !== "running") {
                   throw new Error("Update run disappeared before Gateway parking.");
                 }
+                const currentConfig = getConfig();
+                retainedRequesterAuthority.assertCurrent();
                 if (foregroundOrigin) {
-                  const currentConfig = getConfig();
                   if (
                     !managedHandoffOwner ||
                     !claimManagedServiceUpdateHandoff(managedHandoffOwner) ||
-                    !isRestartEnabled(currentConfig) ||
-                    (requester?.channel &&
-                      !isInternalMessageChannel(requester.channel) &&
-                      (!requester.authorizationSource ||
-                        !requesterAuthority?.isCurrent(currentConfig)))
+                    !isRestartEnabled(currentConfig)
                   ) {
                     throw new Error("Foreground update authority changed before parking.");
                   }
@@ -645,6 +659,9 @@ export const updateHandlers: GatewayRequestHandlers = {
 
     if (managedHandoffOwner) {
       try {
+        if (sentinelPersisted) {
+          assertUpdateAdmissionCurrent();
+        }
         if (
           !sentinelPersisted ||
           !(await transferManagedServiceUpdateHandoff(managedHandoffOwner))

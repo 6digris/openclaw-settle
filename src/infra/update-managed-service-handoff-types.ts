@@ -11,6 +11,8 @@ import type {
 export type ManagedServiceUpdateHandoffParams = {
   runId?: string;
   beforePark?: () => Promise<void>;
+  /** Local original admission; never serialized to the detached helper. */
+  requesterAuthority?: Readonly<{ assertCurrent: () => void; signal?: AbortSignal }>;
   root: string;
   timeoutMs?: number;
   recoveryTimeoutMs?: number;

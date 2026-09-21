@@ -205,14 +205,17 @@ export function resolveUserChannelIdentityInDatabase(
     const kysely = userProfilesDb(db);
     const emails = executeSqliteQuerySync(
       db,
-      kysely.selectFrom("user_profile_emails").select("email").where("profile_id", "=", profile.id),
-    )
-      .rows.map(({ email }) => email)
-      .filter((email) => {
-        const login = classifyTailscaleLogin(email);
-        // Legacy email-shaped GitHub aliases must not revive a renamed login's grant.
-        return login.kind !== "provider" || login.provider !== "github";
-      });
+      kysely
+        .selectFrom("user_profile_emails")
+        .select("email")
+        .where("profile_id", "=", profile.id)
+        .orderBy("email", "asc"),
+    ).rows.map(({ email }) => email);
+    const loginEmails = emails.filter((email) => {
+      const login = classifyTailscaleLogin(email);
+      // Legacy email-shaped GitHub aliases must not revive a renamed login's grant.
+      return login.kind !== "provider" || login.provider !== "github";
+    });
     const providerLogins = executeSqliteQuerySync(
       db,
       kysely
@@ -236,7 +239,10 @@ export function resolveUserChannelIdentityInDatabase(
     return {
       profileId: profile.id,
       role: profile.role ?? null,
-      loginIdentities: [...new Set([...emails, ...providerLogins, ...githubLogins])].toSorted(),
+      emails,
+      loginIdentities: [
+        ...new Set([...loginEmails, ...providerLogins, ...githubLogins]),
+      ].toSorted(),
     };
   });
 }

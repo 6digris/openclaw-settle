@@ -21,6 +21,7 @@ export type UserChannelIdentityLink = { profileId: string; identity: UserChannel
 export type UserChannelIdentityAuthorityFacts = {
   profileId: string;
   role: string | null;
+  emails: string[];
   loginIdentities: string[];
 };
 

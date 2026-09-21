@@ -131,7 +131,14 @@ Use the exact configured account ID and immutable sender ID. An identical sender
 
 Links follow explicit profile merges and the surviving profile's current role. Linking does not rename or merge people, rewrite transcript attribution, assign session ownership, or change session visibility. Permission resolution separately checks the trusted incoming sender and the linked person's current authority.
 
-Every linked sender whose current effective operator role includes `operator.admin` receives channel-owner authority automatically. The role name does not matter, and no extra `gateway.auth.identityScopes` grant is needed. When operator roles are not configured, a matching administrative identity-scope grant supplies this authority instead. A configured nonadmin role prevents that fallback. Removing the link, demoting the person, or removing the role's administrative scope revokes inherited authority. Authority is rechecked before pending privileged actions take effect; already accepted operations finish their required cleanup. Explicit `commands.ownerAllowFrom` entries remain independent. See [Operator scopes](/gateway/operator-scopes).
+Every linked sender whose current effective operator role includes `operator.admin` receives channel-owner authority automatically while any role-required person-access grant remains active. The role name does not matter, and no extra `gateway.auth.identityScopes` grant is needed. When operator roles are not configured, a matching administrative identity-scope grant supplies this authority instead. A configured nonadmin role prevents that fallback. Removing the link, demoting the person, or removing the role's administrative scope revokes inherited authority. Authority is rechecked before pending privileged actions take effect; already accepted operations finish their required cleanup. Explicit `commands.ownerAllowFrom` entries remain independent. See [Operator scopes](/gateway/operator-scopes).
+
+Managed updates retain the original person-access grant through staging and a
+required authorization check before parking the Gateway. Once parking is
+accepted, the native updater owns completion or recovery of that update while
+profile, role, and configuration checks remain current. A restarted policy service
+or renewed invitation does not authorize a new request on the original grant.
+See [Restart handoff](/cli/update/how-updates-run#restart-handoff).
 
 Channel policies and explicit command allowlists still apply, including to native commands. Cosmetic profile changes do not cancel an authorized request; changing its identity link or role requires a fresh request.
 

@@ -347,6 +347,7 @@ it("reads current roles and only canonical login identities, including the curre
   expect(resolveUserChannelIdentity(identity, options)).toEqual({
     profileId: profile.id,
     role: "admin",
+    emails: ["ada@example.test", "old-login@github"],
     loginIdentities: ["ada@example.test", "ada@passkey", "new-login@github"],
   });
   setUserProfileRole(profile.id, "member", options);
@@ -361,6 +362,7 @@ it("reads current roles and only canonical login identities, including the curre
   expect(resolveUserChannelIdentity(identity, options)).toEqual({
     profileId: profile.id,
     role: "member",
+    emails: ["old-login@github"],
     loginIdentities: ["ada@passkey", "new-login@github"],
   });
 });
@@ -376,6 +378,7 @@ it("moves links through explicit profile merges and uses the surviving person's 
   expect(resolveUserChannelIdentity(identity, options)).toEqual({
     profileId: target.id,
     role: "member",
+    emails: ["source@example.test", "target@example.test"],
     loginIdentities: ["source@example.test", "target@example.test"],
   });
   expect(await listCanonicalUserChannelIdentities(source.id, options)).toEqual([
