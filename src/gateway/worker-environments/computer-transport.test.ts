@@ -11,16 +11,15 @@ import {
   validateAgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
 import { NODE_WORKER_DESKTOP_COMPUTER_COMMAND } from "../../infra/node-commands.js";
-import type { PluginApprovalRequestPayload } from "../../infra/plugin-approvals.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createWorkerComputerTool } from "../../worker/computer-runtime.js";
 import { createDesktopSessionRegistry } from "../desktop/session-registry.js";
-import { createTestApprovalManager } from "../exec-approval-manager.test-support.js";
 import {
   createApprovalClientLookup,
   createOperatorClient,
+  createPreparedPluginApprovalManager,
   expectSinglePendingApproval,
 } from "../node-invoke-plugin-policy.test-helpers.js";
 import { createWorkerComputerService } from "./computer-service.js";
@@ -421,8 +420,7 @@ describe("session computer transport", () => {
   it("keeps session and live run authority on clientless policy approvals", async (testContext) => {
     const h = createHarness();
     const { transport, prepared } = await h.prepare();
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
+    const manager = await createPreparedPluginApprovalManager(testContext, {
       validateAgentRuntimeDelegatedAuthority: (authority) =>
         validateAgentRunDelegatedAuthority(authority) &&
         (authority.kind === "local" || h.options.placements.validateTurnClaim(authority.turnClaim)),

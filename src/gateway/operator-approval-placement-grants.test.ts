@@ -32,7 +32,11 @@ import {
   createPlacementStandingGrantRuntime,
   type PlacementStandingGrantMintSpec,
 } from "./operator-approval-placement-grants.js";
-import { insertOperatorApproval, resolveOperatorApproval } from "./operator-approval-store.js";
+import {
+  insertOperatorApproval,
+  listPendingOperatorApprovals,
+  resolveOperatorApproval,
+} from "./operator-approval-store.js";
 
 type PlacementTestDatabase = Pick<
   OpenClawStateKyselyDatabase,
@@ -420,6 +424,7 @@ describe("placement standing grants", () => {
       retainPlacementStandingGrant: placementStandingGrants.retain,
       validateAgentRuntimeDelegatedAuthority: () => true,
     });
+    await listPendingOperatorApprovals({ databaseOptions });
     const policy = createDemoPolicy(async (context) => {
       const placementApproval = await context.approvals?.request({
         title: "Run on placement",

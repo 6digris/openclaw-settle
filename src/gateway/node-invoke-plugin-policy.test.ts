@@ -19,7 +19,6 @@ import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plug
 import type { OpenClawPluginNodeInvokePolicyContext } from "../plugins/types.js";
 import { closeOpenClawStateDatabaseByPath } from "../state/openclaw-state-db-cache.js";
 import { ExecApprovalManager } from "./exec-approval-manager.js";
-import { createTestApprovalManager } from "./exec-approval-manager.test-support.js";
 import { applyPluginNodeInvokePolicy } from "./node-invoke-plugin-policy.js";
 import {
   createApprovalClient,
@@ -29,6 +28,7 @@ import {
   createDemoPolicy,
   createNodeSession,
   createOperatorClient,
+  createPreparedPluginApprovalManager,
   DEMO_COMMAND,
   DEMO_PARAMS,
   DEMO_PLUGIN_ID,
@@ -146,9 +146,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it("preserves one approval and session identity through streaming readiness recovery", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const manager = await createPreparedPluginApprovalManager(testContext);
     const nodeSession = createNodeSession();
     nodeSession.pairingGeneration = "paired-generation-1";
     const reviewer = createOperatorClient("conn-owner-approval");
@@ -235,9 +233,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it("does not trust a plugin-owned invocation session without host attestation", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const manager = await createPreparedPluginApprovalManager(testContext);
     setDangerousDemoCommandRegistry([createApprovalRequestPolicy()]);
     const reviewer = createOperatorClient("conn-owner-approval");
     const { context } = createContext({
@@ -635,9 +631,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it.for([false, true])("routes approvals for synthetic=%s", async (synthetic, testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const manager = await createPreparedPluginApprovalManager(testContext);
     // The carried connection is turn provenance, never this approval's
     // presenter, so it stays eligible as a reviewer for both provenance shapes.
     const visibleConnIds = new Set(["conn-owner-approval", "conn-requester"]);
@@ -675,9 +669,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it("keeps a sole-reviewer operator requester routable instead of no-route denying", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const manager = await createPreparedPluginApprovalManager(testContext);
     const requester = createOperatorClient();
     setDangerousDemoCommandRegistry([createApprovalRequestPolicy()]);
     const { context } = createContext({
@@ -698,9 +690,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it("sanitizes node-policy approval titles at creation like the RPC ingress", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const manager = await createPreparedPluginApprovalManager(testContext);
     const getApprovalClientConnIds = createApprovalClientLookup([
       createOperatorClient("conn-owner-approval"),
     ]);
@@ -727,8 +717,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it("limits explicitly one-shot node-policy approvals to allow-once or deny", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
+    const manager = await createPreparedPluginApprovalManager(testContext, {
       resolveAllowedDecisions: resolveCanonicalPluginApprovalRequestAllowedDecisions,
     });
     setDangerousDemoCommandRegistry([
@@ -751,8 +740,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it("forwards plugin policy approvals to the originating turn source", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
+    const manager = await createPreparedPluginApprovalManager(testContext, {
       validateAgentRuntimeDelegatedAuthority: () => true,
     });
     const getApprovalClientConnIds = vi.fn(() => new Set<string>());
@@ -827,9 +815,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it("delivers plugin policy approvals to visible iOS reviewers", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const manager = await createPreparedPluginApprovalManager(testContext);
     const handleRequested = vi.fn(
       async (
         _request: PluginApprovalRequest,
@@ -868,9 +854,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it("sends an iOS cleanup wake through the current delivery owner", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const manager = await createPreparedPluginApprovalManager(testContext);
     const handleExpired = vi.fn(async () => {});
     setDangerousDemoCommandRegistry([createApprovalRequestPolicy()]);
     const { context } = createContext({
@@ -899,9 +883,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it("ignores approval routes from unsigned node.invoke clients", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const manager = await createPreparedPluginApprovalManager(testContext);
     const forwardPluginApprovalRequest = vi.fn(async () => false);
     setDangerousDemoCommandRegistry([createApprovalRequestPolicy()]);
     const { context } = createContext({
@@ -942,9 +924,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it("caps plugin policy approval timeouts through the shared approval policy", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const manager = await createPreparedPluginApprovalManager(testContext);
     setDangerousDemoCommandRegistry([
       createApprovalRequestPolicy({ timeoutMs: Number.MAX_SAFE_INTEGER }),
     ]);
@@ -963,9 +943,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it("fails closed when the allow-once claim cannot be consumed", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const manager = await createPreparedPluginApprovalManager(testContext);
     vi.spyOn(manager, "consumeAllowOnce").mockResolvedValue(false);
     setDangerousDemoCommandRegistry([createApprovalRequestPolicy()]);
     const { context } = createContext({
@@ -1030,9 +1008,7 @@ describe("applyPluginNodeInvokePolicy", () => {
   });
 
   it("keeps approval payload fields on UTF-16 boundaries", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const manager = await createPreparedPluginApprovalManager(testContext);
     setDangerousDemoCommandRegistry([
       createApprovalRequestPolicy({
         title: `${"a".repeat(79)}🚀tail`,

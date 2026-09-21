@@ -1,5 +1,5 @@
 /** Shared harness for node invoke plugin-policy tests. */
-import { expect, vi } from "vitest";
+import { expect, vi, type TestContext } from "vitest";
 import type { PluginApprovalRequestPayload } from "../infra/plugin-approvals.js";
 import { createPluginRecord } from "../plugins/loader-records.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
@@ -8,6 +8,8 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import type { OpenClawPluginNodeInvokePolicyContext } from "../plugins/types.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import type { ExecApprovalManager } from "./exec-approval-manager.js";
+import { createPreparedTestApprovalManager } from "./exec-approval-manager.test-support.js";
+import type { ExecApprovalManagerOptions } from "./exec-approval-manager.types.js";
 import { applyPluginNodeInvokePolicy } from "./node-invoke-plugin-policy.js";
 import type { NodeRegistry, NodeSession } from "./node-registry.js";
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
@@ -117,6 +119,21 @@ export function createOperatorClient(connId = "conn-requester"): GatewayClient {
     clientId: "client-owner",
     deviceId: "device-owner",
   });
+}
+
+export async function createPreparedPluginApprovalManager(
+  testContext: TestContext,
+  options: Omit<
+    ExecApprovalManagerOptions<PluginApprovalRequestPayload>,
+    "persistence" | "approvalKind"
+  > = {},
+): Promise<ExecApprovalManager<PluginApprovalRequestPayload>> {
+  return (
+    await createPreparedTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
+      approvalKind: "plugin",
+      ...options,
+    })
+  ).manager;
 }
 
 export type NodeInvokePolicyRegistration = PluginRegistry["nodeInvokePolicies"][number];

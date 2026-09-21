@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperationalRunInstanceRef } from "../agents/admitted-run-context.js";
-import type { PluginApprovalRequestPayload } from "../infra/plugin-approvals.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import type { OpenClawPluginNodeInvokePolicyContext } from "../plugins/types.js";
-import { createTestApprovalManager } from "./exec-approval-manager.test-support.js";
 import {
   applyPluginNodeInvokePolicy,
   type PluginNodeInvokePrivateTransport,
@@ -15,6 +13,7 @@ import {
   createDemoPolicy,
   createNodeSession,
   createOperatorClient,
+  createPreparedPluginApprovalManager,
   DEMO_COMMAND,
   DEMO_PARAMS,
   expectSinglePendingApproval,
@@ -39,9 +38,7 @@ describe("private node policy transport", () => {
   afterEach(resetPluginRuntimeStateForTest);
 
   it("uses the registered risk and approval policy without advertising the private capability", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const manager = await createPreparedPluginApprovalManager(testContext);
     const reviewer = createOperatorClient();
     const handle = vi.fn(async (policyContext: OpenClawPluginNodeInvokePolicyContext) => {
       expect(policyContext.risk).toEqual({ level: "high", family: "fixture_mutation" });

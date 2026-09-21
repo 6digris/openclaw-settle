@@ -49,7 +49,7 @@ import {
   resolveEffectiveChatHistoryMaxChars,
   sanitizeChatHistoryMessages,
 } from "../chat-display-projection.js";
-import { createTestApprovalManager } from "../exec-approval-manager.test-support.js";
+import * as approvalTestManagers from "../exec-approval-manager.test-support.js";
 import type { HealthSummary } from "../health/types.js";
 import { createChatAbortMarker, createChatRunState } from "../server-chat-state.js";
 import { HEALTH_REFRESH_INTERVAL_MS } from "../server-constants.js";
@@ -2601,8 +2601,8 @@ describe("exec approval handlers", () => {
     });
   }
 
-  function createExecApprovalFixture(testContext: TestContext, opts?: { config?: OpenClawConfig }) {
-    const manager = createTestApprovalManager(testContext);
+  async function createExecFixture(testContext: TestContext, opts?: { config?: OpenClawConfig }) {
+    const { manager } = await approvalTestManagers.createPreparedTestApprovalManager(testContext);
     const handlers = createExecApprovalHandlers(manager);
     const broadcasts: Array<{ event: string; payload: unknown }> = [];
     const respond = vi.fn();
@@ -2661,7 +2661,7 @@ describe("exec approval handlers", () => {
       client?: ExecApprovalRequestArgs["client"];
     },
   ) {
-    const fixture = createExecApprovalFixture(testContext);
+    const fixture = await createExecFixture(testContext);
     const requestPromise = requestExecApproval({
       handlers: fixture.handlers,
       respond: fixture.respond,
@@ -2684,10 +2684,10 @@ describe("exec approval handlers", () => {
     params: {
       request?: Record<string, unknown>;
       client?: ExecApprovalRequestArgs["client"];
-      fixtureOptions?: Parameters<typeof createExecApprovalFixture>[1];
+      fixtureOptions?: Parameters<typeof createExecFixture>[1];
     } = {},
   ) {
-    const fixture = createExecApprovalFixture(testContext, params.fixtureOptions);
+    const fixture = await createExecFixture(testContext, params.fixtureOptions);
     const requestPromise = requestExecApproval({
       handlers: fixture.handlers,
       respond: fixture.respond,
@@ -2702,9 +2702,9 @@ describe("exec approval handlers", () => {
   async function requestExecApprovalForTest(
     testContext: TestContext,
     request: Record<string, unknown>,
-    fixtureOptions?: Parameters<typeof createExecApprovalFixture>[1],
+    fixtureOptions?: Parameters<typeof createExecFixture>[1],
   ) {
-    const fixture = createExecApprovalFixture(testContext, fixtureOptions);
+    const fixture = await createExecFixture(testContext, fixtureOptions);
     await requestExecApproval({
       handlers: fixture.handlers,
       respond: fixture.respond,
@@ -2719,7 +2719,7 @@ describe("exec approval handlers", () => {
     params: Record<string, unknown>,
     message: string,
   ) {
-    const { handlers, respond, context } = createExecApprovalFixture(testContext);
+    const { handlers, respond, context } = await createExecFixture(testContext);
     await requestExecApproval({ handlers, respond, context, params });
     expect(mockCallArg(respond)).toBe(false);
     expect(mockCallArg(respond, 0, 1)).toBeUndefined();
@@ -2731,7 +2731,7 @@ describe("exec approval handlers", () => {
     requestParams: Record<string, unknown>,
     fallbackDecision: "allow-once" | "deny",
   ) {
-    const { handlers, broadcasts, respond, context } = createExecApprovalFixture(testContext);
+    const { handlers, broadcasts, respond, context } = await createExecFixture(testContext);
     const requestPromise = requestExecApproval({
       handlers,
       respond,
@@ -2796,7 +2796,7 @@ describe("exec approval handlers", () => {
       };
     },
   ) {
-    const manager = createTestApprovalManager(testContext);
+    const manager = approvalTestManagers.createTestApprovalManager(testContext);
     const forwarder = {
       handleRequested: vi.fn(async () => false),
       handleResolved: vi.fn(async () => {}),
@@ -2874,7 +2874,7 @@ describe("exec approval handlers", () => {
   });
 
   it("rejects approval requests when the command display would be truncated", async (testContext) => {
-    const { handlers, broadcasts, respond, context } = createExecApprovalFixture(testContext);
+    const { handlers, broadcasts, respond, context } = await createExecFixture(testContext);
     await requestExecApproval({
       handlers,
       respond,
@@ -2900,7 +2900,7 @@ describe("exec approval handlers", () => {
 
   it("rejects approval registration after the owning run was aborted", async (testContext) => {
     const { manager, handlers, broadcasts, respond, context } =
-      createExecApprovalFixture(testContext);
+      await createExecFixture(testContext);
     context.chatRunState.getOrCreate("run-aborted").abortMarker = createChatAbortMarker();
 
     await requestExecApproval({
@@ -2931,7 +2931,7 @@ describe("exec approval handlers", () => {
 
   it("marks an allowed wait result run-aborted when abort wins before consumption", async (testContext) => {
     const { manager, handlers, broadcasts, respond, context } =
-      createExecApprovalFixture(testContext);
+      await createExecFixture(testContext);
     const requestPromise = requestExecApproval({
       handlers,
       respond,
@@ -3088,7 +3088,7 @@ describe("exec approval handlers", () => {
   });
 
   it("lists and resolves only exec approvals owned by the caller", async (testContext) => {
-    const manager = createTestApprovalManager(testContext);
+    const manager = approvalTestManagers.createTestApprovalManager(testContext);
     const handlers = createExecApprovalHandlers(manager);
     const context = {
       broadcast: (_eventValue: string, _payload: unknown) => {},
@@ -3521,7 +3521,7 @@ describe("exec approval handlers", () => {
 
   it("treats duplicate same-decision exec resolves as idempotent during grace", async (testContext) => {
     const { manager, handlers, broadcasts, respond, context } =
-      createExecApprovalFixture(testContext);
+      await createExecFixture(testContext);
 
     const accepted = createDeferredCore();
     respond.mockImplementationOnce((_ok, payload) => {
@@ -3819,7 +3819,7 @@ describe("exec approval handlers", () => {
   });
 
   it("accepts resolve during broadcast", async (testContext) => {
-    const manager = createTestApprovalManager(testContext);
+    const manager = approvalTestManagers.createTestApprovalManager(testContext);
     const handlers = createExecApprovalHandlers(manager);
     const respond = vi.fn();
     const resolveRespond = vi.fn();
@@ -3895,7 +3895,7 @@ describe("exec approval handlers", () => {
     "rejects an unsafe explicit approval id containing an %s",
     async ([_label, id], testContext) => {
       const { manager, handlers, broadcasts, respond, context } =
-        createExecApprovalFixture(testContext);
+        await createExecFixture(testContext);
 
       await requestExecApproval({
         handlers,
@@ -3920,7 +3920,7 @@ describe("exec approval handlers", () => {
 
   it("accepts an explicit approval id with a leading dash", async (testContext) => {
     const { manager, handlers, broadcasts, respond, context } =
-      createExecApprovalFixture(testContext);
+      await createExecFixture(testContext);
 
     const requestPromise = requestExecApproval({
       handlers,
@@ -3937,7 +3937,7 @@ describe("exec approval handlers", () => {
   });
 
   it("rejects explicit approval ids with the reserved plugin prefix", async (testContext) => {
-    const { handlers, respond, context } = createExecApprovalFixture(testContext);
+    const { handlers, respond, context } = await createExecFixture(testContext);
 
     await requestExecApproval({
       handlers,
@@ -3955,7 +3955,7 @@ describe("exec approval handlers", () => {
   });
 
   it("accepts unique short approval id prefixes", async (testContext) => {
-    const manager = createTestApprovalManager(testContext);
+    const manager = approvalTestManagers.createTestApprovalManager(testContext);
     const handlers = createExecApprovalHandlers(manager);
     const respond = vi.fn();
     const context = {
@@ -3977,7 +3977,7 @@ describe("exec approval handlers", () => {
   });
 
   it("rejects ambiguous short approval id prefixes without leaking candidate ids", async (testContext) => {
-    const manager = createTestApprovalManager(testContext);
+    const manager = approvalTestManagers.createTestApprovalManager(testContext);
     const handlers = createExecApprovalHandlers(manager);
     const respond = vi.fn();
     const context = {
@@ -4008,7 +4008,7 @@ describe("exec approval handlers", () => {
   });
 
   it("returns deterministic unknown/expired message for missing approval ids", async (testContext) => {
-    const { handlers, respond, context } = createExecApprovalFixture(testContext);
+    const { handlers, respond, context } = await createExecFixture(testContext);
 
     await resolveExecApproval({
       handlers,
@@ -4028,7 +4028,7 @@ describe("exec approval handlers", () => {
   });
 
   it("resolves only the targeted approval id when multiple requests are pending", async (testContext) => {
-    const manager = createTestApprovalManager(testContext);
+    const manager = approvalTestManagers.createTestApprovalManager(testContext);
     const handlers = createExecApprovalHandlers(manager);
     const context = {
       getRuntimeConfig: () => ({}),
