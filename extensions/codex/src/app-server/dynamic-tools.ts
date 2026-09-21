@@ -19,7 +19,6 @@ import {
   type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
   isDeliveredMessageToolOnlySourceReplyResult,
   isDeliveredMessagingToolResult,
-  isAsyncStartedToolResult,
   isReplaySafeToolCall,
   isToolWrappedWithBeforeToolCallHook,
   isMessagingTool,
@@ -34,6 +33,7 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   copyInternalToolResultState,
+  isAsyncStartedToolResult,
   createAgentHarnessToolExecutionBoundaryRegistry,
   getCoreTtsToolResultMediaUrls,
   normalizeAcceptedSessionSpawnResult,
