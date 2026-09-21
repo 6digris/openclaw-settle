@@ -266,7 +266,7 @@ try {
         $installer = Join-Path $CandidateRoot 'scripts/install.ps1'
         $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
         $proof.installerSha256 = $hash
-        Assert-Proof ($hash -ceq '87406a49babeff0c18ff6b0a97c0428c87265baee5b16017e91aadef42e4a1c3') 'Installer bytes differ from reviewed candidate.'
+        Assert-Proof ($hash -ceq '0cc09c523a1aa0ca81e187bec3665f13a9d233b42bf8f0c3c8a46e2c090d5029') 'Installer bytes differ from reviewed candidate.'
     }
     New-Item -ItemType Directory -Path $WorkRoot | Out-Null
     $setupStarted = $true
