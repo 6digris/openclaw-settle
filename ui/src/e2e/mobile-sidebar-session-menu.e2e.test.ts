@@ -77,7 +77,15 @@ suite.define(() => {
         if (!buttonBox || !rowBox) {
           throw new Error("expected visible sidebar row and menu target");
         }
-        expect(buttonBox).toMatchObject({ width: 44, height: 44 });
+        expect(
+          await menuButton.evaluate((button) => {
+            const { width, height } = getComputedStyle(button);
+            return { width, height };
+          }),
+        ).toEqual({ width: "44px", height: "44px" });
+        // Drawer translation can round the viewport bounds by a fraction of a pixel.
+        expect(buttonBox.width).toBeCloseTo(44, 3);
+        expect(buttonBox.height).toBeCloseTo(44, 3);
         expect(buttonBox.y).toBeGreaterThanOrEqual(rowBox.y);
         expect(buttonBox.y + buttonBox.height).toBeLessThanOrEqual(rowBox.y + rowBox.height);
         if (pointer === "coarse") {
