@@ -73,6 +73,11 @@ export type AgentEventPayload = {
   agentId?: string;
 };
 
+type AgentProviderErrorObservation = {
+  rawErrorPreview?: string;
+  providerErrorMessagePreview?: string;
+};
+
 /** Gateway-only routing metadata stamped onto events after public input validation. */
 export type AgentEventRuntimePayload = AgentEventPayload & {
   readonly controlUiVisible?: boolean;
@@ -81,6 +86,12 @@ export type AgentEventRuntimePayload = AgentEventPayload & {
   readonly mainSessionRestartRecovery?: true;
   readonly projectSessionLifecycle?: boolean;
   readonly projectSessionMessages?: boolean;
+  /** Bounded provider detail for process-local diagnostics; never serialized to clients. */
+  readonly providerErrorObservation?: AgentProviderErrorObservation;
+};
+
+type AgentEventEmissionPayload = Omit<AgentEventPayload, "seq" | "ts"> & {
+  providerErrorObservation?: AgentProviderErrorObservation;
 };
 
 type AgentEventListener = (evt: AgentEventRuntimePayload) => void;
@@ -206,7 +217,7 @@ export function rotateAgentEventLifecycleGeneration(): string {
 }
 
 function enrichAgentEvent(
-  event: Omit<AgentEventPayload, "seq" | "ts">,
+  event: AgentEventEmissionPayload,
   claimId?: string,
 ): AgentEventRuntimePayload | undefined {
   const state = getAgentEventState();
@@ -324,6 +335,14 @@ function enrichAgentEvent(
       enumerable: false,
     });
   }
+  if (event.providerErrorObservation !== undefined) {
+    // Runtime listeners need the already-redacted provider detail, but public
+    // event spreads and JSON serialization must retain the client-safe payload.
+    Object.defineProperty(enriched, "providerErrorObservation", {
+      value: event.providerErrorObservation,
+      enumerable: false,
+    });
+  }
   if (claimId !== undefined) {
     Object.defineProperty(enriched, "contextClaimId", {
       value: claimId,
@@ -370,7 +389,7 @@ function* iterateAgentEventListeners(
 }
 
 /** Emits an event only when its run ownership is still current. */
-export function emitAgentEventIfCurrent(event: Omit<AgentEventPayload, "seq" | "ts">): boolean {
+export function emitAgentEventIfCurrent(event: AgentEventEmissionPayload): boolean {
   const enriched = enrichAgentEvent(event);
   if (!enriched) {
     return false;
@@ -400,14 +419,11 @@ export function emitAgentRunOutputTokens(params: {
 }
 
 /** Emits an agent event after assigning per-run sequence, timestamp, and context metadata. */
-export function emitAgentEvent(event: Omit<AgentEventPayload, "seq" | "ts">) {
+export function emitAgentEvent(event: AgentEventEmissionPayload) {
   emitAgentEventIfCurrent(event);
 }
 
-export function emitAgentEventForOwner(
-  event: Omit<AgentEventPayload, "seq" | "ts">,
-  claimId: string,
-) {
+export function emitAgentEventForOwner(event: AgentEventEmissionPayload, claimId: string) {
   const enriched = enrichAgentEvent(event, claimId);
   if (enriched) {
     notifyListeners(iterateAgentEventListeners(getAgentEventState(), enriched), enriched);
@@ -415,7 +431,7 @@ export function emitAgentEventForOwner(
 }
 
 /** Emits run metadata only to the Gateway-owned durable audit projection. */
-export function emitAgentAuditEvent(event: Omit<AgentEventPayload, "seq" | "ts">) {
+export function emitAgentAuditEvent(event: AgentEventEmissionPayload) {
   const state = getAgentEventState();
   const enriched = enrichAgentEvent(event);
   if (enriched) {
@@ -444,7 +460,10 @@ export function onAgentRuntimeEvent(listener: (evt: AgentEventRuntimePayload) =>
  * Prefer this over `onAgentEvent` for a listener that discards other runs: those
  * listeners otherwise run on every concurrent run's events.
  */
-export function onAgentEventForRun(runId: string, listener: (evt: AgentEventPayload) => void) {
+export function onAgentEventForRun(
+  runId: string,
+  listener: (evt: AgentEventRuntimePayload) => void,
+) {
   return registerAgentEventListener(listener, runId);
 }
 

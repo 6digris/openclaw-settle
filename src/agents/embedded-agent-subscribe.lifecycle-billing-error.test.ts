@@ -22,6 +22,7 @@ import {
   emitAssistantLifecycleErrorAndEnd,
   findLifecycleErrorAgentEvent,
 } from "./embedded-agent-subscribe.e2e-harness.js";
+import { shouldSkipLiveProviderDrift } from "./live-test-provider-drift.js";
 import {
   createAssistant,
   createAssistantResultStream,
@@ -91,6 +92,36 @@ describe("subscribeEmbeddedAgentSession lifecycle billing errors", () => {
         }),
       }),
     ]);
+  });
+
+  it("carries a redacted provider rejection to the live drift classifier", () => {
+    const runId = "run-provider-drift-observation";
+    const emitted = vi.fn();
+    const unlisten = onAgentEventForRun(runId, emitted);
+    try {
+      const { emit } = createAgentEventHarness({ runId });
+      emitAssistantLifecycleErrorAndEnd({
+        emit,
+        errorMessage:
+          "400 Upstream request failed: This Go model requires Global regions. Select Global in your workspace's Privacy settings to use it.",
+        provider: "opencode-go",
+        model: "fixture-go-model",
+      });
+
+      const terminal = emitted.mock.calls
+        .map(([event]) => event)
+        .find((event) => event.stream === "lifecycle" && event.data.phase === "error");
+      const preview = terminal?.providerErrorObservation?.rawErrorPreview;
+      expect(preview).toContain("This Go model requires Global regions");
+      expect(
+        shouldSkipLiveProviderDrift({
+          error: new Error(`providerError=${preview}`),
+          allowProviderUnavailable: true,
+        }),
+      ).toEqual({ reason: "provider-unavailable", label: "provider unavailable" });
+    } finally {
+      unlisten();
+    }
   });
 
   it("preserves the prepared custom-route owner through real terminal dispatch", async () => {
@@ -207,6 +238,14 @@ describe("subscribeEmbeddedAgentSession lifecycle billing errors", () => {
               }),
             ]);
           }
+          const runtimeTerminal = emitted.mock.calls
+            .map(([event]) => event)
+            .find((event) => event.stream === "lifecycle" && event.data.phase === "error");
+          expect(runtimeTerminal?.providerErrorObservation).toEqual(
+            expect.objectContaining({ rawErrorPreview: "403 fixture refusal" }),
+          );
+          expect(runtimeTerminal?.data).not.toHaveProperty("providerErrorObservation");
+          expect(Object.keys(runtimeTerminal ?? {})).not.toContain("providerErrorObservation");
           expect(hookContexts).toContainEqual(
             expect.objectContaining({
               provider: ownerId,

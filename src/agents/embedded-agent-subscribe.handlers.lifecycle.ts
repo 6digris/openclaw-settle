@@ -69,6 +69,7 @@ export function handleAgentEnd(
   const lastAssistant = ctx.state.lastAssistant;
   const isError = isAssistantMessage(lastAssistant) && lastAssistant.stopReason === "error";
   let lifecycleErrorText: string | undefined;
+  let providerErrorObservation: ReturnType<typeof buildApiErrorObservationFields> | undefined;
   // Terminal delivery does not depend on streamed text alone: when the streamed
   // assistant texts are empty, payload building falls back to the completed
   // assistant message's visible text, so such a turn still reaches the user.
@@ -163,6 +164,7 @@ export function handleAgentEnd(
       provider: lastAssistant.provider,
       providerOwner: ctx.params.providerOwner,
     });
+    providerErrorObservation = observedError;
     const safeErrorText =
       buildTextObservationFields(errorText, {
         provider: lastAssistant.provider,
@@ -230,6 +232,7 @@ export function handleAgentEnd(
         ? { lifecycleGeneration: ctx.params.lifecycleGeneration }
         : {}),
       stream: "lifecycle",
+      providerErrorObservation,
       data: {
         phase,
         ...errorData,
