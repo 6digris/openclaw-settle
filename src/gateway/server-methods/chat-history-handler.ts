@@ -229,7 +229,7 @@ export async function handleChatHistoryRequest({
     return currentEntry
       ? {
           visibility: resolveSessionVisibility(currentEntry),
-          sharingRole: sharing.presentRoleForTarget({
+          sharingRole: sharing.roleForTarget({
             ...current,
             entry: currentEntry,
             storeKey: current.legacyKey ?? current.canonicalKey,

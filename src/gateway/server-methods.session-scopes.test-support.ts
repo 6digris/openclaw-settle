@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { OperatorScope } from "./operator-scopes.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import { initializeSessionReadContext } from "./server-methods/sessions-read-cache.test-support.js";
 import type {
@@ -13,7 +14,7 @@ import { createGatewayRequestContext } from "./server-request-context.js";
 import { makeContextParams } from "./server-request-context.test-support.js";
 
 export function roleConfig(
-  scopes = ["operator.write"],
+  scopes: OperatorScope[] = ["operator.write"],
   others: "none" | "write" = "write",
 ): OpenClawConfig {
   return {

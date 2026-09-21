@@ -655,22 +655,16 @@ export function prepareSessionSharing(
       preparedPolicy,
       isCreator,
     );
-  const authorizeTarget = (target: SessionSharingTarget) =>
-    authorizeSessionSharingTarget(
-      { ...params, target },
-      preparedPolicy && { ...preparedPolicy, role: roleForTarget(target) },
-    );
   return {
     isCreator,
     sessionCap: prepared?.sessionCap,
     entryFilter: createSessionListEntryFilter(params, isCreator, prepared),
     roleForTarget,
-    authorizeTarget,
-    // Presentation follows effective input permission; event audiences still use membership.
-    presentRoleForTarget: (target: SessionSharingTarget) => {
-      const role = roleForTarget(target);
-      return role === "viewer" && authorizeTarget(target) === null ? "member" : role;
-    },
+    authorizeTarget: (target: SessionSharingTarget) =>
+      authorizeSessionSharingTarget(
+        { ...params, target },
+        preparedPolicy && { ...preparedPolicy, role: roleForTarget(target) },
+      ),
   };
 }
 

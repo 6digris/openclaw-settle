@@ -158,7 +158,7 @@ describe("SessionParticipationTracker", () => {
       resolve(new SessionParticipationTracker(), {
         session: { visibility: "shared", sharingRole: "viewer" },
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       resolve(new SessionParticipationTracker(), {
         session: { visibility: "shared", sharingRole: "owner" },

@@ -1117,16 +1117,7 @@ function renderSessionsTable(props: SessionsProps, ctx: SessionsTableContext) {
   `;
 }
 
-function renderRows(row: GatewaySessionRow, originalProps: SessionsProps) {
-  let props = originalProps;
-  if (row.sharingRole === "viewer") {
-    const reason = t("chat.sessionSharing.readOnlyNotice");
-    props = {
-      ...props,
-      patchAdminDisabledReason: reason,
-      groupWriteDisabledReason: reason,
-    };
-  }
+function renderRows(row: GatewaySessionRow, props: SessionsProps) {
   const updated = row.updatedAt ? formatRelativeTimestamp(row.updatedAt) : t("common.na");
   const isExpanded = props.expandedSessionKey === row.key;
   const detailsId = `session-details-${encodeURIComponent(row.key)}`;
@@ -1372,9 +1363,7 @@ function renderSessionDetailsRow(params: {
     kindClass,
     updated,
   } = params;
-  const labelDisabledReason =
-    props.labelDisabledReason?.(row) ??
-    (row.sharingRole === "viewer" ? t("chat.sessionSharing.readOnlyNotice") : undefined);
+  const labelDisabledReason = props.labelDisabledReason?.(row);
   const rawThinking = row.thinkingLevel ?? "";
   const thinking = rawThinking ? normalizeThinkingOptionValue(rawThinking) : "";
   const thinkLevels = withCurrentLabeledOption(

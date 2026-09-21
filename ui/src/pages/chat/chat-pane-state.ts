@@ -49,7 +49,9 @@ export class SessionParticipationTracker {
       const blocked =
         params.session.visibility === "draft"
           ? params.session.sharingRole !== "admin" && params.session.sharingRole !== "owner"
-          : params.session.sharingRole === "viewer";
+          : params.session.visibility !== undefined &&
+            params.session.visibility !== "shared" &&
+            params.session.sharingRole === "viewer";
       this.remember(params.sessionKey, blocked);
       return blocked;
     }

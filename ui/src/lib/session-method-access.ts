@@ -16,7 +16,7 @@ export type SessionMethodAccess =
       allowed: false;
       requiredScope: SessionMethodOperatorScope;
       reason: string;
-      cause: "disconnected" | "method-unavailable" | "missing-scope" | "session-view-only";
+      cause: "disconnected" | "method-unavailable" | "missing-scope" | "session-not-owned";
     };
 
 export type SessionMethodAccessRequest = {
@@ -27,11 +27,7 @@ export type SessionMethodAccessRequest = {
 };
 
 export function sessionAccessRowForBatch(rows: readonly SessionAccessRow[]) {
-  return (
-    rows.find((row) => row.sharingRole === "viewer") ??
-    rows.find((row) => row.sharingRole !== "owner" && row.sharingRole !== "admin") ??
-    rows[0]
-  );
+  return rows.find((row) => row.sharingRole !== "owner" && row.sharingRole !== "admin") ?? rows[0];
 }
 
 function sessionMethodAccessReason(
@@ -44,8 +40,8 @@ function sessionMethodAccessReason(
   if (cause === "method-unavailable") {
     return t("sessionsView.actionUnavailable");
   }
-  if (cause === "session-view-only") {
-    return t("chat.sessionSharing.readOnlyNotice");
+  if (cause === "session-not-owned") {
+    return t("sessionsView.actionRequiresOwnership");
   }
   return t(
     requiredScope === "operator.admin"
@@ -103,19 +99,12 @@ export function readSessionMethodAccess(
     const requireOwner =
       requiredScope === "operator.sessions.write" && !hasOperatorWriteAccess(auth);
     const role = request.session?.sharingRole;
-    if (
-      (requireOwner && role !== "owner" && role !== "admin") ||
-      (role === "viewer" &&
-        requiredScope !== "operator.read" &&
-        requiredScope !== "operator.sessions.read")
-    ) {
+    if (requireOwner && role !== "owner" && role !== "admin") {
       return {
         allowed: false,
         requiredScope,
-        reason: requireOwner
-          ? t("sessionsView.actionRequiresOwnership")
-          : sessionMethodAccessReason("session-view-only", requiredScope),
-        cause: "session-view-only",
+        reason: sessionMethodAccessReason("session-not-owned", requiredScope),
+        cause: "session-not-owned",
       };
     }
     return { allowed: true, requiredScope };

@@ -140,7 +140,7 @@ describe("progress card request authorization", () => {
             await release.promise;
             return card;
           },
-          put: progressCardStore.put,
+          put: progressCardStore.put.bind(progressCardStore),
         };
         const context = {
           ...createGatewayRequestContext(makeContextParams()),

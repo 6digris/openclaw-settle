@@ -99,6 +99,7 @@ describe("readSessionMethodAccess", () => {
           readSessionMethodAccess(snapshot({ methods: ["sessions.patch"], scopes: [scope] }), {
             method: "sessions.patch",
             params: { key: "agent:main:main", [field]: null },
+            session: { sharingRole: "viewer" },
           }),
         ).toMatchObject({
           allowed: scope === "operator.write" || scope === "operator.admin",
@@ -107,6 +108,31 @@ describe("readSessionMethodAccess", () => {
       }
     },
   );
+
+  it("requires ownership only for narrow session organization", () => {
+    const request = { method: "sessions.patch", params: { key: "agent:main:notes", label: null } };
+    const scoped = snapshot({ methods: [request.method], scopes: ["operator.sessions.write"] });
+    expect(
+      readSessionMethodAccess(scoped, { ...request, session: { sharingRole: "owner" } }),
+    ).toEqual({ allowed: true, requiredScope: "operator.sessions.write" });
+    for (const session of [
+      { sharingRole: "member" },
+      { sharingRole: "viewer" },
+      undefined,
+    ] as const) {
+      expect(readSessionMethodAccess(scoped, { ...request, session })).toMatchObject({
+        allowed: false,
+        requiredScope: "operator.sessions.write",
+        cause: "session-not-owned",
+      });
+    }
+    expect(
+      readSessionMethodAccess(snapshot({ methods: [request.method], scopes: ["operator.write"] }), {
+        ...request,
+        session: { sharingRole: "viewer" },
+      }),
+    ).toEqual({ allowed: true, requiredScope: "operator.sessions.write" });
+  });
 
   it("keeps context-window changes separate from write-scoped effort access", () => {
     expect(
