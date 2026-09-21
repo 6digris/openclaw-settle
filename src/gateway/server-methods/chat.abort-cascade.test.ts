@@ -64,7 +64,10 @@ describe("descendant cascade ownership", () => {
       cleanup: "keep",
       collect: true,
     });
-    const start = vi.fn(async () => {});
+    const started = createDeferred();
+    const start = vi.fn(async () => {
+      started.resolve();
+    });
     enqueueSwarmRun({
       groupId: "retained-stop",
       runId: "retained-stop-child",
@@ -111,6 +114,7 @@ describe("descendant cascade ownership", () => {
     expect(getSubagentRunByChildSessionKey(childKey)?.execution.endedAt).toBeUndefined();
     expect(start).not.toHaveBeenCalled();
     releaseSwarmRun("held-capacity");
+    await started.promise;
     expect(start).toHaveBeenCalledOnce();
   });
 
