@@ -40,6 +40,7 @@ import {
 import { withEnvAsync } from "../test-utils/env.js";
 import { buildSystemRunApprovalPlan } from "./invoke-system-run-plan.js";
 import { handleSystemRunInvoke } from "./invoke-system-run.js";
+import { registerSystemRunSuppressionTests } from "./invoke-system-run.suppressions.test-support.js";
 
 type HandleSystemRunInvokeOptions = Parameters<typeof handleSystemRunInvoke>[0];
 
@@ -53,7 +54,7 @@ type MockedRunViaMacAppExecHost = Mock<HandleSystemRunInvokeOptions["runViaMacAp
 type MockedSendInvokeResult = Mock<HandleSystemRunInvokeOptions["sendInvokeResult"]>;
 type MockedSendExecFinishedEvent = Mock<HandleSystemRunInvokeOptions["sendExecFinishedEvent"]>;
 type MockedSendNodeEvent = Mock<HandleSystemRunInvokeOptions["sendNodeEvent"]>;
-type InvokeSpies = {
+export type InvokeSpies = {
   runCommand: MockedRunCommand;
   runViaMacAppExecHost: MockedRunViaMacAppExecHost;
   sendInvokeResult: MockedSendInvokeResult;
@@ -75,6 +76,40 @@ type MacExecHostCall = {
     approvalSource?: string | null;
     policySnapshot?: unknown;
   };
+};
+
+export type SystemInvokeFixtureParams = {
+  preferMacAppExecHost: boolean;
+  execHostFallbackAllowed?: boolean;
+  runViaResponse?: ExecHostResponse | null;
+  command?: string[];
+  env?: Record<string, string>;
+  rawCommand?: string | null;
+  systemRunPlan?: SystemRunApprovalPlan | null;
+  preparedPlan?: SystemRunApprovalPlan;
+  cwd?: string;
+  agentId?: string;
+  security?: "full" | "allowlist";
+  ask?: "off" | "on-miss" | "always";
+  approvalDecision?: "allow" | "allow-once" | "allow-always" | "deny" | null;
+  approvalSource?: string | null;
+  approved?: boolean;
+  needsScreenRecording?: boolean;
+  suppressNotifyOnExit?: boolean;
+  runCommand?: HandleSystemRunInvokeOptions["runCommand"];
+  runViaMacAppExecHost?: HandleSystemRunInvokeOptions["runViaMacAppExecHost"];
+  sendInvokeResult?: HandleSystemRunInvokeOptions["sendInvokeResult"];
+  sendExecFinishedEvent?: HandleSystemRunInvokeOptions["sendExecFinishedEvent"];
+  sendNodeEvent?: HandleSystemRunInvokeOptions["sendNodeEvent"];
+  skillBinsCurrent?: () => Promise<Array<{ name: string; resolvedPath: string }>>;
+  isCmdExeInvocation?: HandleSystemRunInvokeOptions["isCmdExeInvocation"];
+  sanitizeEnv?: HandleSystemRunInvokeOptions["sanitizeEnv"];
+  resolveExecSecurity?: HandleSystemRunInvokeOptions["resolveExecSecurity"];
+  resolveExecAsk?: HandleSystemRunInvokeOptions["resolveExecAsk"];
+  autoReviewer?: ExecAutoReviewer;
+  commitExecAuthorization?: HandleSystemRunInvokeOptions["commitExecAuthorization"];
+  prepareDelayedApprovalPlan?: boolean;
+  signal?: AbortSignal;
 };
 
 describe("handleSystemRunInvoke mac app exec host routing", () => {
@@ -549,39 +584,7 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     }
   }
 
-  async function runSystemInvoke(params: {
-    preferMacAppExecHost: boolean;
-    execHostFallbackAllowed?: boolean;
-    runViaResponse?: ExecHostResponse | null;
-    command?: string[];
-    env?: Record<string, string>;
-    rawCommand?: string | null;
-    systemRunPlan?: SystemRunApprovalPlan | null;
-    preparedPlan?: SystemRunApprovalPlan;
-    cwd?: string;
-    agentId?: string;
-    security?: "full" | "allowlist";
-    ask?: "off" | "on-miss" | "always";
-    approvalDecision?: "allow" | "allow-once" | "allow-always" | "deny" | null;
-    approvalSource?: string | null;
-    approved?: boolean;
-    needsScreenRecording?: boolean;
-    suppressNotifyOnExit?: boolean;
-    runCommand?: HandleSystemRunInvokeOptions["runCommand"];
-    runViaMacAppExecHost?: HandleSystemRunInvokeOptions["runViaMacAppExecHost"];
-    sendInvokeResult?: HandleSystemRunInvokeOptions["sendInvokeResult"];
-    sendExecFinishedEvent?: HandleSystemRunInvokeOptions["sendExecFinishedEvent"];
-    sendNodeEvent?: HandleSystemRunInvokeOptions["sendNodeEvent"];
-    skillBinsCurrent?: () => Promise<Array<{ name: string; resolvedPath: string }>>;
-    isCmdExeInvocation?: HandleSystemRunInvokeOptions["isCmdExeInvocation"];
-    sanitizeEnv?: HandleSystemRunInvokeOptions["sanitizeEnv"];
-    resolveExecSecurity?: HandleSystemRunInvokeOptions["resolveExecSecurity"];
-    resolveExecAsk?: HandleSystemRunInvokeOptions["resolveExecAsk"];
-    autoReviewer?: ExecAutoReviewer;
-    commitExecAuthorization?: HandleSystemRunInvokeOptions["commitExecAuthorization"];
-    prepareDelayedApprovalPlan?: boolean;
-    signal?: AbortSignal;
-  }): Promise<InvokeSpies> {
+  async function runSystemInvoke(params: SystemInvokeFixtureParams): Promise<InvokeSpies> {
     const spies = createInvokeSpies({
       runCommand: params.runCommand,
       runViaMacAppExecHost:
@@ -667,8 +670,6 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
 
     return spies;
   }
-
-  type SystemInvokeFixtureParams = Parameters<typeof runSystemInvoke>[0];
 
   async function runLocalSystemInvoke(
     params: Omit<SystemInvokeFixtureParams, "preferMacAppExecHost"> = {},
@@ -1017,45 +1018,18 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     },
   );
 
-  it("does not auto-review direct system.run security audit suppression edits", async () => {
-    const tmp = createFixtureDir("openclaw-system-run-auto-review-suppression-");
-    const executablePath = createTempExecutable(tmp, "openclaw");
-    setRuntimeConfigSnapshot({
-      tools: {
-        exec: {
-          mode: "auto",
-        },
-      },
-    });
-    try {
-      const autoReviewer = vi.fn<ExecAutoReviewer>(() => ({
-        decision: "allow-once",
-        rationale: "test reviewer would allow it",
-        risk: "low",
-      }));
-      const runCommand = vi.fn(async () => createLocalRunResult("should-not-run"));
-      const prepared = buildCwdApprovalPlan(
-        [executablePath, "config", "set", "security.audit.suppressions", "[]"],
-        tmp,
-      );
-      expect(prepared.ok).toBe(true);
-      requireApprovalPlan(prepared, "unreachable");
-      const invoke = await runLocalSystemInvoke({
-        command: prepared.plan.argv,
-        cwd: prepared.plan.cwd ?? tmp,
-        systemRunPlan: prepared.plan,
-        runCommand,
-        resolveExecSecurity: resolveProductionExecSecurity,
-        resolveExecAsk: resolveProductionExecAsk,
-        autoReviewer,
-      });
-
-      expect(autoReviewer).not.toHaveBeenCalled();
-      expect(runCommand).not.toHaveBeenCalled();
-      expectInvokeErrorMessage(invoke.sendInvokeResult, "SYSTEM_RUN_DENIED: approval required");
-    } finally {
-      clearRuntimeConfigSnapshot();
-    }
+  registerSystemRunSuppressionTests({
+    runLocalSystemInvokeWithPolicy,
+    expectInvokeOk,
+    expectApprovalRequiredDenied,
+    createFixtureDir,
+    createTempExecutable,
+    createLocalRunResult,
+    buildCwdApprovalPlan,
+    runLocalSystemInvoke,
+    resolveProductionExecSecurity,
+    resolveProductionExecAsk,
+    expectInvokeErrorMessage,
   });
 
   it.each(["ask", "deny"] as const)(

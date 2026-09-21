@@ -641,10 +641,10 @@ async function evaluateSystemRunPolicyPhase(
   });
   const requiresSecurityAuditSuppressionApproval =
     commandRequiresSecurityAuditSuppressionApproval({
-      command: parsed.commandText,
-      cwd: parsed.cwd,
+      command: parsed.commandPreview ?? parsed.commandText,
       env: parsed.env,
-      segments,
+      ...allowlistEvaluation,
+      segments: [{ argv: parsed.argv }, ...segments],
     }) && !(baseSecurity === "full" && baseAsk === "off" && !fallbackRequest);
   if (forwardedAutoReview && requiresSecurityAuditSuppressionApproval) {
     await sendSystemRunDenied(opts, parsed.execution, {

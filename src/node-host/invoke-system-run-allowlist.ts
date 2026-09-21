@@ -12,7 +12,10 @@ import {
   type ExecSecurity,
   type SkillBinTrustEntry,
 } from "../infra/exec-approvals.js";
-import type { ExecAuthorizationPlan } from "../infra/exec-authorization-plan.js";
+import {
+  planExecAuthorization,
+  type ExecAuthorizationPlan,
+} from "../infra/exec-authorization-plan.js";
 import { buildAuthorizedShellCommandFromPlan } from "../infra/exec-authorization-render.js";
 import { resolveExecSafeBinRuntimePolicy } from "../infra/exec-safe-bin-runtime-policy.js";
 import {
@@ -25,6 +28,7 @@ import {
   POSIX_INLINE_COMMAND_FLAGS,
   resolveInlineCommandMatch,
 } from "../infra/shell-inline-command.js";
+import { formatExecCommand } from "../infra/system-run-command.js";
 import type { RunResult } from "./invoke-types.js";
 
 /**
@@ -103,6 +107,13 @@ export async function evaluateSystemRunAllowlist(params: {
     autoAllowSkills: params.autoAllowSkills,
   });
   return {
+    authorizationPlan: await planExecAuthorization({
+      analysis,
+      command: formatExecCommand(params.argv),
+      cwd: params.cwd,
+      env: params.env,
+      platform: process.platform,
+    }),
     analysisOk: analysis.ok,
     allowlistMatches: allowlistEval.allowlistMatches,
     allowlistSatisfied:

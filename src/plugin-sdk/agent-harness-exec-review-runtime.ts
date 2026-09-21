@@ -88,6 +88,7 @@ export async function buildExecAutoReviewInputForShellCommand(params: {
       command,
       cwd: params.cwd ?? undefined,
       segments: allowlistEval.segments,
+      authorizationPlan: allowlistEval.authorizationPlan,
     })
   ) {
     return undefined;

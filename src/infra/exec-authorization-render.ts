@@ -83,7 +83,7 @@ function hasUnquotedShellExpansionSource(value: string): boolean {
   return false;
 }
 
-function hasArgumentShellExpansionSource(candidate: ExecAuthorizationCandidate): boolean {
+export function hasArgumentShellExpansionSource(candidate: ExecAuthorizationCandidate): boolean {
   const executableEnd = Math.max(
     0,
     candidate.sourceStep.executableSpan.endIndex - candidate.sourceStep.span.startIndex,
