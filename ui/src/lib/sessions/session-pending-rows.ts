@@ -37,6 +37,7 @@ type SessionReadFields = {
   unread: boolean;
   lastReadAt: number | undefined;
   markedUnreadAt: number | undefined;
+  agentStatus: GatewaySessionRow["agentStatus"];
 };
 export type SessionArchiveFields = Pick<
   GatewaySessionRow,
