@@ -699,7 +699,6 @@ enum class GatewayMethod(
   SessionsPatch("sessions.patch"),
   SessionsGoalUpdate("sessions.goal.update"),
   SessionsGoalClear("sessions.goal.clear"),
-  SessionsProviderReviewContinue("sessions.providerReview.continue"),
   SessionsPluginPatch("sessions.pluginPatch"),
   SessionsCleanup("sessions.cleanup"),
   SessionsReset("sessions.reset"),
@@ -970,6 +969,7 @@ enum class GatewayMethod(
   ProgressCardRefresh("progressCard.refresh"),
   WebSearchStatus("webSearch.status"),
   WebSearchTest("webSearch.test"),
+  SessionsProviderReviewContinue("sessions.providerReview.continue"),
 }
 
 enum class GatewayEvent(

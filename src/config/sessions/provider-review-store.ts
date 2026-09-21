@@ -7,7 +7,10 @@ import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agen
 import { runOpenClawAgentWorkerWrite } from "../../state/openclaw-agent-write-admission.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import { resolveStateDir } from "../state-dir.js";
-import type { SessionProviderReview } from "./provider-review.types.js";
+import type {
+  SessionProviderReview,
+  SessionProviderReviewComparison,
+} from "./provider-review.types.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import { assertSessionStoreReadCandidate } from "./session-store-read-candidates.js";
@@ -19,14 +22,6 @@ import type { SessionEntry } from "./types.js";
 export type SessionProviderReviewTarget = SessionAccessScope & {
   sessionId: string;
   lifecycleRevision?: string;
-};
-
-export type SessionProviderReviewComparison = {
-  sessionKey: string;
-  sessionId: string;
-  lifecycleRevision?: string;
-  expectedReview: Readonly<SessionProviderReview> | undefined;
-  nextReview: SessionProviderReview | undefined;
 };
 
 async function withProviderReviewDatabase<T>(

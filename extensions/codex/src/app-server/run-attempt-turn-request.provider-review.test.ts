@@ -1,4 +1,5 @@
 import type { AgentHarnessAttemptParamsV2 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexTurn, CodexUserInput } from "./protocol.js";
 import { prepareCodexAttemptTurnRequest } from "./run-attempt-turn-request.js";
@@ -196,7 +197,9 @@ describe("native acknowledged turn requests", () => {
     async (interrupted) => {
       const native = createNativeThread();
       const firstHost = createAcknowledgment();
-      firstHost.acceptNativeTurn.mockRejectedValueOnce(new Error("host clear failed"));
+      firstHost.acceptNativeTurn.mockRejectedValueOnce(
+        new Error("RPC diagnostic containing the literal steer"),
+      );
       const first = await prepare(firstHost.acknowledgment, native);
       cleanup.interrupt.mockImplementationOnce(async () => {
         if (interrupted) {
@@ -204,7 +207,11 @@ describe("native acknowledged turn requests", () => {
         }
         return interrupted;
       });
-      await expect(first.prepared.startCodexTurn()).rejects.toThrow("Could not continue this chat");
+      const failure = await first.prepared.startCodexTurn().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(formatErrorMessage(failure)).toBe(
+        "Could not continue this chat. Review its latest status before trying again.",
+      );
       expect(first.request.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(
         1,
       );

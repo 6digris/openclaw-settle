@@ -4,7 +4,7 @@ import {
   type OpenClawAgentDatabase,
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
-import type { SessionProviderReviewComparison } from "./provider-review-store.js";
+import type { SessionProviderReviewComparison } from "./provider-review.types.js";
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import type { SessionEntry } from "./types.js";

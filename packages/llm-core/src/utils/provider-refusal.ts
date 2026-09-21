@@ -1,3 +1,5 @@
+import { Guard } from "typebox/guard";
+
 /** Provider-authored findings; continuation is offered only after explicit user review. */
 export type ProviderRefusalReview = {
   explanation: string;
@@ -6,10 +8,6 @@ export type ProviderRefusalReview = {
 };
 
 const encoder = new TextEncoder();
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isBoundedText(value: unknown, maxBytes: number): value is string {
   return (
@@ -22,10 +20,12 @@ function isBoundedText(value: unknown, maxBytes: number): value is string {
 
 /** Keep exact provider text. Truncation must never make an invalid continuation usable. */
 export function readProviderRefusalReview(value: unknown): ProviderRefusalReview | undefined {
-  if (!isRecord(value) || !isBoundedText(value.explanation, 64 * 1024)) {
+  if (!Guard.IsObjectNotArray(value) || !isBoundedText(value.explanation, 64 * 1024)) {
     return undefined;
   }
-  const continuation = isRecord(value.continuation) ? value.continuation.message : undefined;
+  const continuation = Guard.IsObjectNotArray(value.continuation)
+    ? value.continuation.message
+    : undefined;
   return {
     explanation: value.explanation,
     ...(isBoundedText(continuation, 1024) ? { continuation: { message: continuation } } : {}),

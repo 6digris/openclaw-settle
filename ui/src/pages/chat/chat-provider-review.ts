@@ -1,5 +1,6 @@
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
+import { registerChatProviderReviewEnglish } from "../../i18n/locales/en-chat-provider-review.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
 import {
   areUiSessionKeysEquivalent,
@@ -9,6 +10,8 @@ import {
 } from "../../lib/sessions/session-key.ts";
 import { readChatQueueForScope, updateQueuedMessagesForSession } from "./chat-queue.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
+
+registerChatProviderReviewEnglish();
 
 export type ChatProviderReview = NonNullable<GatewaySessionRow["providerReview"]>;
 

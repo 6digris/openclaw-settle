@@ -13,3 +13,12 @@ export type SessionProviderReview = {
   nativeThreadId?: string;
   nativeTurnId?: string;
 };
+
+/** Serialized compare-and-set input shared by the store and its SQLite worker. */
+export type SessionProviderReviewComparison = {
+  sessionKey: string;
+  sessionId: string;
+  lifecycleRevision?: string;
+  expectedReview: Readonly<SessionProviderReview> | undefined;
+  nextReview: SessionProviderReview | undefined;
+};

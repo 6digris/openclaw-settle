@@ -1,4 +1,4 @@
-import type { SessionProviderReviewComparison } from "../config/sessions/provider-review-store.js";
+import type { SessionProviderReviewComparison } from "../config/sessions/provider-review.types.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type {
   SqliteWorkerAdmissionFactory,
