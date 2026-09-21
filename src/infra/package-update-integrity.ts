@@ -497,7 +497,7 @@ export function createPackageIntegrityReader(
             stat.isFile() &&
             (!expected || expectedEntries?.get(entry.relative)?.digest !== undefined),
         )
-        .sort(
+        .toSorted(
           (left, right) =>
             rollbackReadPriority(left.entry.relative) - rollbackReadPriority(right.entry.relative),
         );
