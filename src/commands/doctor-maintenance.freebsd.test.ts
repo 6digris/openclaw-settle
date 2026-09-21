@@ -91,20 +91,17 @@ it.each(["absent", "present", "unknown"] as const)(
   async (status) => {
     await withFreeBsdDoctorFixture(status, async (home) => {
       await expect(shouldManageGatewayService()).resolves.toBe(true);
+      const service = gatewayService.resolveGatewayService();
+      const mutations = ["stage", "install", "uninstall", "start", "stop", "restart"] as const;
+      const mutationSpies = mutations.map((method) => vi.spyOn(service, method));
+      vi.spyOn(gatewayService, "resolveGatewayService").mockReturnValue(service);
+      const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
       const enter = () =>
         beginDoctorMaintenance({
           root: home,
           options: { repair: true },
-          runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+          runtime,
         });
-      if (status !== "absent") {
-        await expect(enter()).rejects.toThrow(
-          "Refusing maintenance because service-owned state directories cannot be verified",
-        );
-        expect(mocks.discover).toHaveBeenCalled();
-        expect(mocks.port).not.toHaveBeenCalled();
-        return;
-      }
       const coordinator = acquireGatewayLifecycleCoordinator({
         databasePath: resolveOpenClawStateSqlitePath(process.env),
         busyTimeoutMs: 0,
@@ -118,14 +115,36 @@ it.each(["absent", "present", "unknown"] as const)(
         other?.release();
       }
       const maintenance = await enter();
-      expect(maintenance).toBeDefined();
       try {
+        expect(maintenance).toBeDefined();
         expect(tryAcquireExclusiveSqliteCoordinator(coordinator.path)).toBeNull();
         expect(maintenance!.run(() => "under custody")).toBe("under custody");
+        expect(mocks.discover).toHaveBeenCalled();
+        if (status === "absent") {
+          expect(maintenance!.warnings).toEqual([]);
+          expect(runtime.log).not.toHaveBeenCalled();
+          expect(mocks.port).toHaveBeenCalled();
+        } else {
+          expect(maintenance!.warnings).toEqual([
+            expect.stringContaining(
+              "On FreeBSD, use the Gateway's rc.d or foreground process owner for service management.",
+            ),
+          ]);
+          expect(runtime.log).toHaveBeenCalledWith(maintenance!.warnings![0]);
+          expect(mocks.port).not.toHaveBeenCalled();
+        }
+        for (const mutation of mutationSpies) {
+          expect(mutation).not.toHaveBeenCalled();
+        }
       } finally {
         await maintenance?.release();
       }
-      expect(mocks.port).toHaveBeenCalled();
+      const released = tryAcquireExclusiveSqliteCoordinator(coordinator.path);
+      try {
+        expect(released).not.toBeNull();
+      } finally {
+        released?.release();
+      }
     });
   },
 );
