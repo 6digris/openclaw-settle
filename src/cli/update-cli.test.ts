@@ -13427,10 +13427,23 @@ function defineUpdateCliSuite() {
   });
 
   it("updateFinalizeCommand can defer only the best-effort completion cache", async () => {
-    const { entryPath } = await setupInstalledPackageRoot(
+    const { entryPath, pkgRoot } = await setupInstalledPackageRoot(
       createCaseDir("finalizer-completion-cache"),
       VERSION,
     );
+    const workerPath = path.join(pkgRoot, "dist", "infra", "update-migrated-finalize.worker.js");
+    await fs.mkdir(path.dirname(workerPath), { recursive: true });
+    // The suite transport supplies Doctor effects, but admission still checks the
+    // installed worker and binds/settles a real child before returning its result.
+    await fs.writeFile(workerPath, "export {};\n");
+    await writePackageDistInventory(pkgRoot);
+    expect(
+      await doctorChild.inspectUpdateDoctorChildSupport(
+        [process.execPath, workerPath],
+        { cwd: pkgRoot },
+        () => {},
+      ),
+    ).toBe(true);
     // Direct finalization has no package-update/resume entrypoint sequence.
     vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValue(entryPath);
     pathExists.mockResolvedValue(true);
