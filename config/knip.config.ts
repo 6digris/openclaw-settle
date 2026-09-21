@@ -123,6 +123,7 @@ const repositoryScriptEntries = [
   "scripts/e2e/lib/upgrade-survivor/probe-gateway.mjs!",
   "scripts/e2e/lib/upgrade-survivor/probe-volume-gateway.mjs!",
   "scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs!",
+  "scripts/e2e/lib/upgrade-survivor/published-plugin-registry.mjs!",
   "scripts/e2e/lib/upgrade-survivor/recovery-cleanup.mjs!",
   "scripts/e2e/lib/upgrade-survivor/schema-expectation.mjs!",
   // update-restart-auth.sh installs this manager/launch adapter into the fixture bin directory.

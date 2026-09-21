@@ -17,6 +17,7 @@ import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/regis
 import { listTerminalOperatorApprovalsInDatabase } from "../gateway/operator-approval-store.kernel.js";
 import { readWorkerSessionPlacementProjectionInDatabase } from "../gateway/worker-environments/placement-read-projection.js";
 import { readWorkerPlacementChangeSnapshotInDatabase } from "../gateway/worker-environments/placement-row-codec.js";
+import { hasWorkerEnvironmentSessionAttachment } from "../gateway/worker-environments/session-attachment-store.js";
 import { executeDevicePairingRead } from "../infra/device-pairing-read.kernel.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
@@ -145,6 +146,8 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
           typeof input.command.input.executionId === "string")) ||
       (input.command.type === "workspace.snapshot" &&
         typeof input.command.workspaceDir === "string") ||
+      (input.command.type === "workerEnvironments.hasSessionAttachment" &&
+        typeof input.command.environmentId === "string") ||
       (input.command.type === "updateRuns.get" && typeof input.command.runId === "string") ||
       (input.command.type === "updateRuns.list" &&
         isRecord(input.command.input) &&
@@ -383,6 +386,14 @@ serveOwnedWorkerTasks(
                       workspaceDir: command.workspaceDir,
                       database: { db, path: input.databasePath },
                     }),
+                  };
+                }
+                if (command.type === "workerEnvironments.hasSessionAttachment") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    attached: hasWorkerEnvironmentSessionAttachment(db, command.environmentId),
                   };
                 }
                 if (command.type === "userProfiles.authority.resolve") {

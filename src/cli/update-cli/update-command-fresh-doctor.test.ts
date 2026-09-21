@@ -31,8 +31,10 @@ import {
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { removePreparedWorkerOwnershipColumns } from "../../state/openclaw-state-schema-v17.test-support.js";
 import type { UpdateCommandOptions } from "./shared.js";
-import { createConfigValidationFailure } from "./update-cli-config.test-support.js";
-import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
+import {
+  createChangedPostCoreUpdateOptions,
+  createConfigValidationFailure,
+} from "./update-cli-config.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   readConfig: vi.fn(),
@@ -80,29 +82,12 @@ import {
   runUpdateFinalizationDoctorInFreshProcess,
 } from "./update-command-fresh-doctor.js";
 
-const pluginUpdate: PostCorePluginUpdateResult = {
-  status: "ok",
-  changed: true,
-  sync: {
-    changed: false,
-    switchedToBundled: [],
-    switchedToNpm: [],
-    warnings: [],
-    errors: [],
-  },
-  npm: { changed: false, outcomes: [] },
-  integrityDrifts: [],
-  warnings: [],
-};
-
-const updateOptions = {
+const updateOptions = createChangedPostCoreUpdateOptions({
   root: "/opt/openclaw",
-  pluginUpdate,
-  freshDoctorRequired: true,
-  yes: true,
-  json: true,
   timeoutMs: 5_000,
-};
+});
+const pluginUpdate = updateOptions.pluginUpdate;
+pluginUpdate.npm = { changed: false, outcomes: [] };
 
 const validConfigSnapshot = {
   exists: true,
@@ -867,9 +852,7 @@ describe("post-plugin update readiness", () => {
       })}\n`,
     });
 
-    const result = await completePostCorePluginUpdate({
-      ...updateOptions,
-    });
+    const result = await completePostCorePluginUpdate(updateOptions);
 
     expect(result.pluginUpdate).toMatchObject({
       status: "error",
@@ -944,9 +927,7 @@ describe("post-plugin update readiness", () => {
   ])("fails closed on $label from the updated readiness child", async ({ stdout }) => {
     mocks.runUtf8.mockResolvedValue({ ...readinessExit, stdout });
 
-    const result = await completePostCorePluginUpdate({
-      ...updateOptions,
-    });
+    const result = await completePostCorePluginUpdate(updateOptions);
 
     expect(result.pluginUpdate).toMatchObject({
       status: "error",

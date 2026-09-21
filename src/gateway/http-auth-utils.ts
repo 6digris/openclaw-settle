@@ -323,6 +323,7 @@ export async function authorizeControlUiReadRequestOrReply(
   const profileAuth = await checkAuthenticatedHttpUserProfile({
     authResult,
     cfg,
+    getRuntimeConfig: params.getRuntimeConfig,
     req: params.req,
     res: params.res,
   });
@@ -531,6 +532,7 @@ export async function checkGatewayHttpRequestAuth(
   const profileAuth = await checkAuthenticatedHttpUserProfile({
     authResult,
     cfg,
+    getRuntimeConfig: params.getRuntimeConfig,
     req: params.req,
     res: params.res,
   });

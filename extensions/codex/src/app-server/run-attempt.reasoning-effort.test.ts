@@ -1,3 +1,4 @@
+import { channel } from "node:diagnostics_channel";
 import { setImmediate } from "node:timers/promises";
 import type { Worker } from "node:worker_threads";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
@@ -19,6 +20,14 @@ import {
 
 beforeAll(() => {
   const workers = new Set<Worker>();
+  const allocationStacks = new Map<Worker, string>();
+  const workerCreations = channel("worker_threads");
+  const recordAllocation = (message: unknown) => {
+    // SAFETY: Node publishes { worker } synchronously from the Worker constructor.
+    const { worker } = message as { worker: Worker };
+    allocationStacks.set(worker, new Error("Worker allocated here").stack ?? "Stack unavailable");
+  };
+  workerCreations.subscribe(recordAllocation);
   const trackWorker = (worker: Worker) => workers.add(worker);
   process.on("worker", trackWorker);
   // The scan pool is shared across cases; verify its file owner after all fixture cleanup.
@@ -28,12 +37,18 @@ beforeAll(() => {
       await setImmediate();
       expect(workers.size).toBeGreaterThan(0);
       const liveThreadIds = [...workers].map((worker) => worker.threadId).filter((id) => id !== -1);
+      const liveWorkerStacks = [...workers]
+        .filter((worker) => worker.threadId !== -1)
+        .map(
+          (worker) => `${worker.threadId}: ${allocationStacks.get(worker) ?? "Stack unavailable"}`,
+        );
       expect(
         liveThreadIds,
-        `Worker threads surviving Codex fixture teardown: ${liveThreadIds.join(", ")}`,
+        `Worker threads surviving Codex fixture teardown: ${liveThreadIds.join(", ")}\n${liveWorkerStacks.join("\n")}`,
       ).toEqual([]);
     } finally {
       process.off("worker", trackWorker);
+      workerCreations.unsubscribe(recordAllocation);
       await drainSessionDiskBudgetWorkers();
       await closeOpenClawAgentDatabasesAsync();
       await closeOpenClawStateDatabaseAsync();

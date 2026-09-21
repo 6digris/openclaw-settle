@@ -171,17 +171,43 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
     },
   );
 
-  it.each(["completed", "disconnected", "policy-changed", "stale-at-entry"] as const)(
-    "keeps HTTP authorization pending on profile acquisition and revalidates before completion (%s)",
-    async (outcome) => {
+  it.each(
+    (["global", "gateway"] as const).flatMap((configSource) =>
+      (["completed", "disconnected", "policy-changed", "stale-at-entry"] as const).map(
+        (outcome) => ({
+          configSource,
+          outcome,
+        }),
+      ),
+    ),
+  )(
+    "keeps HTTP authorization pending on profile acquisition and revalidates before completion ($configSource policy, $outcome)",
+    async ({ configSource, outcome }) => {
       const started = createDeferred();
       const release = createDeferred();
       const response = { destroyed: false };
       const originalConfig = getRuntimeConfig();
+      let currentConfig =
+        configSource === "gateway"
+          ? {
+              ...originalConfig,
+              gateway: { ...originalConfig.gateway, trustedProxies: ["127.0.0.1"] },
+            }
+          : originalConfig;
+      const setCurrentConfig = (config: ReturnType<typeof getRuntimeConfig>) => {
+        currentConfig = config;
+        if (configSource === "global") {
+          vi.mocked(getRuntimeConfig).mockReturnValue(config);
+        }
+      };
       vi.mocked(authorizeHttpGatewayConnect).mockImplementationOnce(async () => {
         if (outcome === "stale-at-entry") {
-          vi.mocked(getRuntimeConfig).mockReturnValue({
-            gateway: { controlUi: { allowedOrigins: ["https://changed.example.test"] } },
+          setCurrentConfig({
+            ...currentConfig,
+            gateway: {
+              ...currentConfig.gateway,
+              controlUi: { allowedOrigins: ["https://changed.example.test"] },
+            },
           });
         }
         return { ok: true, method: "trusted-proxy", user: "guest@example.test" };
@@ -203,6 +229,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
       );
       let completed = false;
       const pending = authorizeGatewayHttpRequestOrReply({
+        ...(configSource === "gateway"
+          ? { cfg: currentConfig, getRuntimeConfig: () => currentConfig }
+          : {}),
         req: createReq(),
         res: response as ServerResponse,
         auth: {
@@ -220,15 +249,24 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           expect(profileWrites.ensureCanonicalUserProfileForEmail).not.toHaveBeenCalled();
           return;
         }
-        await started.promise;
+        await Promise.race([
+          started.promise,
+          pending.then(() => {
+            throw new Error("HTTP authorization completed before profile acquisition");
+          }),
+        ]);
         expect(completed).toBe(false);
         expect(profileAuthority.prepareUserProfileRoleAuthority).not.toHaveBeenCalled();
         if (outcome === "disconnected") {
           response.destroyed = true;
         }
         if (outcome === "policy-changed") {
-          vi.mocked(getRuntimeConfig).mockReturnValue({
-            gateway: { controlUi: { allowedOrigins: ["https://changed.example.test"] } },
+          setCurrentConfig({
+            ...currentConfig,
+            gateway: {
+              ...currentConfig.gateway,
+              controlUi: { allowedOrigins: ["https://changed.example.test"] },
+            },
           });
         }
         release.resolve();

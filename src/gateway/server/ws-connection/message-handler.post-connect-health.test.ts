@@ -1967,13 +1967,7 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
 
   it("mints Cloudflare sync only for the standard trusted-proxy header contract", async () => {
     const assertion = "header.payload.signature";
-    const previousLoadConfig = loadConfigMock.getMockImplementation();
-    onTestFinished(() => {
-      if (previousLoadConfig) {
-        loadConfigMock.mockImplementation(previousLoadConfig);
-      }
-    });
-    loadConfigMock.mockImplementation(() => ({
+    useGatewayTestConfig(loadConfigMock, () => ({
       gateway: {
         auth: {
           mode: "trusted-proxy",

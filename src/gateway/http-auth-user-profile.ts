@@ -99,6 +99,7 @@ export function usesSharedSecretGatewayMethod(
 export async function resolveAuthenticatedHttpUserProfile(params: {
   authResult: GatewayAuthResult;
   cfg: OpenClawConfig;
+  getRuntimeConfig?: () => OpenClawConfig;
   req: IncomingMessage;
   res?: ServerResponse;
 }): Promise<AuthenticatedHttpUserProfile> {
@@ -118,7 +119,10 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
       params.req.socket?.destroyed ||
       params.res?.destroyed ||
       params.res?.writableEnded ||
-      !isDeepStrictEqual(admissionPolicy, readAdmissionPolicy(getRuntimeConfig()))
+      !isDeepStrictEqual(
+        admissionPolicy,
+        readAdmissionPolicy(params.getRuntimeConfig?.() ?? getRuntimeConfig()),
+      )
     ) {
       throw new Error("HTTP profile acquisition authority expired");
     }
