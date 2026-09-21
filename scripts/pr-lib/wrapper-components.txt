@@ -20,6 +20,7 @@ packages/gateway-protocol/src/schema/since.ts
 packages/gateway-protocol/src/schema/worker-admission.ts
 packages/gateway-protocol/src/schema/worker-computer.ts
 packages/gateway-protocol/src/schema/worker-protocol-primitives.ts
+packages/gateway-protocol/src/svg-image.ts
 packages/gateway-protocol/src/theme-ids.ts
 packages/gateway-protocol/src/theme.ts
 packages/gateway-protocol/src/update-run-vocabulary.ts
@@ -459,6 +460,7 @@ src/config/validation.types.ts
 src/config/value-tree.ts
 src/config/version.ts
 src/config/web-search-legacy-provider-keys.ts
+src/config/write-authority.ts
 src/config/write-lock.ts
 src/config/zod-schema.agent-defaults-base.ts
 src/config/zod-schema.agent-defaults.ts
@@ -532,6 +534,7 @@ src/infra/abort-signal.ts
 src/infra/acquire-with-wait.ts
 src/infra/approval-resolution-ref.ts
 src/infra/backoff.ts
+src/infra/backup-scratch.ts
 src/infra/boundary-file-read.ts
 src/infra/boundary-path.ts
 src/infra/bun-sqlite-library.ts
@@ -622,6 +625,7 @@ src/infra/lifecycle-write-custody.ts
 src/infra/map-size.ts
 src/infra/net/configured-local-origin-bypass.ts
 src/infra/net/fetch-guard.ts
+src/infra/net/fetch-request-authority.ts
 src/infra/net/form-data.ts
 src/infra/net/guarded-body-stream.ts
 src/infra/net/hostname.ts
@@ -704,17 +708,21 @@ src/infra/sqlite-schema-header.ts
 src/infra/sqlite-schema-issues.ts
 src/infra/sqlite-schema-sql.ts
 src/infra/sqlite-snapshot-policy.ts
+src/infra/sqlite-snapshot-retirement.ts
 src/infra/sqlite-snapshot-single-flight.ts
 src/infra/sqlite-snapshot-source.ts
 src/infra/sqlite-snapshot-staging-owner.ts
 src/infra/sqlite-snapshot-staging.ts
+src/infra/sqlite-snapshot-wal-prefix.ts
 src/infra/sqlite-source-handle.ts
+src/infra/sqlite-staging-token.ts
 src/infra/sqlite-store.worker.ts
 src/infra/sqlite-strict.ts
 src/infra/sqlite-terminal-open-latch.ts
 src/infra/sqlite-transaction.ts
 src/infra/sqlite-user-version.ts
 src/infra/sqlite-wal-checkpoint.ts
+src/infra/sqlite-wal-reclamation.ts
 src/infra/sqlite-wal-split-brain.ts
 src/infra/sqlite-wal-write-admission.ts
 src/infra/sqlite-wal.ts
@@ -865,6 +873,7 @@ src/plugins/current-plugin-metadata-state.ts
 src/plugins/default-enablement.ts
 src/plugins/dev-source-root.ts
 src/plugins/discovery-availability.ts
+src/plugins/discovery-required-plugins.ts
 src/plugins/discovery.ts
 src/plugins/doctor-contract-artifact.ts
 src/plugins/doctor-contract-module.ts
@@ -874,6 +883,7 @@ src/plugins/doctor-contract-relevance.ts
 src/plugins/doctor-session-route-state-owner-types.ts
 src/plugins/enable.ts
 src/plugins/hardlink-policy.ts
+src/plugins/host-hook-cleanup-result.ts
 src/plugins/host-hook-json.ts
 src/plugins/install-channel-specs.ts
 src/plugins/install-paths.ts
@@ -920,6 +930,7 @@ src/plugins/manifest-registry-build.ts
 src/plugins/manifest-registry-installed.ts
 src/plugins/manifest-registry.ts
 src/plugins/manifest-setup-normalizers.ts
+src/plugins/manifest-theme-definitions.ts
 src/plugins/manifest-themes.ts
 src/plugins/manifest.ts
 src/plugins/min-host-version.ts

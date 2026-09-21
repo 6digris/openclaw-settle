@@ -6,7 +6,10 @@ import path from "node:path";
 import { assert, beforeAll, describe, expect, it, vi } from "vitest";
 import { listExtensionTestFilesForRoots } from "../../scripts/lib/extension-test-plan.mts";
 import { readTestSelectorSourceFacts } from "../../scripts/lib/test-selector-source-facts.mts";
-import { resolveVitestPretestBuildMode } from "../../scripts/lib/vitest-build-prerequisites.mts";
+import {
+  resolveVitestPretestBuildMode,
+  resolveVitestRuntimeConfigScopes,
+} from "../../scripts/lib/vitest-build-prerequisites.mts";
 import { resolveDefaultVitestNoOutputTimeoutMs } from "../../scripts/lib/vitest-process-env.mts";
 import { resolveVitestRuntimeCliSelections } from "../../scripts/lib/vitest-runtime-selection.mts";
 import { resolveShardTimingKey } from "../../scripts/lib/vitest-shard-metadata.mts";
@@ -46,7 +49,7 @@ import {
 const normalizeRepoPath = toRepoPath;
 const CODEX_TEST_PROCESS_FILE_LIMIT = 24;
 const MATRIX_TEST_PROCESS_FILE_LIMIT = 40;
-const TELEGRAM_TEST_PROCESS_FILE_LIMIT = 1;
+const TELEGRAM_TEST_PROCESS_FILE_LIMIT = 10;
 
 describe("Windows CI partitions", () => {
   it("keeps explicit coverage disjoint without repeating small project setup", () => {
@@ -327,28 +330,16 @@ describe("test runtime prerequisites", () => {
     ],
     ["agents-core", ["simple-completion-runtime.plugin-scope.test.ts"], "runtime"],
     ["agents", ["simple-completion-runtime.plugin-scope.test.ts"], "runtime"],
-    [
-      "agents-core",
-      [
-        "agent-command-local.test.ts",
-        "simple-completion-runtime.plugin-scope.test.ts",
-        "prepared-model-catalog-worker.custody.integration.test.ts",
-        "prepared-model-catalog-worker.integration.test.ts",
-        "runtime-plugins.context-engine.integration.test.ts",
-      ],
-      undefined,
-    ],
-    [
-      "agents",
-      [
-        "agent-command-local.test.ts",
-        "simple-completion-runtime.plugin-scope.test.ts",
-        "prepared-model-catalog-worker.custody.integration.test.ts",
-        "prepared-model-catalog-worker.integration.test.ts",
-        "runtime-plugins.context-engine.integration.test.ts",
-      ],
-      undefined,
-    ],
+    ...(["agents-core", "agents"] as const).map(
+      (project) =>
+        [
+          project,
+          resolveVitestRuntimeConfigScopes(`test/vitest/vitest.${project}.config.ts`).map(
+            ({ file, dir }) => path.posix.relative(dir, file),
+          ),
+          undefined,
+        ] as const,
+    ),
     ["gateway-core", ["gateway-*.test.ts"], undefined],
     ["gateway-server", ["server-sidecar-retention.test.ts"], "runtime"],
     ["gateway-server", ["server.config-patch.test.ts"], "runtime"],
@@ -794,12 +785,17 @@ describe("scripts/test-projects changed-target routing", () => {
     "scripts/pr-lib/merge.sh",
     "scripts/pr-lib/merge-outcome.sh",
     "scripts/pr-lib/merge-legacy-refusal.mjs",
+    "scripts/pr-lib/merge-pre-dispatch-refusal.mjs",
   ])("routes native merge changes through the outcome owner for %s", (scriptPath) => {
     expectChangedTargets(
       [scriptPath],
       [
         "test/scripts/pr-merge.test.ts",
         "test/scripts/pr-merge-outcome.test.ts",
+        ...(scriptPath !== "scripts/pr"
+          ? ["test/scripts/pr-merge-pre-dispatch-refusal.test.ts"]
+          : []),
+        "test/scripts/pr-merge-qualified-refusal.test.ts",
         ...(scriptPath === "scripts/pr"
           ? ["test/scripts/pr-operation-lock.test.ts", "test/scripts/pr-wrappers.test.ts"]
           : []),
@@ -1998,6 +1994,60 @@ describe("scripts/test-projects changed-target routing", () => {
     },
   );
 
+  it.each([
+    { name: "Git inventory", withRepo: withTinyGitRepo },
+    { name: "filesystem inventory", withRepo: withTinyFileTree },
+  ])("routes test helper and file-URL fixture consumers completely ($name)", ({ withRepo }) => {
+    const fixture = "test/scripts/fixtures/worker.mjs";
+    const helper = "test/scripts/runtime.test-support.ts";
+    const direct = "test/scripts/direct.consumer.test.ts";
+    const indirect = "test/scripts/indirect.consumer.test.ts";
+    const opaque = "test/scripts/opaque/index.mjs";
+    const explicitHelper = "test/scripts/source/input.test-support.ts";
+    const explicitConsumer = "test/scripts/outer/consumer.test.ts";
+    withRepo(
+      {
+        [fixture]: "export {};\n",
+        [helper]:
+          'export const worker = new URL("./fixtures/worker.mjs?generation=1#child", import.meta.url);\n',
+        "test/scripts/bridge.test-support.ts": 'export * from "./runtime.test-support.js";\n',
+        [direct]: 'import "./runtime.test-support.js";\n',
+        [indirect]: 'import "./bridge.test-support.js";\n',
+        "test/scripts/after-test.consumer.test.ts": 'import "./direct.consumer.test.js";\n',
+        "test/scripts/unrelated.consumer.test.ts": "export {};\n",
+        "test/scripts/live.consumer.live.test.ts": 'import "./runtime.test-support.js";\n',
+        [opaque]: "export {};\n",
+        "test/scripts/literal.opaque.consumer.test.ts": `const fixture = "${opaque}";\n`,
+        "test/scripts/relative.opaque.consumer.test.ts": 'import "./opaque/index.mjs";\n',
+        [explicitHelper]: "export const value = 1;\n",
+        "test/scripts/bridge/index.ts": 'export * from "../source/input.test-support.js";\n',
+        [explicitConsumer]: 'import "../bridge/index.js";\n',
+      },
+      (cwd) => {
+        const options = { cwd, broad: true, forceFullImportGraph: true };
+        for (const changed of [fixture, helper]) {
+          expect(resolveChangedTestTargetPlan([changed], options)).toEqual({
+            mode: "targets",
+            targets: [direct, indirect],
+          });
+        }
+        // A literal reference alone cannot prove an opaque helper's complete frontier.
+        expect(resolveChangedTestTargetPlan([opaque, direct], options)).toEqual({
+          mode: "targets",
+          targets: [opaque, direct],
+        });
+        expect(buildVitestRunPlans([explicitHelper], cwd)).toEqual([
+          {
+            config: "test/vitest/vitest.tooling.config.ts",
+            forwardedArgs: [],
+            includePatterns: [explicitConsumer],
+            watchMode: false,
+          },
+        ]);
+      },
+    );
+  });
+
   it.each([false, true])(
     "retains an unowned changed tooling test alongside its consumers (mixed input: %s)",
     (mixedInput) => {
@@ -2256,6 +2306,7 @@ describe("scripts/test-projects changed-target routing", () => {
   it.each([
     ["src/agents/**/*.test.ts", "test/vitest/vitest.agents.config.ts"],
     ["test/plugins", "test/vitest/vitest.tooling.config.ts"],
+    ["test/scripts", "test/vitest/vitest.tooling.config.ts"],
     ["src/plugin-state", "test/vitest/vitest.unit.config.ts"],
   ])("preserves watch selection across database ownership for %s", (target, owner) => {
     expect(buildVitestRunPlans(["--watch", target])).toEqual([
@@ -3068,14 +3119,6 @@ describe("scripts/test-projects changed-target routing", () => {
     );
   });
 
-  it("keeps broad shell helper watch targets in one tooling shard", () => {
-    expectSingleVitestRunPlan(buildVitestRunPlans(["--watch", "test/scripts"], process.cwd()), {
-      config: "test/vitest/vitest.tooling.config.ts",
-      includePatterns: ["test/scripts/**/*.test.ts"],
-      watchMode: true,
-    });
-  });
-
   it("preserves post-separator Vitest args without parsing them as targets", () => {
     for (const [arg, watchMode] of [
       ["--reporter=verbose", false],
@@ -3700,6 +3743,12 @@ describe("scripts/test-projects changed-target routing", () => {
     expect(selected.toSorted()).toEqual(listExtensionTestFilesForRoots([root]).toSorted());
     expect(new Set(selected).size).toBe(selected.length);
     for (const plan of plans) {
+      if (
+        name === "telegram" &&
+        plan.config === "test/vitest/vitest.extension-database-workers.config.ts"
+      ) {
+        expect(plan.includePatterns).toHaveLength(1);
+      }
       for (const file of plan.includePatterns ?? []) {
         expect(plan.config).toBe(
           databaseWorkerExtensionTestFiles.includes(file)
@@ -4647,7 +4696,7 @@ describe("test selector native source facts", () => {
   it("reads complete files without installed packages, inherited hooks, or reparsing cached imports", () => {
     withTinyFileTree(
       {
-        "large.mts": `${"// padding\n".repeat(220_000)}export type {\n Value\n } from "./barrel.js";\nimport(\n "./dynamic.mjs"\n);\nconst fixture = "scripts/tool.mts";`,
+        "large.mts": `${"// padding\n".repeat(220_000)}export type {\n Value\n } from "./barrel.js";\nimport(\n "./dynamic.mjs"\n);\nconst fixture = "scripts/tool.mts";\nnew URL(\n "./native-fixture.mjs?generation=1#child", import.meta.url,\n);\nnew URL("./other-base.mjs", "file:///elsewhere/");`,
       },
       (cwd) => {
         const files = [
@@ -4655,7 +4704,7 @@ describe("test selector native source facts", () => {
           { file: "deleted.ts", parseImports: true },
         ];
         const expectedFacts = {
-          imports: ["./barrel.js", "./dynamic.mjs"],
+          imports: ["./barrel.js", "./dynamic.mjs", "./native-fixture.mjs"],
           matches: ["scripts/tool.mts", "scripts/tool"],
           references: ["scripts/tool.mts"],
         };

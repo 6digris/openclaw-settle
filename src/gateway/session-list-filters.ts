@@ -205,6 +205,7 @@ export function* filterSessionEntries(
   const identityProjection = getRowContext().identityProjection;
   const projectOwner = identityProjection?.owner ?? projectSessionOwner;
   const projectParticipants = identityProjection?.participants ?? projectSessionParticipants;
+  const projectPeople = identityProjection?.people ?? projectSessionPeople;
   const profileRelation = opts.profileRelation
     ? {
         ...opts.profileRelation,
@@ -232,7 +233,7 @@ export function* filterSessionEntries(
   if (allowedProfileIds) {
     for (const [, entry] of visibleEntries) {
       const owner = projectOwner(entry, identities, cfg, configuredAgentIds)?.actor;
-      for (const person of projectSessionPeople(entry, identities, owner)) {
+      for (const person of projectPeople(entry, identities, owner)) {
         allowedProfileIds.add(person.identity.id);
       }
       if (shouldYield?.()) {
@@ -336,17 +337,22 @@ export function* filterSessionEntries(
       continue;
     }
     if (opts.includePeople || opts.involvingProfileId) {
-      const associated = projectSessionPeople(entry, identities, effectiveOwner);
+      const associated = projectPeople(entry, identities, effectiveOwner);
       peopleSessionCount += 1;
       peopleIncomplete ||=
         (entry.participantCount ?? entry.participants?.length ?? 0) >= MAX_SESSION_PARTICIPANTS ||
         entry.participants?.some((participant) => participant.identity.type === "legacy") === true;
       for (const person of associated) {
         const existing = people.get(person.identity.id);
-        people.set(person.identity.id, {
-          ...person,
-          sessionCount: (existing?.sessionCount ?? 0) + 1,
-        });
+        if (existing) {
+          existing.identity = person.identity;
+          existing.label = person.label;
+          existing.avatarUrl = person.avatarUrl;
+          existing.sessionCount += 1;
+        } else {
+          // Counts belong to this request, never the cached association.
+          people.set(person.identity.id, { ...person, sessionCount: 1 });
+        }
       }
       if (opts.involvingProfileId) {
         if (!associated.some((person) => person.identity.id === selectedProfileId)) {
