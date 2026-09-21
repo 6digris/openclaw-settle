@@ -49,6 +49,7 @@ import {
   databaseWorkerExtensionTestRoots,
 } from "../vitest/vitest.extension-database-workers-paths.mjs";
 import { isGatewayServerTestFile } from "../vitest/vitest.gateway-server-paths.mjs";
+import { isSharedVitestExcludedPath } from "../vitest/vitest.pattern-file.ts";
 import { startupCorpusTestFiles } from "../vitest/vitest.startup-corpus-paths.mjs";
 import { boundaryTestFiles } from "../vitest/vitest.unit-paths.mjs";
 
@@ -211,8 +212,12 @@ function expectBoundedCodexFallback(
         (shard.includePatterns?.length ?? 0) <= CODEX_TEST_PROCESS_FILE_LIMIT,
     ),
   ).toBe(true);
-  expect(targets.toSorted()).toEqual(
-    listExtensionTestFilesForRoots(["extensions/codex"]).toSorted(),
+  expect(targets.toSorted()).toEqual(listExecutableExtensionFiles(["extensions/codex"]).toSorted());
+}
+
+function listExecutableExtensionFiles(roots: string[]) {
+  return listExtensionTestFilesForRoots(roots).filter(
+    (file) => !isSharedVitestExcludedPath(file, "extensions"),
   );
 }
 
@@ -1694,7 +1699,7 @@ describe("CI changed Node test plan", () => {
     const workerGroups = groups.filter((group) =>
       group.configs.includes("test/vitest/vitest.extension-database-workers.config.ts"),
     );
-    const expectedFiles = listExtensionTestFilesForRoots([
+    const expectedFiles = listExecutableExtensionFiles([
       ...databaseWorkerExtensionTestRoots,
       ...databaseWorkerExtensionTestFiles,
     ]);
@@ -1813,7 +1818,7 @@ describe("CI changed Node test plan", () => {
         ),
       ).toBe(true);
       expect(targets.toSorted()).toEqual(
-        listExtensionTestFilesForRoots(["extensions/telegram"]).toSorted(),
+        listExecutableExtensionFiles(["extensions/telegram"]).toSorted(),
       );
       const workerCount = targets.filter((file) =>
         databaseWorkerExtensionTestFiles.includes(file),
@@ -1945,7 +1950,7 @@ describe("CI changed Node test plan", () => {
       ),
     ).toBe(true);
     expect(groups.flatMap((group) => group.includePatterns ?? []).toSorted()).toEqual(
-      listExtensionTestFilesForRoots(["extensions/memory-core"]),
+      listExecutableExtensionFiles(["extensions/memory-core"]),
     );
   });
 

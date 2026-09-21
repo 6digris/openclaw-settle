@@ -1191,6 +1191,9 @@ function createBoundedExtensionPlans(
       return [];
     }
     const chunks = splitExtensionTestProcessTargets(config, scopedTargets);
+    if (chunks.length === 0) {
+      return [];
+    }
     if (chunks.length <= 1) {
       return [
         {
@@ -1218,6 +1221,10 @@ function createBoundedExtensionPlans(
       : roots,
     forwardedArgs,
   );
+  if (chunks.length === 0) {
+    // Preserve exact requests for Vitest's existing empty-test diagnostic, never a broad fallback.
+    return ownsIncludeSelection(plan.includePatterns, ownedTargets) ? [plan] : [];
+  }
   if (chunks.length <= 1) {
     return [plan];
   }
@@ -4461,7 +4468,7 @@ export function buildFullSuiteVitestRunPlans(args: string[], cwd = process.cwd()
     const configs = expandShard ? shard.projects : [shard.config];
     return configs.flatMap((config) => {
       if (expandShard && targetArgs.length === 0) {
-        let chunks: string[][] = [];
+        let chunks: string[][] | null = null;
         if (config === AGENTS_CORE_VITEST_CONFIG) {
           // A single non-isolated agents-core process grows until its worker can
           // exit under the full-suite memory load. Bound each process lifetime.
@@ -4499,7 +4506,7 @@ export function buildFullSuiteVitestRunPlans(args: string[], cwd = process.cwd()
             chunks = createExtensionTestProcessTargetChunks(config, roots, forwardedArgs);
           }
         }
-        if (chunks.length > 0) {
+        if (chunks !== null) {
           return chunks.map((targets) => ({
             config,
             forwardedArgs: [...forwardedArgs, ...targets],
