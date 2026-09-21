@@ -42,6 +42,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_store_cache_benchmark:
+        description: "Temporary isolated Windows store-cache comparison; target_ref must equal this workflow SHA"
+        required: false
+        default: false
+        type: boolean
       installed_startup_package:
         description: "Optional Package Acceptance binding, or {baseline, candidate} bindings for a matched comparison"
         required: false
@@ -67,6 +72,7 @@ env:
 jobs:
   probe:
     name: Windows probe
+    if: ${{ !inputs.run_store_cache_benchmark }}
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
     permissions:
@@ -497,7 +503,7 @@ jobs:
   # Native session qualification must not depend on headless CI or WSL results.
   native-schtasks:
     name: Native Scheduled Task proof
-    if: ${{ inputs.run_windows_ci }}
+    if: ${{ inputs.run_windows_ci && !inputs.run_store_cache_benchmark }}
     runs-on: windows-2025
     timeout-minutes: 75
     steps:
@@ -753,3 +759,245 @@ jobs:
           $profile = "schtasks-int-$env:TEST_ID"
           Remove-Item -LiteralPath (Join-Path $env:USERPROFILE ".openclaw-$profile") -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath $env:TEST_ROOT -Recurse -Force -ErrorAction SilentlyContinue
+  store-cache-seed:
+    name: Windows store benchmark producer
+    if: ${{ inputs.run_store_cache_benchmark && github.repository == 'openclaw/openclaw' }}
+    runs-on: blacksmith-8vcpu-windows-2025
+    timeout-minutes: 20
+    outputs:
+      cache_key: ${{ steps.prepare.outputs.cache_key }}
+    env:
+      CI: true
+      NODE_OPTIONS: --max-old-space-size=8192
+      BENCH_ARM: seed
+      BENCH_SAMPLE: "0"
+      BENCH_NODE_VERSION: "24.19.0"
+      BENCH_SOURCE: ${{ github.sha }}
+      BENCH_TARGET_REF: ${{ inputs.target_ref }}
+      BENCH_CACHE_KEY: windows-store-benchmark-v1-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - &store_benchmark_checkout
+        name: Checkout benchmark source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          submodules: false
+
+      - &store_benchmark_defender
+        name: Match CI Defender exclusions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Get-Command Add-MpPreference -ErrorAction SilentlyContinue) {
+            try {
+              Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE" -ErrorAction Stop
+              Add-MpPreference -ExclusionProcess "node.exe" -ErrorAction Stop
+            } catch {
+              Write-Warning "Could not apply the ordinary CI Defender exclusions."
+            }
+          }
+
+      - &store_benchmark_prepare
+        name: Prepare isolated store benchmark
+        id: prepare
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $source = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $source -cne $env:BENCH_SOURCE -or $source -cne $env:BENCH_TARGET_REF) {
+            throw "Benchmark source, workflow SHA, and exact target_ref must match."
+          }
+          if ($env:RUNNER_OS -ne "Windows" -or $env:RUNNER_ARCH -ne "X64") {
+            throw "This comparison requires native Windows x64."
+          }
+          if (Test-Path node_modules) { throw "Benchmark runner already has dependencies." }
+          if ($env:PNPM_CONFIG_STORE_DIR -or $env:PNPM_CONFIG_CACHE_DIR) {
+            throw "Unexpected inherited pnpm store configuration."
+          }
+          if ($env:BENCH_ARM -ne "cold") {
+            $store = Join-Path $env:GITHUB_WORKSPACE ".cache/windows-store-cache-benchmark"
+            if (Test-Path $store) { throw "Benchmark store already exists." }
+            New-Item -ItemType Directory -Path $store | Out-Null
+            "PNPM_CONFIG_STORE_DIR=$store" >> $env:GITHUB_ENV
+            "PNPM_CONFIG_CACHE_DIR=$(Join-Path $store 'cache')" >> $env:GITHUB_ENV
+          }
+          "cache_key=$env:BENCH_CACHE_KEY" >> $env:GITHUB_OUTPUT
+          "BENCH_SETUP_STARTED_MS=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" >> $env:GITHUB_ENV
+
+      - &store_benchmark_node
+        name: Setup matching Node patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          source .github/actions/setup-pnpm-store-cache/ensure-node.sh
+          openclaw_ensure_node "$BENCH_NODE_VERSION"
+
+      - &store_benchmark_pnpm
+        name: Setup pnpm without shared caches
+        id: pnpm
+        uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          cache-mode: "off"
+          node-version: "24.19.0"
+
+      - &store_benchmark_node_path
+        name: Capture benchmark Node path
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_bin="$(dirname "$(node -p 'process.execPath')")"
+          if command -v cygpath >/dev/null 2>&1; then
+            node_bin="$(cygpath -u "$node_bin")"
+          fi
+          echo "NODE_BIN=$node_bin" >> "$GITHUB_ENV"
+
+      - &store_benchmark_install
+        name: Measure frozen native install
+        shell: bash
+        env:
+          BENCH_PNPM_VERSION: ${{ steps.pnpm.outputs.pnpm-version }}
+        run: |
+          set -euo pipefail
+          export PATH="$NODE_BIN:$PATH"
+          mkdir -p .artifacts/windows-store-cache-benchmark
+          export BENCH_OBSERVED_STORE_PATH="$(pnpm store path)"
+          install_start="$(node -p 'Date.now()')"
+          set +e
+          pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true \
+            2>&1 | tee .artifacts/windows-store-cache-benchmark/install.log
+          install_exit="$?"
+          set -e
+          install_end="$(node -p 'Date.now()')"
+          node scripts/windows-store-cache-benchmark.mjs record "$install_start" "$install_end" "$install_exit"
+          exit "$install_exit"
+
+      - &store_benchmark_verify
+        name: Verify installed native dependencies
+        shell: bash
+        run: node scripts/windows-store-cache-benchmark.mjs verify
+
+      - name: Start store archive timer
+        shell: pwsh
+        run: |
+          "BENCH_SAVE_STARTED_MS=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" >> $env:GITHUB_ENV
+
+      - name: Save isolated benchmark store
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/windows-store-cache-benchmark
+          key: ${{ env.BENCH_CACHE_KEY }}
+
+      - name: Record store archive cost
+        shell: bash
+        run: node scripts/windows-store-cache-benchmark.mjs saved
+
+      - &store_benchmark_receipt
+        name: Upload small benchmark receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-store-benchmark-${{ env.BENCH_ARM }}-${{ env.BENCH_SAMPLE }}
+          path: |
+            .artifacts/windows-store-cache-benchmark/receipt.json
+            .artifacts/windows-store-cache-benchmark/summary.md
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  store-cache-comparison:
+    name: Windows store benchmark (${{ matrix.arm }} ${{ matrix.sample }})
+    if: ${{ inputs.run_store_cache_benchmark }}
+    needs: [store-cache-seed]
+    runs-on: blacksmith-8vcpu-windows-2025
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - { arm: cold, sample: 1 }
+          - { arm: warm, sample: 1 }
+          - { arm: warm, sample: 2 }
+          - { arm: cold, sample: 2 }
+          - { arm: cold, sample: 3 }
+          - { arm: warm, sample: 3 }
+    env:
+      CI: true
+      NODE_OPTIONS: --max-old-space-size=8192
+      BENCH_ARM: ${{ matrix.arm }}
+      BENCH_SAMPLE: ${{ matrix.sample }}
+      BENCH_NODE_VERSION: "24.19.0"
+      BENCH_SOURCE: ${{ github.sha }}
+      BENCH_TARGET_REF: ${{ inputs.target_ref }}
+      BENCH_CACHE_KEY: ${{ needs.store-cache-seed.outputs.cache_key }}
+    steps:
+      - *store_benchmark_checkout
+      - *store_benchmark_defender
+      - *store_benchmark_prepare
+      - *store_benchmark_node
+      - name: Start cache restore timer
+        if: matrix.arm == 'warm'
+        shell: pwsh
+        run: |
+          "BENCH_RESTORE_STARTED_MS=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())" >> $env:GITHUB_ENV
+
+      - name: Restore isolated benchmark store
+        id: store_restore
+        if: matrix.arm == 'warm'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/windows-store-cache-benchmark
+          key: ${{ env.BENCH_CACHE_KEY }}
+          fail-on-cache-miss: true
+
+      - name: Record cache restore cost
+        if: matrix.arm == 'warm'
+        shell: pwsh
+        env:
+          CACHE_HIT: ${{ steps.store_restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.store_restore.outputs.cache-matched-key }}
+        run: |
+          if ($env:CACHE_HIT -ne "true") { throw "The benchmark requires an exact cache hit." }
+          "BENCH_CACHE_HIT=$env:CACHE_HIT" >> $env:GITHUB_ENV
+          "BENCH_CACHE_MATCHED_KEY=$env:CACHE_MATCHED_KEY" >> $env:GITHUB_ENV
+          "BENCH_RESTORE_MS=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$env:BENCH_RESTORE_STARTED_MS)" >> $env:GITHUB_ENV
+
+      - *store_benchmark_pnpm
+      - *store_benchmark_node_path
+      - *store_benchmark_install
+      - *store_benchmark_verify
+      - *store_benchmark_receipt
+
+  store-cache-summary:
+    name: Windows store benchmark comparison
+    if: ${{ inputs.run_store_cache_benchmark }}
+    needs: [store-cache-seed, store-cache-comparison]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - *store_benchmark_checkout
+      - name: Download benchmark receipts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: windows-store-benchmark-*
+          path: .artifacts/windows-store-benchmark-cohort
+
+      - name: Verify and summarize the complete comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/windows-store-cache-benchmark.mjs summarize \
+            .artifacts/windows-store-benchmark-cohort/*/receipt.json \
+            > .artifacts/windows-store-benchmark-cohort/comparison.md
+          cat .artifacts/windows-store-benchmark-cohort/comparison.md >> "$GITHUB_STEP_SUMMARY"
+          cat .artifacts/windows-store-benchmark-cohort/comparison.md
+
+      - name: Upload compact comparison
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-store-benchmark-comparison
+          path: .artifacts/windows-store-benchmark-cohort/comparison.md
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
