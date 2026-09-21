@@ -49,6 +49,10 @@ Source-only Linux Node shards can reuse content-validated compiled workers from 
 
 Vitest transform-cache fingerprints exclude the generated `.ci-harness` checkout so CI consumers and the protected warmer hash the same source inputs. Node bytecode caching remains enabled for ordinary Vitest runs; Vitest owns the worker-level coverage safeguard described in [local testing](/reference/test/local#core-commands).
 
+The measured Gateway isolated/database-worker cohort uses at most eight workers
+on those hosts with at least 28 GiB total memory; other packed groups retain
+their existing caps.
+
 The complete [startup corpus](/ci/pipeline) uses eight state test files so existing workers can share its release/config matrix. Its explicit fallback prepares the runtime once and uses four workers; historical frozen targets retain their legacy process layout.
 
 | Page                                                           | Read it when                                                                                                        |
