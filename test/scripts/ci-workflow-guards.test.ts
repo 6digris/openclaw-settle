@@ -14587,7 +14587,31 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       ).include;
       expect(rows).toHaveLength(1);
       expect(rows[0].check_name).toBe("bundled-node-plan");
-      expect(rows[0].includePatterns).toEqual(forwardsChangedPaths ? changedPaths : undefined);
+      const run = readCiWorkflow().jobs["checks-node-core-test-nondist-shard"].steps.find(
+        (step: WorkflowStep) => step.name === "Run Node test shard",
+      );
+      const context = { eventName, repository, runAttempt: 1, matrix: rows[0] };
+      const env = Object.fromEntries(
+        Object.entries(run.env).map(([key, value]) => [
+          key,
+          String(value).replace(/\$\{\{[\s\S]*?\}\}/gu, (expression) =>
+            String(evaluateWorkflowExpression(expression, context)),
+          ),
+        ]),
+      );
+      expect(resolveShardPlans(env)).toEqual([
+        {
+          kind: "group",
+          name: "bundled-node-plan",
+          timingKey: "bundled-node-plan",
+          plan: {
+            configs: ["test/vitest/bundled.config.ts"],
+            env: rows[0].env,
+            includePatterns: forwardsChangedPaths ? changedPaths : null,
+            shard_name: "bundled-node-plan",
+          },
+        },
+      ]);
     },
   );
 
@@ -14913,25 +14937,61 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       eventName: "pull_request",
     });
     expect(matrixFallbackPullRequest.status, matrixFallbackPullRequest.output).toBe(0);
-    expect(
-      JSON.parse(
-        expectDefined(
-          matrixFallbackPullRequest.outputs.checks_node_core_nondist_matrix,
-          "Matrix fallback PR node matrix output",
+    const nodeRun = readCiWorkflow().jobs["checks-node-core-test-nondist-shard"].steps.find(
+      (step: WorkflowStep) => step.name === "Run Node test shard",
+    );
+    const readNodePlans = (matrix: Record<string, unknown>) => {
+      const context = {
+        eventName: "pull_request" as const,
+        repository: "openclaw/openclaw",
+        runAttempt: 1,
+        matrix,
+      };
+      return resolveShardPlans(
+        Object.fromEntries(
+          Object.entries(nodeRun.env).map(([key, value]) => [
+            key,
+            String(value).replace(/\$\{\{[\s\S]*?\}\}/gu, (expression) =>
+              String(evaluateWorkflowExpression(expression, context)),
+            ),
+          ]),
         ),
-      ).include,
-    ).toEqual(
+      );
+    };
+    const matrixFallbackRows = JSON.parse(
+      expectDefined(
+        matrixFallbackPullRequest.outputs.checks_node_core_nondist_matrix,
+        "Matrix fallback PR node matrix output",
+      ),
+    ).include as Record<string, unknown>[];
+    expect(matrixFallbackRows).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           check_name: "changed-extension-fallback-plan",
           configs: ["test/vitest/vitest.extension-matrix.config.ts"],
+        }),
+      ]),
+    );
+    const matrixFallback = expectDefined(
+      matrixFallbackRows.find((row) => row.check_name === "changed-extension-fallback-plan"),
+      "Matrix fallback row",
+    );
+    expect(readNodePlans(matrixFallback)).toEqual([
+      {
+        kind: "group",
+        name: "changed-extension-fallback-plan",
+        timingKey: "changed-extension-fallback-plan",
+        plan: {
+          configs: ["test/vitest/vitest.extension-matrix.config.ts"],
+          env: null,
           includePatterns: [
             "extensions/matrix/src/client.test.ts",
             "extensions/matrix/src/monitor.test.ts",
           ],
-        }),
-      ]),
-    );
+          shard_name: "changed-extension-fallback-plan",
+        },
+      },
+    ]);
 
     const sqliteLifecycleTestPullRequest = runCiManifestFixture({
       bundledPlanner: true,
@@ -14948,11 +15008,24 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       eventName: "pull_request",
     });
     expect(emptyPullRequest.status, emptyPullRequest.output).toBe(0);
-    expect(
-      JSON.parse(
-        expectDefined(emptyPullRequest.outputs.checks_node_core_nondist_matrix, "empty PR matrix"),
-      ).include,
-    ).toEqual([expect.objectContaining({ check_name: "bundled-node-plan", includePatterns: [] })]);
+    const emptyRows = JSON.parse(
+      expectDefined(emptyPullRequest.outputs.checks_node_core_nondist_matrix, "empty PR matrix"),
+    ).include as Record<string, unknown>[];
+    expect(emptyRows).toEqual([expect.objectContaining({ check_name: "bundled-node-plan" })]);
+    const emptyRow = expectDefined(emptyRows[0], "empty PR row");
+    expect(readNodePlans(emptyRow)).toEqual([
+      {
+        kind: "group",
+        name: "bundled-node-plan",
+        timingKey: "bundled-node-plan",
+        plan: {
+          configs: ["test/vitest/bundled.config.ts"],
+          env: emptyRow.env,
+          includePatterns: [],
+          shard_name: "bundled-node-plan",
+        },
+      },
+    ]);
 
     for (const [changedPlannerSource, error] of [
       [null, "Current CI target does not provide ./scripts/lib/ci-changed-node-test-plan.mjs"],
