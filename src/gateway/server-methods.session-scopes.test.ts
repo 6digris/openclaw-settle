@@ -11,6 +11,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { prepareGatewayRecipientProfile } from "./expected-profile.js";
+import type { OperatorScope } from "./operator-scopes.js";
 import { QuestionManager } from "./question-manager.js";
 import {
   dispatch,
@@ -371,7 +372,12 @@ describe("session read and organization scopes", () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const owner = ensureProfileForEmail("mixed-grants-owner@example.test");
       const member = ensureProfileForEmail("mixed-grants-member@example.test");
-      const scopes = ["operator.read", "operator.questions", "operator.approvals", "operator.talk"];
+      const scopes: OperatorScope[] = [
+        "operator.read",
+        "operator.questions",
+        "operator.approvals",
+        "operator.talk",
+      ];
       const cfg: OpenClawConfig = {
         gateway: {
           roles: {

@@ -70,7 +70,7 @@ export { isChatRunWorking, resetChatComposerState } from "./chat-composer-state.
 export function renderChatComposer(props: ChatComposerProps) {
   const state = getChatComposerState(props.paneId);
   state.slashCommandDispatchConnected = props.connected;
-  const canCompose = props.canSend;
+  const canCompose = props.canCompose ?? props.canSend;
   const isBusy = props.sending || props.stream !== null;
   const canAbort = Boolean(props.canAbort && props.onAbort);
   const showAbortableUi = canAbort && !hasTerminalRunStatus(props.runStatus);
@@ -189,6 +189,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     runCommand: goalComposer.submitCommand,
     canRun: (inline, command, args = "") =>
       canCompose &&
+      props.canSend &&
       state.slashCommandDispatchConnected &&
       !(inline && !props.onSlashCommand) &&
       (!props.modelRequiredReason ||
@@ -250,6 +251,7 @@ export function renderChatComposer(props: ChatComposerProps) {
   // slash commands are live controls and must not execute against stale state.
   const canSubmitDraft = (draft: string) =>
     canCompose &&
+    props.canSend &&
     (!props.modelRequiredReason ||
       (!goalComposer.active &&
         (props.getAttachments?.() ?? props.attachments ?? []).length === 0 &&

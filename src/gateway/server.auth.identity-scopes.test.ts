@@ -328,7 +328,7 @@ describe("gateway identity scope grants", () => {
             await rpcReq(ws, "sessions.patch", { key: "agent:main:denied", label: "denied" }),
           ).toMatchObject({
             ok: false,
-            error: { message: expect.stringContaining("operator.write") },
+            error: { message: expect.stringContaining("operator.sessions.write") },
           });
         }
         expect((connected.payload as { auth?: { deviceToken?: string } }).auth?.deviceToken).toBe(

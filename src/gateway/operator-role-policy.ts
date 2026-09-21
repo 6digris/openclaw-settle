@@ -232,7 +232,7 @@ export function hasOperatorBoundary(client: GatewayClient | null, cfg: OpenClawC
 }
 
 /** Reapply the current role without granting more than the connection received. */
-export function resolveCurrentOperatorScopes(
+function resolveCurrentOperatorScopes(
   client: GatewayClient | null,
   cfg: OpenClawConfig,
   preparedPolicy?: { value: GatewayOperatorRoleDefinition | undefined },

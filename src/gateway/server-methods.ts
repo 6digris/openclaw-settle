@@ -371,10 +371,10 @@ export async function authorizeGatewayRequestPreDispatch(params: {
       };
     }
     const projection =
-      !isGatewayAdmin(params.client) &&
       (params.method === "sessions.describe" ||
         params.method === "sessions.messages.subscribe" ||
-        params.method === "sessions.viewers.set")
+        params.method === "sessions.viewers.set") &&
+      !isGatewayAdmin(params.client)
         ? getSessionRowProjection(params.context)
         : undefined;
     const authorizeSession = (sessionRowRead?: SessionRowReadView) =>

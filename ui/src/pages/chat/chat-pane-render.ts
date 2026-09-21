@@ -1,8 +1,8 @@
-import type { ProgressCard } from "@openclaw/gateway-protocol";
 import { html, nothing } from "lit";
 import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
 import {
   hasOperatorAdminAccess,
+  hasOperatorReadAccess,
   hasOperatorTalkAccess,
   hasOperatorWriteAccess,
 } from "../../app/operator-access.ts";
@@ -177,12 +177,6 @@ export class ChatPane extends ChatPaneLayoutRender {
       placementStartup !== null,
     );
     const canDismissProgressCard = state.connected && !sessionParticipationBlocked && hasWriteScope;
-    const onDismissProgressCard = canDismissProgressCard
-      ? (card: ProgressCard) =>
-          void this.progressCard
-            .dismiss(card)
-            .catch(() => showToast({ message: t("sessionProgressCard.dismissFailed") }))
-      : undefined;
     const restartRecoveryTombstoned = selectedSession?.restartRecoveryStatus === "tombstoned";
     const multiIdentity = this.hasMultipleIdentities();
     const suggestionViewer =
@@ -340,17 +334,17 @@ export class ChatPane extends ChatPaneLayoutRender {
       unarchiveAccess: mutationAccess.unarchive,
     });
     const initialHistoryUnavailable = !catalogKey && isInitialChatHistoryUnavailable(state);
+    const canCompose =
+      hasOperatorReadAccess(operatorAuth) &&
+      sessionDisabledBanner?.kind !== "composer-replacement" &&
+      (catalogKey
+        ? this.catalogSession?.canContinue === true
+        : (!sessionParticipationBlocked || suggestionViewer) &&
+          !(selectedSessionArchived || restartRecoveryTombstoned || placementComposer.blocksSend) &&
+          (!sendHoldReason || initialHistoryUnavailable));
     const composerAvailability = {
-      canSend:
-        hasWriteScope &&
-        sessionDisabledBanner?.kind !== "composer-replacement" &&
-        (catalogKey
-          ? this.catalogSession?.canContinue === true
-          : !disabledReason &&
-            !selectedSessionArchived &&
-            !restartRecoveryTombstoned &&
-            !placementComposer.blocksSend &&
-            (!sendHoldReason || initialHistoryUnavailable)),
+      canCompose,
+      canSend: hasWriteScope && canCompose,
       ...initialHistorySubmitState(state, initialHistoryUnavailable),
       modelRequiredReason,
       disabledReason:
@@ -432,7 +426,12 @@ export class ChatPane extends ChatPaneLayoutRender {
         lockChatScroll(state);
         this.transcript.cancelScroll();
       },
-      onDismissProgressCard,
+      onDismissProgressCard: canDismissProgressCard
+        ? (card) =>
+            void this.progressCard
+              .dismiss(card)
+              .catch(() => showToast({ message: t("sessionProgressCard.dismissFailed") }))
+        : undefined,
       gatewayQuestionPrompts,
       asyncQuestionStorage:
         !catalogKey && !suggestionViewer ? this.chatState.durableComposerScope : null,

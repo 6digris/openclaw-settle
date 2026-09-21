@@ -72,6 +72,10 @@ function createGatewayAffinityHarness(revision: number) {
       handlers,
       owner: { kind: "core", area: "dashboard-affinity-test" },
       defaultScope: "operator.read",
+      scopes: {
+        "sessions.describe": "operator.sessions.read",
+        "sessions.patch": "operator.write",
+      },
     }),
   );
   const context = {

@@ -80,6 +80,8 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   offline?: boolean;
   queuedOutboxCount?: number;
   canSend: boolean;
+  /** Local drafts and read-only menus do not require permission to send. */
+  canCompose?: boolean;
   modelRequiredReason?: string | null;
   submitDisabledReason?: string | null;
   submitPending?: boolean;

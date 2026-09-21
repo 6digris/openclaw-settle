@@ -2,11 +2,18 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { html, nothing } from "lit";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
-import type { SessionsProps } from "./view.ts";
+
+type CategoryCellProps = {
+  loading: boolean;
+  knownCategories: string[];
+  groupWriteDisabledReason?: string;
+  onAssignCategory: (key: string, category: string | null) => void;
+  onRequestNewCategory: (sessionKey?: string) => void;
+};
 
 const NEW_GROUP_OPTION = "__new-group__";
 
-export function renderCategoryCell(row: GatewaySessionRow, props: SessionsProps) {
+export function renderCategoryCell(row: GatewaySessionRow, props: CategoryCellProps) {
   const current = normalizeOptionalString(row.category) ?? "";
   const options = [...props.knownCategories];
   if (current && !options.includes(current)) {

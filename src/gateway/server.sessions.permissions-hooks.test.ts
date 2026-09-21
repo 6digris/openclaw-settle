@@ -80,7 +80,7 @@ test("webchat session mutations follow operator scope policy", async () => {
     {
       method: "sessions.patch",
       params: { key: "agent:main:discord:group:dev", label: "should-fail" },
-      missingScope: "operator.write",
+      missingScope: "operator.sessions.write",
     },
     {
       method: "sessions.delete",

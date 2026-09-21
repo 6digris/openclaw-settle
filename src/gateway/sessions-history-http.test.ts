@@ -2037,7 +2037,7 @@ describe("session history HTTP endpoints", () => {
     });
   });
 
-  test("rejects session history when operator.read is not requested", async () => {
+  test("rejects WebSocket session history without operator.sessions.read", async () => {
     await seedSession({ text: "scope-guarded history" });
 
     const started = await startServerWithClient("test-gateway-token-1234567890");
@@ -2054,7 +2054,7 @@ describe("session history HTTP endpoints", () => {
         limit: 1,
       });
       expect(wsHistory.ok).toBe(false);
-      expect(wsHistory.error?.message).toBe("missing scope: operator.read");
+      expect(wsHistory.error?.message).toBe("missing scope: operator.sessions.read");
     } finally {
       ws.close();
       await server.close();
