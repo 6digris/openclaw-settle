@@ -701,6 +701,16 @@ Deferred publication or required flow work stops settlement before another task 
 admitted. The committed result survives, and the existing bounded flow-repair owner
 retains its obligation without replaying that task write.
 
+Task state-change notification acknowledgements use the same shared-state worker
+and publication owner. Direct sends and queued session events retain their producing
+task and event across preparation and transport waits. Acknowledgements preserve
+the current delivery origin and newest event watermark, with separate best-effort
+watermark and task timestamp writes. A committed acknowledgement is not replayed
+when projection publication fails; the existing read and flow owners retain recovery.
+Preparation cleanup joins any acknowledgement it already started. Terminal delivery
+status writes and native notification preparation retain their existing owners.
+Storage representation, schemas, retention, and update behavior are unchanged.
+
 Agent-event task progress uses the same shared-state worker and publication owner.
 Ingestion retains exact task, run, and backing identities without waiting for a native
 coordinator. Bounded progress batches preserve every tool-start count and the latest
@@ -911,11 +921,11 @@ cleanup retain custody. Allocation uses the existing reclamation rules.
 After acknowledged staging-process exit, the same inspector and exclusive token
 locks reconcile retirement before a replacement session releases the retained bytes.
 Artifact-preserving fixed reads over a cached native source also use that token
-owner when no source-exclusion or canonical-mutation scope is active. They retain
+owner when no source-exclusion scope is active. They retain
 the original source connection and backup owner, recheck authority around awaited
 preparation, and join token cleanup before releasing the source borrow. This moves
 token SQLite work, not the native backup or the reader's callback SQL.
-Generic composite callbacks, source-exclusion and canonical-mutation preparation,
+Generic composite callbacks, source-exclusion preparation,
 and already-open native source backups retain their existing snapshot owner.
 These preparation paths can still execute main-thread SQLite. The published SDK
 preparation helpers also retain their synchronous `cleanup()` contract.
@@ -989,6 +999,25 @@ remain stable, and concurrent loads retain the first complete publication.
 Workspace filtering still precedes appended library pins; workspace-only loads omit them. Workspace
 plugin discovery retains its existing synchronous metadata path. Schemas,
 retention, and update behavior are unchanged.
+
+MCP OAuth storage reads, pending callback lookup, and requester counts run in
+workers. Read-only operations retain the captured store and the caller's snapshot
+and artifact-preserving scope through the shared-state read owner. Its existing
+worker pool owns queue admission, and canonical close joins accepted reads and
+worker cleanup. Provider creation prepares the redirect facts required by the
+SDK's synchronous metadata getters; credential and discovery callbacks await
+fresh storage reads. An earlier read cannot replace metadata acknowledged by a
+later write. If a write reports an error after a possible commit, the provider
+requires an acknowledged read before serving metadata again. Login callbacks
+recheck their current lifecycle after awaited reads. Status and inventory reads
+do not create state. Lease validation and mutations retain their native owners
+and captured store context until their complete lifecycle moves off the
+application thread.
+
+Requester MCP setup reads its sorted authorization set in one current read-worker
+operation. The worker decodes selected rows in caller order and returns only
+status facts; each message still observes current storage before runtime reuse.
+No schema, stored format, migration, or updater behavior changes.
 
 Model-context reads and session transcript preparation use the session-transcript
 worker with separate bounded queues. Background preparation cannot occupy the
@@ -1473,6 +1502,12 @@ completion, checkpoint facts, and physical bytes before and after. Budget cleanu
 remains deferred until the checkpoint owner reports completion, preserving retained
 data instead of adding writes behind a pinned WAL.
 
+Checkpoint ordering uses a private monotonic observation shared by the host and
+its workers; health timestamps remain wall-clock diagnostics. Post-commit page
+maintenance also waits for the parent's commit-settlement probe to release its
+writer lock. Child transaction settlement and parent probe release are distinct
+facts in the existing commit gate; failed release cannot acknowledge success.
+
 Queued archive pruning prepares cold connections through the same asynchronous
 admission owner while retaining its existing writer section. File-backed page
 drains use the existing reclamation worker, acquired before the caller's writer
@@ -1558,6 +1593,15 @@ resource failure. Synchronous discovery and borrowed-database readers keep their
 existing contracts. This changes no schema, migration, or persistent data.
 
 ### Preserve the data and concurrency contracts
+
+Async device identity loads use the shared-state worker. A first creator runs
+the existing identity owner before database bootstrap, so pending legacy identity
+files still prevent creation. Read-only loads do not create a missing database
+or change its artifacts. Existing Ed25519 keys, first-writer convergence,
+permissions, and Doctor's migration and repair authority remain unchanged.
+Process identity caches retain their existing database-path and identity-key
+scope; warm cached values need no database operation. Schemas and update behavior
+are unchanged; no migration or operator action is required.
 
 Task, flow, and Cron receipt execution identity bindings run in the shared-state
 worker. Their synchronous transactions reread the exact live owner rows and

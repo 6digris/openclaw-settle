@@ -324,7 +324,7 @@ describe("runtime placement observations", () => {
       const configs = new Set([
         runtimeConfig,
         infrastructure,
-        ...(gatewayRecipient ? [] : ["test/vitest/vitest.gateway-methods.config.ts"]),
+        ...(gatewayRecipient ? [] : ["test/vitest/vitest.gateway-database-workers.config.ts"]),
       ]);
       const compactSpy = vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({});
       const spy = vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
@@ -371,7 +371,7 @@ describe("runtime placement observations", () => {
               : [
                   expect.objectContaining({
                     configs: expect.arrayContaining([
-                      "test/vitest/vitest.gateway-methods.config.ts",
+                      "test/vitest/vitest.gateway-database-workers.config.ts",
                     ]),
                     includePatterns: expect.arrayContaining([
                       "test/plugins/codex-model-catalog.gateway.test.ts",
@@ -448,8 +448,7 @@ describe("runtime placement observations", () => {
                 original.checkName === job.checkName &&
                 original.groups.some((group) => group.configs.includes(gatewayFixtureConfig)) &&
                 original.pretestBuildMode === undefined &&
-                original.planConcurrency === 1 &&
-                original.env?.OPENCLAW_VITEST_MAX_WORKERS === "2",
+                original.planConcurrency === 1,
             ),
           )!;
           expect(recipient, "serial Gateway recipient").toBeDefined();
@@ -477,9 +476,12 @@ describe("runtime placement observations", () => {
             .map((group) => Object.assign({}, group, { env: { ...job.env, ...group.env } })),
         );
         expect(crossing.length).toBeGreaterThan(0);
-        expect(crossing.every((group) => group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2")).toBe(
-          true,
-        );
+        for (const group of crossing) {
+          const measuredGateway = gatewayRecipient && group.configs.includes(gatewayFixtureConfig);
+          expect(group.env?.OPENCLAW_VITEST_MAX_WORKERS, group.shard_name).toBe(
+            measuredGateway ? "8" : "2",
+          );
+        }
         spy.mockImplementation((profile) =>
           profile === "blacksmith"
             ? blacksmith.filter((entry) => !entry.configs.includes(runtimeConfig))

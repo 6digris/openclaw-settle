@@ -201,9 +201,9 @@ const cases = [
   {
     name: "authored indented code after a drained paragraph",
     chunks: ["Intro.\n\n", "    const value = 1;\n    use(value);\n\n"],
-    marker: "const value = 1;",
-    renderedCode: "const value = 1;\nuse(value);\n",
+    marker: "const value = 1;\nuse(value);",
     literal: true,
+    code: true,
   },
   ...inlineDirectiveCases,
   {
@@ -342,6 +342,18 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
         true,
       );
     };
+    const expectCodeContent = () => {
+      if (!("code" in scenario)) {
+        return;
+      }
+      const codeBlocks = delivered.flatMap((payload) => {
+        const ir = markdownToIR(payload.text ?? "");
+        return ir.styles
+          .filter((span) => span.style === "code_block")
+          .map((span) => ir.text.slice(span.start, span.end));
+      });
+      expect.soft(codeBlocks).toEqual([`${scenario.marker}\n`]);
+    };
     const beforeEnd = createDeferred();
     const releaseTerminal = createDeferred();
     const response = new AssistantMessageEventStream();
@@ -460,15 +472,6 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
       const text = delivered.map((payload) => payload.text ?? "").join("");
       if ("literal" in scenario) {
         expect.soft(text).toContain(scenario.marker);
-        if ("renderedCode" in scenario) {
-          const code = delivered.flatMap((payload) => {
-            const ir = markdownToIR(payload.text ?? "");
-            return ir.styles
-              .filter((span) => span.style === "code_block")
-              .map((span) => ir.text.slice(span.start, span.end));
-          });
-          expect.soft(code).toEqual([scenario.renderedCode]);
-        }
         if ("literalText" in scenario) {
           expect
             .soft(delivered.find((payload) => payload.text?.includes(scenario.marker))?.text)
@@ -510,6 +513,7 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
         );
       }
       expectOrdinaryContent("streaming");
+      expectCodeContent();
       releaseTerminal.resolve();
       await settled;
       await subscription.waitForPendingEvents();
@@ -534,6 +538,7 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
         );
       }
       expectOrdinaryContent("final");
+      expectCodeContent();
       if (hasAudio) {
         const audio = delivered.filter(isAudioPayload);
         expect(audio).toHaveLength(1);

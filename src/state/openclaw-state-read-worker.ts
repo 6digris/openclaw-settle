@@ -95,6 +95,9 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
           : { ...command.scope },
     };
   }
+  if (command.type === "mcpOAuth.statuses") {
+    return { type: command.type, input: [...command.input] };
+  }
   if (command.type === "conversationBindings.inspect") {
     const { channel, accountId, conversationId, parentConversationId } = command.conversation;
     return {
@@ -182,6 +185,17 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
             0,
           ))
     );
+  }
+  if (command.type === "mcpOAuth.statuses") {
+    return command.input.reduce((total, key) => total + Buffer.byteLength(key, "utf8"), bytes);
+  }
+  if (
+    command.type === "mcpOAuth.readOnly" ||
+    command.type === "mcpOAuth.keys" ||
+    command.type === "mcpOAuth.pending" ||
+    command.type === "mcpOAuth.countPrincipals"
+  ) {
+    return bytes + Buffer.byteLength(command.input, "utf8");
   }
   if (command.type === "conversationBindings.inspect") {
     return (
@@ -282,6 +296,9 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   }
   if (command.type === "workspace.snapshot") {
     return bytes + Buffer.byteLength(command.workspaceDir, "utf8");
+  }
+  if (command.type === "workerEnvironments.hasSessionAttachment") {
+    return bytes + Buffer.byteLength(command.environmentId, "utf8");
   }
   if (command.type === "audit.run.inspect") {
     const input = command.input;
