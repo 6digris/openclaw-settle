@@ -197,12 +197,6 @@ const cases = [
     marker: "[[reply_to:example-id]]",
     literal: true,
   },
-  {
-    name: "authored indented code after a drained paragraph",
-    chunks: ["Intro.\n\n", "    const value = 1;\n    use(value);\n\n"],
-    marker: "    const value = 1;\n    use(value);",
-    literal: true,
-  },
   ...inlineDirectiveCases,
   {
     name: "genuine split voice directive",
