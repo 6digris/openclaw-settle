@@ -2713,7 +2713,7 @@ class GatewayIngressControllerTest {
             val pendingSignOut = checkNotNull(acknowledgement)
             assertSame(pendingSignOut, owner.presentation.value)
             assertEquals("Signing out…", checkNotNull(pendingSignOut.attention).message)
-            assertEquals(other.stableId, pendingSignOut.attention?.stableId)
+            assertEquals(other.stableId, pendingSignOut.attention.stableId)
             if (repeated) assertSame(before, pendingSignOut)
             runCurrent()
             assertTrue(retirementStarted.isCompleted)
