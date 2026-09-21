@@ -10,6 +10,7 @@ import {
 } from "../../packages/gateway-protocol/src/schema/users.js";
 import { executeSqliteQuerySync, executeSqliteQueryTakeFirstSync } from "../infra/kysely-sync.js";
 import { generateSecureUuid } from "../infra/secure-random.js";
+import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import {
   MAX_USER_PROFILE_AVATAR_BYTES,
   USER_PROFILE_AVATAR_MIME_TYPES,
@@ -201,6 +202,19 @@ export function setUserProfileRole(
   );
 }
 
+function selectUserProfileByEmail(db: DatabaseSync, email: string): UserProfile | undefined {
+  const alias = executeSqliteQueryTakeFirstSync(
+    db,
+    userProfilesDb(db)
+      .selectFrom("user_profile_emails")
+      .select("profile_id")
+      .where("email", "=", email),
+  );
+  return alias
+    ? toUserProfile(requireResolvedUserProfileMetadataById(db, alias.profile_id))
+    : undefined;
+}
+
 function ensureProfileForEmailWithInitialName(
   email: string,
   initialDisplayName: string | null,
@@ -215,24 +229,24 @@ function ensureProfileForEmailWithInitialName(
       MAX_USER_PROFILE_DISPLAY_NAME_LENGTH,
     );
   ensureUserProfilesSchema(options);
+  const database = openOpenClawStateDatabase(options);
+  const existing = runSqliteDeferredTransactionSync(database.db, () =>
+    selectUserProfileByEmail(database.db, normalizedEmail),
+  );
+  if (existing) {
+    return existing;
+  }
   return runOpenClawStateWriteTransaction(
     ({ db }) => {
-      const kysely = userProfilesDb(db);
-      const existingAlias = executeSqliteQueryTakeFirstSync(
-        db,
-        kysely
-          .selectFrom("user_profile_emails")
-          .select("profile_id")
-          .where("email", "=", normalizedEmail),
-      );
-      if (existingAlias) {
-        // Authenticated avatar reads reuse this path; unchanged identities must not refresh rosters.
-        return toUserProfile(requireResolvedUserProfileMetadataById(db, existingAlias.profile_id));
+      // Another writer may create the alias while this call waits for admission.
+      const current = selectUserProfileByEmail(db, normalizedEmail);
+      if (current) {
+        return current;
       }
       const row = insertUserProfile(db, displayName, now);
       executeSqliteQuerySync(
         db,
-        kysely.insertInto("user_profile_emails").values({
+        userProfilesDb(db).insertInto("user_profile_emails").values({
           email: normalizedEmail,
           profile_id: row.id,
           created_at: now,
