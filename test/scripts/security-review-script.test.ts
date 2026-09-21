@@ -468,6 +468,107 @@ describe("combined security review entry point", () => {
     expect(result.requests.filter((entry) => `GET ${entry.path}` === jobsPath)).toHaveLength(2);
   });
 
+  const skippedRun = { ...run, id: 12, conclusion: "skipped" };
+  const skippedJobs = {
+    ...jobs,
+    jobs: [{ ...jobs.jobs[0], conclusion: "skipped" }],
+  };
+  const skippedRunRoutes = {
+    [`GET ${actions}/runs/12`]: skippedRun,
+    [`GET ${actions}/runs/12/attempts/1/jobs`]: skippedJobs,
+  };
+
+  it("ignores a delayed skipped PR workflow after successful same-head CI", () => {
+    const result = evaluate({
+      ...skippedRunRoutes,
+      [runsPath]: { total_count: 2, workflow_runs: [skippedRun, run] },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.combined).toEqual(["pending", "success"]);
+  });
+
+  it.each([
+    { status: "in_progress", conclusion: null, expected: "pending" },
+    { status: "completed", conclusion: "failure", expected: "failure" },
+  ])(
+    "rechecks a skipped run before ignoring its $status rerun",
+    ({ status, conclusion, expected }) => {
+      const currentRun = { ...skippedRun, run_attempt: 2, status, conclusion };
+      const result = evaluate({
+        ...skippedRunRoutes,
+        [runsPath]: { total_count: 2, workflow_runs: [skippedRun, run] },
+        [`GET ${actions}/runs/12`]: currentRun,
+        [`GET ${actions}/runs/12/attempts/2/jobs`]: {
+          ...jobs,
+          jobs: [{ ...jobs.jobs[0], status, conclusion }],
+        },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.combined).toEqual(["pending", expected]);
+    },
+  );
+
+  it.each([
+    { field: "id", value: 13 },
+    { field: "head_sha", value: "d".repeat(40) },
+    { field: "run_attempt", value: 0 },
+    { field: "status", value: "unknown" },
+  ])("rejects invalid live skipped-run metadata: $field", ({ field, value }) => {
+    const result = evaluate({
+      ...skippedRunRoutes,
+      [runsPath]: { total_count: 2, workflow_runs: [skippedRun, run] },
+      [`GET ${actions}/runs/12`]: { ...skippedRun, [field]: value },
+    });
+    expect(result.status).toBe(1);
+    expect(result.combined).toEqual(["pending", "failure"]);
+  });
+
+  it.each([
+    { status: "completed", conclusion: "failure", expected: "failure" },
+    { status: "completed", conclusion: "cancelled", expected: "failure" },
+    { status: "in_progress", conclusion: null, expected: "pending" },
+  ])(
+    "keeps newer substantive CI authoritative before a skipped PR workflow: $status/$conclusion",
+    ({ status, conclusion, expected }) => {
+      const currentRun = { ...run, id: 11, status, conclusion };
+      const result = evaluate({
+        ...skippedRunRoutes,
+        [runsPath]: { total_count: 3, workflow_runs: [run, skippedRun, currentRun] },
+        [`GET ${actions}/runs/11`]: currentRun,
+        [`GET ${actions}/runs/11/attempts/1/jobs`]: {
+          ...jobs,
+          jobs: [{ ...jobs.jobs[0], status, conclusion }],
+        },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.combined).toEqual(["pending", expected]);
+    },
+  );
+
+  it("does not approve when every matching CI workflow was skipped", () => {
+    const result = evaluate({
+      ...skippedRunRoutes,
+      [runsPath]: { total_count: 1, workflow_runs: [skippedRun] },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.combined).toEqual(["pending", "pending"]);
+  });
+
+  it("does not ignore a skipped explicit CI release gate", () => {
+    const fallback = {
+      ...skippedRun,
+      event: "workflow_dispatch",
+      display_title: `CI release gate ${head}`,
+    };
+    const result = evaluate({
+      ...skippedRunRoutes,
+      [runsPath]: { total_count: 2, workflow_runs: [run, fallback] },
+      [`GET ${actions}/runs/12`]: fallback,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.combined).toEqual(["pending", "failure"]);
+  });
+
   it.each([
     { name: "missing CI", response: { total_count: 0, workflow_runs: [] } },
     {

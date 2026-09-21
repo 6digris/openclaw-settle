@@ -567,6 +567,11 @@ src/infra/diagnostics-timeline.ts
 src/infra/directory-durability.ts
 src/infra/disk-space.ts
 src/infra/dispatch-wrapper-resolution.ts
+src/infra/device-identity-coordinator-paths.ts
+src/infra/device-identity-coordinator.ts
+src/infra/device-identity-process-cache.ts
+src/infra/device-identity-store.ts
+src/infra/device-identity.ts
 src/infra/dotenv-global-core.ts
 src/infra/dotenv-global.ts
 src/infra/dotenv.ts
@@ -657,6 +662,7 @@ src/infra/openclaw-exec-env.ts
 src/infra/openclaw-root.fs.runtime.ts
 src/infra/openclaw-root.ts
 src/infra/path-case.ts
+src/infra/path-existence.ts
 src/infra/path-guards.ts
 src/infra/path-safety.ts
 src/infra/plain-object.ts

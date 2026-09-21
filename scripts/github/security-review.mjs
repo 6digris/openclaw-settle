@@ -64,7 +64,28 @@ async function ciState(review) {
   for (const candidate of candidates) {
     ciRunState(candidate);
   }
-  const run = candidates.toSorted((left, right) => right.id - left.id)[0];
+  // Delayed draft events can create wholly skipped PR runs after runnable CI.
+  let run;
+  for (const candidate of candidates.toSorted((left, right) => right.id - left.id)) {
+    if (
+      candidate.event !== "pull_request" ||
+      candidate.status !== "completed" ||
+      candidate.conclusion !== "skipped"
+    ) {
+      run = candidate;
+      break;
+    }
+    // Reruns retain their ID; a skipped list entry can already have a new attempt.
+    const current = await api.request(`${root}/runs/${candidate.id}`);
+    const currentState = ciRunState(current);
+    if (current.id !== candidate.id || current.head_sha !== candidate.head_sha) {
+      throw new Error("The CI run identity changed during security review.");
+    }
+    if (currentState !== "completed" || current.conclusion !== "skipped") {
+      run = current;
+      break;
+    }
+  }
   if (!run || run.status !== "completed") {
     return "pending";
   }

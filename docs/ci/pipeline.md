@@ -35,6 +35,41 @@ plugin coverage lives in the separate
 [`Full Release Validation`](/ci/release-validation#full-release-validation) or an explicit manual
 dispatch.
 
+The full named Node plan retains the complete maintainer-tooling family through
+`RELEASE_ONLY_TOOLING_SHARDS` and the matching maintainer leaves in mixed fast
+configs. Product-only PRs omit this family in both precise and broad fallback
+plans. A PR touching a tooling test or owner runs the full family:
+`scripts/**`, `src/scripts/**`, `test/**`, `.github/**`, `config/**`, root
+package and pnpm inputs, tooling configs, and the other inputs classified as
+tooling by the shared changed-path owner in `scripts/test-projects.test-support.mts`.
+That owner also covers Docker, agent/Crabbox tooling, app scripts/Fastlane, and
+extension scripts/package inputs. The existing tooling Vitest configs and fast
+config inventories still determine execution. Maintainer leaves keep their
+original ordinary, isolated, or fake-timer config and process pins; filtering a
+mixed group retains its product tests and uses separate subset timing identities.
+The five `test/scripts/*.e2e.test.ts` product integration gates remain outside
+this maintainer tier.
+
+Every CI manual dispatch includes the full tooling family. Full Release
+Validation's `normal_ci` child dispatches CI on the frozen candidate, where
+`Run Node test shard` executes those unchanged tests before the regular release
+publication gate accepts the campaign. OpenClaw Release Checks and Plugin
+Prerelease are separate proof owners. This is candidate validation, not a test
+deferred until promotion. Direct human beta publication with approved
+preflight-only evidence remains an explicit existing exception to full-campaign
+validation; this tier does not change publication authority.
+Fork repositories keep their existing full tooling coverage because they do not
+use the canonical changed-test planner. Fork-origin PRs targeting this repository
+use the canonical PR selection and retain changed-owner coverage.
+
+Main push plans already omitted named tooling shards; they now also omit the
+maintainer leaves previously retained by fast configs, even for tooling-owner
+changes. A regression introduced by a later main merge can therefore remain invisible to
+main CI until an affected PR or full manual/release validation runs the family.
+The PR merge-ref result proves only the tree it tested. The current `ci-gate`
+aggregates selected jobs; it does not add a separate tooling proof against later
+main revisions.
+
 Scheduled QA runs nightly at 04:41 UTC. Its live runtime job runs the
 `gateway-restart-full-access-live` scenario with `openai/gpt-5.6-luna` alongside
 the three-restart replay-safety scenario. The Full Access check must preserve
@@ -283,8 +318,11 @@ small set of security policy and enforcement files that require SecOps approval.
 
 The **Security Review** workflow runs both guards from trusted repository code.
 It publishes a commit status named `openclaw/ci-gate` that requires both the
-applicable approvals and a successful native CI gate from the latest CI run for
-the current PR head. The existing CI job retains its check with the same name.
+applicable approvals and a successful native CI gate from the latest applicable
+CI run for the current PR head. Completed, wholly skipped pull-request runs do
+not replace substantive CI runs. Newer running, failed, or canceled runs still
+take precedence, and skipped release-gate dispatches still block approval. The
+existing CI job retains its check with the same name.
 GitHub requires both the check and the commit status when both share a required
 context. Missing approval, failed CI, or evaluation errors fail the review status.
 Missing or running CI leaves it pending and keeps merging blocked. CI completion
@@ -316,9 +354,11 @@ Checkout, runtime setup, and separately minted autoscrub token expiry are outsid
 this recovery mechanism.
 
 Separately, read-only `GET` and `HEAD` requests retry HTTP `500`, `502`, `503`,
-and `504` responses after one, two, and four seconds, within the original
-30-second request timeout. These request retries exclude writes. HTTP errors
-include the request method and endpoint to identify the failed operation.
+and `504` responses and recognized transient connection failures before a
+response arrives. They share one retry budget of one, two, and four seconds,
+within the original 30-second request timeout. These retries exclude writes,
+caller cancellation, certificate errors, and unrecognized errors. HTTP and
+connection errors identify the request method and endpoint.
 
 If GitHub's changed-file count and file list disagree, the guards retry the complete
 file-list read after one, two, and four seconds. Each retry rereads PR metadata;
@@ -337,6 +377,10 @@ remove its review requirement.
 The **Dependency Guard** publishes `openclaw/dependency-review` and retains its
 dependency classification and lockfile autoscrub behavior. Dependency removals
 that already qualify as informational remain informational.
+If neither cleanup App can provide a write token, optional lockfile cleanup is
+skipped with an explanation in the workflow summary. The dependency review still
+requires maintainer approval or removal of the lockfile changes; unavailable
+cleanup credentials do not fail the Actions job.
 
 Edit `.github/security-review-policy.yml` to change path classification. Its
 `categories` group product paths with descriptions and review guidance;
