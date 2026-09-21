@@ -124,7 +124,9 @@ suite.define(() => {
         await expectBrowser(other).toBeVisible();
         await other.getByRole("button", { name: "View session" }).focus();
         await expectBrowser(toast).toContainText("mentioned you");
-        await expectBrowser(toast.locator(".app-toast__title")).toHaveText("Alex mentioned you");
+        await expectBrowser(toast.locator(".mention-toast__sender-line")).toHaveText(
+          "Alex mentioned you",
+        );
         await expectBrowser(toast.locator(".mention-toast__session")).toHaveText(
           arrival.sessionTitle,
         );
@@ -136,22 +138,35 @@ suite.define(() => {
           await Promise.all(element.getAnimations().map((animation) => animation.finished));
         });
         const bounds = await toast.boundingBox();
-        expect(bounds!.x).toBeGreaterThan(800);
-        const title = await toast.locator(".app-toast__title").boundingBox();
+        expect(bounds!.width).toBe(500);
+        expect(bounds!.x + bounds!.width).toBe(1280 - 16);
+        const title = await toast.locator(".mention-toast__sender-line").boundingBox();
         const session = await toast.locator(".mention-toast__session").boundingBox();
         const excerpt = await toast.locator(".mention-toast__excerpt").boundingBox();
         const action = await toast.getByRole("button", { name: "View session" }).boundingBox();
         const avatar = await toast.locator(".viewer-avatar").boundingBox();
-        expect(session!.y).toBeGreaterThanOrEqual(title!.y + title!.height);
-        expect(excerpt!.y - session!.y - session!.height).toBeGreaterThanOrEqual(8);
+        expect(session!.y - title!.y - title!.height).toBe(2);
+        expect(excerpt!.y - session!.y - session!.height).toBe(12);
         expect(action!.y - excerpt!.y - excerpt!.height).toBeGreaterThanOrEqual(8);
         for (const box of [session, excerpt, action]) {
           expect(Math.abs(box!.x - title!.x)).toBeLessThan(1);
         }
         expect(avatar!.x + avatar!.width).toBeLessThan(title!.x);
-        expect(
-          Math.abs(avatar!.y + avatar!.height / 2 - title!.y - title!.height / 2),
-        ).toBeLessThan(1);
+        expect(avatar!.width).toBe(28);
+        expect(Math.abs(avatar!.y - title!.y)).toBeLessThan(1);
+        const typeSizes = await toast.evaluate((element) => ({
+          header: parseFloat(
+            getComputedStyle(element.querySelector(".mention-toast__sender-line")!).fontSize,
+          ),
+          session: parseFloat(
+            getComputedStyle(element.querySelector(".mention-toast__session")!).fontSize,
+          ),
+          excerpt: parseFloat(
+            getComputedStyle(element.querySelector(".mention-toast__excerpt")!).fontSize,
+          ),
+        }));
+        expect(typeSizes.excerpt).toBeGreaterThan(typeSizes.header);
+        expect(typeSizes.header).toBeGreaterThan(typeSizes.session);
         console.info("mention notification hierarchy", {
           height: bounds!.height,
           sessionGap: session!.y - title!.y - title!.height,
@@ -212,7 +227,7 @@ suite.define(() => {
           expect(layout.overflow).toBe(false);
           expect(layout.left).toBeGreaterThanOrEqual(0);
           expect(layout.right).toBeLessThanOrEqual(width);
-          expect(layout.avatar).toBe(20);
+          expect(layout.avatar).toBe(28);
           const action = await toast.getByRole("button", { name: "View session" }).boundingBox();
           const heading = await toast.locator(".app-toast__title").boundingBox();
           const excerpt = await toast.locator(".mention-toast__excerpt").boundingBox();
@@ -225,7 +240,8 @@ suite.define(() => {
             expect(dismiss!.height).toBeGreaterThanOrEqual(44);
             expect(dismiss!.x).toBeGreaterThanOrEqual(heading!.x + heading!.width);
             const session = await toast.locator(".mention-toast__session").boundingBox();
-            expect(dismiss!.y + dismiss!.height).toBeLessThanOrEqual(session!.y);
+            expect(session!.x + session!.width).toBeLessThanOrEqual(dismiss!.x);
+            expect(dismiss!.y + dismiss!.height).toBeLessThanOrEqual(excerpt!.y);
           }
           await captureUiProof(suite, page, "03-after-" + name + ".png");
           // Routing into the mentioned session retires its active toast without a

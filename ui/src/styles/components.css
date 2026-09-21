@@ -1493,47 +1493,47 @@ openclaw-toast-host[data-toast-placement="shell"]
   color: var(--text-strong);
 }
 
-/* Notifications read from the sender down, with content and action sharing one text edge. */
+/* A compact header pair establishes context; the larger message gets the emphasis. */
 .app-toast--notification {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-1) var(--space-2);
+  gap: var(--space-3);
   left: auto;
   right: calc(var(--space-4) + var(--safe-area-right));
-  width: min(440px, calc(100vw - 32px));
+  width: min(500px, calc(100vw - 32px));
   max-width: none;
-  padding: var(--space-3);
+  padding: var(--space-4);
   border-color: var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--card);
-  box-shadow: var(--shadow-sm);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow-md);
   transition:
     translate 250ms ease-out,
     opacity 250ms ease-out;
 }
 
 .app-toast--notification:has(.app-toast__icon) {
-  grid-template-columns: 20px minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
 }
 
 .app-toast--notification .app-toast__icon {
   grid-column: 1;
   grid-row: 1;
-  align-self: center;
-  width: 20px;
-  height: 24px;
+  align-self: start;
+  width: 28px;
+  height: 28px;
 }
 
 .app-toast__title {
   grid-column: -3 / -2;
   grid-row: 1;
   min-width: 0;
-  align-self: center;
+  align-self: start;
   overflow: hidden;
   color: var(--text-strong);
   font-size: var(--control-ui-text-md);
   font-weight: 600;
-  line-height: 24px;
+  line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1543,8 +1543,8 @@ openclaw-toast-host[data-toast-placement="shell"]
   grid-row: 2;
   max-height: none;
   overflow: hidden;
-  color: var(--text);
-  font-size: var(--control-ui-text-md);
+  color: var(--text-strong);
+  font-size: var(--control-ui-text-lg);
 }
 
 .app-toast__footer {
@@ -1552,17 +1552,17 @@ openclaw-toast-host[data-toast-placement="shell"]
   grid-row: 3;
   display: flex;
   min-width: 0;
-  margin-top: var(--space-2);
 }
 
 .app-toast--notification .app-toast__action {
   max-width: 100%;
-  min-height: 28px;
+  min-height: 32px;
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-strong);
+  font-size: var(--control-ui-text-md);
   font-weight: 500;
 }
 
@@ -1574,6 +1574,7 @@ openclaw-toast-host[data-toast-placement="shell"]
 .app-toast--notification .app-toast__dismiss {
   grid-column: -2 / -1;
   grid-row: 1;
+  align-self: start;
   width: 24px;
   height: 24px;
   border-radius: var(--radius-sm);
@@ -1618,12 +1619,15 @@ openclaw-toast-host[data-toast-placement="shell"]
 
 .mention-toast__session {
   display: block;
+  margin-top: 2px;
   color: var(--muted);
+  font-size: var(--control-ui-text-sm);
+  font-weight: 400;
+  line-height: 1.5;
 }
 
 .mention-toast__excerpt {
   display: -webkit-box;
-  margin-top: var(--space-2);
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -1634,9 +1638,9 @@ openclaw-toast-host[data-toast-placement="shell"]
 }
 
 .mention-toast__avatar .viewer-avatar {
-  width: 20px;
-  height: 20px;
-  font-size: 10px;
+  width: 28px;
+  height: 28px;
+  font-size: var(--control-ui-text-md);
 }
 
 @media (max-width: 768px), (pointer: coarse) {
