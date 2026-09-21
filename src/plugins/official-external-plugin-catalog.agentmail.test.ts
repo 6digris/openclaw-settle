@@ -14,6 +14,7 @@ describe("official AgentMail catalog entry", () => {
     expect(getOfficialExternalPluginCatalogEntryForPackage("@agentmail/agentmail")).toBe(entry);
     expect(entry.kind).toBe("channel");
     expect(entry.openclaw?.channel).toMatchObject({
+      configuredState: { env: { anyOf: ["AGENTMAIL_API_KEY"] } },
       docsPath: "https://www.agentmail.to/docs/integrations/openclaw",
       exposure: { docs: false },
     });

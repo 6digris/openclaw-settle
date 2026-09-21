@@ -19,7 +19,7 @@
           "order": 89,
           "quickstartAllowFrom": true,
           "configuredState": {
-            "env": { "anyOf": ["AGENTMAIL_API_KEY", "AGENTMAIL_WEBHOOK_SECRET"] }
+            "env": { "anyOf": ["AGENTMAIL_API_KEY"] }
           }
         },
         "channelConfigs": {
