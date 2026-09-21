@@ -21,7 +21,7 @@ type CodeModeErrorCode =
 ```
 
 `invalid_input` covers bad `exec`/`wait` arguments, including retired `language`
-and `typecheck` fields, rejected module access, unknown/expired/
+and `typecheck` fields, rejected module access, JavaScript syntax errors, unknown/expired/
 wrong-scope `runId` values, and too many suspended runs. `runtime_unavailable`
 covers an unavailable executor or a worker that fails to start or exits
 unexpectedly. Check the selected `tools.codeMode.executor` and its plugin
@@ -36,6 +36,13 @@ exceeded.
 `output_limit_exceeded` is reserved for a result that cannot be serialized into
 the bounded projection; ordinary oversized successful results are truncated and
 remain successful.
+
+JavaScript syntax errors are rejected during source preparation, before any
+nested tool dispatch. The bounded diagnostic includes a one-based source line
+and column. Correct the source and submit a new `exec`; OpenClaw does not repair
+or replay it automatically. This no-dispatch outcome does not enable
+`restartSafe` or change the result's `replaySafe` flag. Exceptions thrown by valid
+guest code, including `SyntaxError`, remain runtime failures.
 
 Errors returned to the guest are plain data; host `Error` instances, stack
 objects and prototypes are not passed through the JSON result bridge. This

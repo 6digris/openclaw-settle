@@ -65,7 +65,9 @@ separate plugin enable step. Explicit executor selection activates this bundled
 runtime even when `plugins.enabled` is `false` or a restrictive `plugins.allow`
 list omits it. It does not enable other plugins. An explicit `plugins.deny`
 entry or `plugins.entries.code-mode-quickjs.enabled: false` still blocks it.
-External executor plugins remain subject to the full plugin activation policy.
+An external plugin can supply the `quickjs` executor choice and remains subject
+to the full plugin activation policy. Enable exactly one owner for that choice.
+The selectable executor IDs are `node` and `quickjs`; `node` is owned by core.
 
 The selected executor must be available. If it is missing, disabled, denied,
 or cannot load, the run fails with `runtime_unavailable`; OpenClaw never

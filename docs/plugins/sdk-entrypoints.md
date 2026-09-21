@@ -63,10 +63,12 @@ Use `openclaw plugins inspect <id>` to see a plugin's shape.
 
 ## Code Mode executor runtime
 
-Use `openclaw/plugin-sdk/code-mode-executor-runtime` for an executor plugin that
-runs Code Mode JavaScript. Declare its ID in `contracts.codeModeExecutors` and
-export `codeModeExecutor` from the plugin's top-level `code-mode-executor-api`
-artifact. The host resolves this artifact only when that executor is selected;
+Use `openclaw/plugin-sdk/code-mode-executor-runtime` to implement the `quickjs`
+executor choice. Code Mode has two selectable IDs: `node`, owned by core, and
+`quickjs`, supplied by an executor plugin. The plugin's installation ID can
+differ from its executor ID. Declare `quickjs` in `contracts.codeModeExecutors`
+and export `codeModeExecutor` from the plugin's top-level `code-mode-executor-api`
+artifact. The host resolves this artifact only when QuickJS is selected;
 ordinary plugin registration remains lightweight.
 
 Selected bundled executors preserve core runtime availability despite global
