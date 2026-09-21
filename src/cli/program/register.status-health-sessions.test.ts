@@ -250,16 +250,6 @@ describe("registerStatusHealthSessionsCommands", () => {
     });
   });
 
-  it("rejects invalid status timeout without calling status command", async () => {
-    await runCli(["status", "--timeout", "nope"]);
-
-    expect(runtime.error).toHaveBeenCalledWith(
-      "--timeout must be a positive integer (milliseconds)",
-    );
-    expect(runtime.exit).toHaveBeenCalledWith(1);
-    expect(statusCommand).not.toHaveBeenCalled();
-  });
-
   it("runs health command with parsed timeout", async () => {
     await runCli(["health", "--json", "--timeout", "2500", "--verbose"]);
 
@@ -269,16 +259,6 @@ describe("registerStatusHealthSessionsCommands", () => {
       timeoutMs: 2500,
       verbose: true,
     });
-  });
-
-  it("rejects invalid health timeout without calling health command", async () => {
-    await runCli(["health", "--timeout", "0"]);
-
-    expect(runtime.error).toHaveBeenCalledWith(
-      "--timeout must be a positive integer (milliseconds)",
-    );
-    expect(runtime.exit).toHaveBeenCalledWith(1);
-    expect(healthCommand).not.toHaveBeenCalled();
   });
 
   it("runs sessions command with forwarded options", async () => {

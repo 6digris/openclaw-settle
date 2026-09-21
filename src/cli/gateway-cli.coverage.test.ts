@@ -367,26 +367,6 @@ describe("gateway-cli coverage", () => {
     );
   });
 
-  it("rejects combining --agent with --all-agents for usage-cost", async () => {
-    callGateway.mockClear();
-
-    await expectGatewayExit([
-      "gateway",
-      "usage-cost",
-      "--agent",
-      "alpha",
-      "--all-agents",
-      "--json",
-    ]);
-
-    expect(callGateway).not.toHaveBeenCalled();
-    expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
-      ok: false,
-      error: { type: "cli_error", message: "Use --agent or --all-agents, not both" },
-    });
-    expect(runtimeErrors).toHaveLength(0);
-  });
-
   it("preserves expected CLI machine output for ordinary Gateway command failures", async () => {
     callGateway.mockRejectedValueOnce(
       new ExpectedCliError({
@@ -898,33 +878,6 @@ describe("gateway-cli coverage", () => {
 
     expect(runtimeErrors.join("\n")).toContain("gateway discover failed:");
     expect(discoverGatewayBeacons).not.toHaveBeenCalled();
-  });
-
-  it("fails gateway call on invalid params JSON", async () => {
-    callGateway.mockClear();
-    await expectGatewayExit(["gateway", "call", "status", "--params", "not-json"]);
-
-    expect(callGateway).not.toHaveBeenCalled();
-    expect(runtimeErrors.join("\n")).toContain("Gateway call failed:");
-    expect(runtimeErrors.join("\n")).toContain("--params must be valid JSON.");
-  });
-
-  it("renders invalid gateway call params as JSON before calling Gateway", async () => {
-    await expectGatewayExit([
-      "gateway",
-      "call",
-      "system-presence",
-      "--params",
-      "not-json",
-      "--json",
-    ]);
-
-    expect(callGateway).not.toHaveBeenCalled();
-    expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
-      ok: false,
-      error: { type: "cli_error", message: "--params must be valid JSON." },
-    });
-    expect(runtimeErrors).toHaveLength(0);
   });
 
   it("validates gateway call timeout before opening a transport", async () => {

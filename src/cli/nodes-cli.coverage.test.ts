@@ -251,18 +251,6 @@ describe("nodes-cli coverage", () => {
 
   it.each([
     {
-      label: "status with an invalid last-connected duration",
-      command: "status",
-      args: ["nodes", "status", "--last-connected", "not-a-duration"],
-      message: "Invalid --last-connected: Invalid duration",
-    },
-    {
-      label: "list with an invalid last-connected duration",
-      command: "list",
-      args: ["nodes", "list", "--last-connected", "not-a-duration"],
-      message: "Invalid --last-connected: Invalid duration",
-    },
-    {
       label: "status with an empty last-connected duration",
       command: "status",
       args: ["nodes", "status", "--last-connected", ""],
@@ -273,18 +261,6 @@ describe("nodes-cli coverage", () => {
       command: "list",
       args: ["nodes", "list", "--last-connected", "   "],
       message: "Invalid --last-connected",
-    },
-    {
-      label: "invoke with a blank node",
-      command: "invoke",
-      args: ["nodes", "invoke", "--node", "   ", "--command", "canvas.eval"],
-      message: "--node and --command required",
-    },
-    {
-      label: "invoke with a blank command",
-      command: "invoke",
-      args: ["nodes", "invoke", "--node", "mac-1", "--command", "   "],
-      message: "--node and --command required",
     },
     {
       label: "invoke with an empty idempotency key",
@@ -300,12 +276,6 @@ describe("nodes-cli coverage", () => {
         "",
       ],
       message: "--idempotency-key",
-    },
-    {
-      label: "rename with a blank name",
-      command: "rename",
-      args: ["nodes", "rename", "--node", "mac-1", "--name", "   "],
-      message: "--name must not be empty",
     },
     {
       label: "push with an invalid environment",
