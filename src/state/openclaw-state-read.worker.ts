@@ -55,7 +55,10 @@ import type {
   OpenClawStateReadRequest,
 } from "./openclaw-state-read.types.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
-import { readUserProfileIdForEmail } from "./user-profile-identity.read.js";
+import {
+  readUserProfileEmailBindings,
+  readUserProfileIdForEmail,
+} from "./user-profile-identity.read.js";
 import { selectProfileDisplayEntries } from "./user-profiles-internal.js";
 
 function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
@@ -127,6 +130,7 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
             isRecord(pin) && typeof pin.skillId === "string" && typeof pin.revision === "string",
         )) ||
       input.command.type === "agentDatabaseRegistry.read" ||
+      input.command.type === "userProfiles.catalog" ||
       (input.command.type === "userProfiles.reconcile" &&
         typeof input.command.profileId === "string") ||
       (input.command.type === "userProfiles.email.resolve" &&
@@ -429,15 +433,20 @@ serveOwnedWorkerTasks(
                   };
                 }
                 if (command.type === "userProfiles.reconcile") {
-                  return {
-                    ok: true,
-                    type: command.type,
-                    sourceAdmitted,
-                    profile: runSqliteDeferredTransactionSync(
-                      db,
-                      () => selectProfileDisplayEntries(db, [command.profileId])[0]?.[1],
-                    ),
-                  };
+                  const facts = runSqliteDeferredTransactionSync(db, () => ({
+                    profile: selectProfileDisplayEntries(db, [command.profileId])[0]?.[1],
+                    emailBindings: readUserProfileEmailBindings(db, command.profileId),
+                  }));
+                  return { ok: true, type: command.type, sourceAdmitted, ...facts };
+                }
+                if (command.type === "userProfiles.catalog") {
+                  const facts = runSqliteDeferredTransactionSync(db, () => ({
+                    profiles: tableExists(db, "user_profiles")
+                      ? selectProfileDisplayEntries(db)
+                      : [],
+                    emailBindings: readUserProfileEmailBindings(db),
+                  }));
+                  return { ok: true, type: command.type, sourceAdmitted, ...facts };
                 }
                 if (command.type === "userProfiles.email.resolve") {
                   return {
