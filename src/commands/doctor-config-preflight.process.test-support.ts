@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { runCliProcessChild } from "../cli/cli-process-child.test-helpers.js";
+import { createSessionTranscriptHeader } from "../config/sessions/transcript-header.js";
 import { ensureOpenClawAgentDatabaseSchema } from "../state/openclaw-agent-db.js";
 import { removeCanonicalValidationFromHistoricalAgentFixture } from "../state/openclaw-agent-db.test-support.js";
 import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
@@ -234,8 +235,19 @@ export function seedLegacyTranscriptFtsDatabase(stateDir: string, version: 21 | 
         "INSERT INTO session_windows(session_id,session_key,created_at,updated_at) VALUES(?,?,?,?)",
       ).run(sessionId, key, now, now);
       db.prepare(
-        "INSERT INTO session_transcript_index_state(session_id,indexed_seq,needs_rebuild,fts_row_count,updated_at) VALUES(?,7,1,NULL,-17)",
+        "INSERT INTO session_transcript_index_state(session_id,indexed_seq,needs_rebuild,fts_row_count,updated_at) VALUES(?,8,1,NULL,-17)",
       ).run(sessionId);
+      db.prepare("INSERT INTO transcript_events VALUES(?,0,?,?)").run(
+        sessionId,
+        JSON.stringify(
+          createSessionTranscriptHeader({
+            sessionId,
+            timestamp: new Date(now).toISOString(),
+            cwd: stateDir,
+          }),
+        ),
+        now,
+      );
       for (let seq = 0; seq < 8; seq++) {
         const id = `message-${seq}`;
         const text = `Synthetic retained needle ${index} ${seq}`;
@@ -246,7 +258,12 @@ export function seedLegacyTranscriptFtsDatabase(stateDir: string, version: 21 | 
           timestamp: new Date(now).toISOString(),
           message: { role: "user", content: text },
         });
-        db.prepare("INSERT INTO transcript_events VALUES(?,?,?,?)").run(sessionId, seq, event, now);
+        db.prepare("INSERT INTO transcript_events VALUES(?,?,?,?)").run(
+          sessionId,
+          seq + 1,
+          event,
+          now,
+        );
         db.prepare(
           "INSERT INTO session_transcript_fts(session_id,message_id,role,text,timestamp) VALUES(?,?,'user',?,?)",
         ).run(sessionId, id, text, now);
