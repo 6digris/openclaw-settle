@@ -108,13 +108,8 @@ export { createMeetingNodeHost, type MeetingNodeHostOptions } from "../meeting-b
 
 export { runMeetingParticipationWithBrowser } from "../meeting-bot/participation-browser.js";
 export type {
-  MeetingParticipationAction,
   MeetingParticipationRequest,
-  MeetingParticipationResult,
-  MeetingParticipationEffectResult,
   MeetingParticipationSource,
-  MeetingParticipationContext,
   MeetingParticipationAttempt,
-  MeetingParticipationOptions,
   MeetingBrowserParticipationAdapter,
 } from "../meeting-bot/participation-types.js";

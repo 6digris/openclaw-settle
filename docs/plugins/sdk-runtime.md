@@ -216,6 +216,12 @@ epoch, revision, and finality through `observeParticipationSource`; never accept
 these fields from model arguments. `inspectParticipationSource` returns a
 snapshot and a live guard for work that crosses asynchronous boundaries.
 
+The participation-specific named exports are `runMeetingParticipationWithBrowser`,
+`MeetingBrowserParticipationAdapter`, `MeetingParticipationRequest`,
+`MeetingParticipationSource`, and `MeetingParticipationAttempt`. Other payload
+and option shapes remain part of the typed runtime and adapter signatures rather
+than separate top-level SDK aliases.
+
 Each session retains at most 1,024 live sources for two minutes from their first
 observation. Capacity admission and eviction use original observation order, not
 snapshot replay or correction time. Repeated snapshots preserve unchanged
