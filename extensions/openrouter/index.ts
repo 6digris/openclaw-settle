@@ -40,6 +40,7 @@ import { resolveOpenRouterExtraParamsForTransport } from "./provider-routing.js"
 import { buildOpenRouterSpeechProvider } from "./speech-provider.js";
 import { wrapOpenRouterProviderStream } from "./stream.js";
 import { resolveOpenRouterThinkingProfile } from "./thinking-policy.js";
+import { inspectOpenRouterToolSchemas, normalizeOpenRouterToolSchemas } from "./tool-schemas.js";
 import { fetchOpenRouterUsage } from "./usage.js";
 import {
   buildOpenRouterVideoGenerationProvider,
@@ -347,6 +348,8 @@ export default defineSingleProviderPluginEntry({
       },
       ...passthroughGeminiReplayHooks,
       buildReplayPolicy: buildOpenRouterReplayPolicy,
+      normalizeToolSchemas: normalizeOpenRouterToolSchemas,
+      inspectToolSchemas: inspectOpenRouterToolSchemas,
       resolveReasoningOutputMode: () => "native",
       resolveThinkingProfile: (ctx) => resolveOpenRouterThinkingProfile(ctx.modelId, ctx),
       isModernModelRef: () => true,
@@ -368,6 +371,7 @@ export default defineSingleProviderPluginEntry({
           baseUrl: ctx.config.models?.providers?.openrouter?.baseUrl,
           request: ctx.config.models?.providers?.openrouter?.request,
           timeoutMs: ctx.timeoutMs,
+          signal: ctx.signal,
           fetchFn: ctx.fetchFn,
         }),
     };

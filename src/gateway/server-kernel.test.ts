@@ -911,6 +911,7 @@ describe("createGatewayKernel", () => {
         "plugins.bootstrap",
         "gateway.kernel-state",
         "node-desktop.runtime-import",
+        "host-desktop.runtime-import",
         "computer.runtime-import",
         "runtime.config",
         "control-ui.root",
@@ -931,6 +932,7 @@ describe("createGatewayKernel", () => {
         "gateway.request-runtime",
         "gateway.config-revision-key",
         "gateway.request-context",
+        "sessions.projection",
       ]);
     } finally {
       try {

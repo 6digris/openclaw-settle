@@ -1,4 +1,4 @@
-// Diagnostic memory tests cover memory snapshot capture and diagnostic log output.
+// Diagnostic memory tests cover pressure events and diagnostic log output.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   onInternalDiagnosticEvent,
@@ -76,6 +76,10 @@ describe("diagnostic memory", () => {
         uptimeMs: 123,
         memory: {
           arrayBuffersBytes: 5,
+          workerCount: 0,
+          workerHeapSampledCount: 0,
+          workerHeapTotalBytes: 0,
+          workerHeapUsedBytes: 0,
           externalBytes: 10,
           heapTotalBytes: 80,
           rssBytes: 4096,
@@ -113,6 +117,10 @@ describe("diagnostic memory", () => {
         uptimeMs: 0,
         memory: {
           arrayBuffersBytes: 5,
+          workerCount: 0,
+          workerHeapSampledCount: 0,
+          workerHeapTotalBytes: 0,
+          workerHeapUsedBytes: 0,
           externalBytes: 10,
           heapTotalBytes: 80,
           heapUsedBytes: 40,
@@ -129,6 +137,10 @@ describe("diagnostic memory", () => {
         thresholdBytes: 1000,
         memory: {
           arrayBuffersBytes: 5,
+          workerCount: 0,
+          workerHeapSampledCount: 0,
+          workerHeapTotalBytes: 0,
+          workerHeapUsedBytes: 0,
           externalBytes: 10,
           heapTotalBytes: 80,
           heapUsedBytes: 40,
@@ -441,34 +453,26 @@ describe("diagnostic memory", () => {
     },
   );
 
-  it("emits pressure when RSS grows quickly", () => {
+  it("emits pressure when RSS growth persists across windows", () => {
     const events: DiagnosticEventPayload[] = [];
     const stop = onDiagnosticEvent((event) => events.push(event));
 
-    emitDiagnosticMemorySample({
-      now: 1000,
-      memoryUsage: memoryUsage({ rss: 1000 }),
-      thresholds: {
-        rssWarningBytes: 10_000,
-        heapUsedWarningBytes: 10_000,
-        rssGrowthWarningBytes: 500,
-        growthWindowMs: 10_000,
-      },
-    });
-    emitDiagnosticMemorySample({
-      now: 2000,
-      memoryUsage: memoryUsage({ rss: 1700 }),
-      thresholds: {
-        rssWarningBytes: 10_000,
-        heapUsedWarningBytes: 10_000,
-        rssGrowthWarningBytes: 500,
-        growthWindowMs: 10_000,
-      },
-    });
+    for (const [index, rss] of [1000, 1350, 1700, 1700].entries()) {
+      emitDiagnosticMemorySample({
+        now: 1000 + index * 5000,
+        memoryUsage: memoryUsage({ rss }),
+        thresholds: {
+          rssWarningBytes: 10_000,
+          heapUsedWarningBytes: 10_000,
+          rssGrowthWarningBytes: 500,
+          growthWindowMs: 10_000,
+        },
+      });
+    }
     stop();
 
     expect(events.at(-1)).toEqual({
-      seq: 3,
+      seq: 5,
       ts: 1_776_859_200_000,
       trace: undefined,
       type: "diagnostic.memory.pressure",
@@ -476,9 +480,13 @@ describe("diagnostic memory", () => {
       reason: "rss_growth",
       thresholdBytes: 500,
       rssGrowthBytes: 700,
-      windowMs: 1000,
+      windowMs: 10_000,
       memory: {
         arrayBuffersBytes: 5,
+        workerCount: 0,
+        workerHeapSampledCount: 0,
+        workerHeapTotalBytes: 0,
+        workerHeapUsedBytes: 0,
         externalBytes: 10,
         heapTotalBytes: 80,
         heapUsedBytes: 40,
@@ -556,23 +564,21 @@ describe("diagnostic memory", () => {
       stop();
     }
 
-    expect(records).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          level: "WARN",
-          message: expect.stringContaining("memory pressure: level=critical reason=rss_threshold"),
-          attributes: expect.objectContaining({
-            subsystem: "gateway/diagnostics/memory",
-          }),
+    expect(records).toEqual([
+      expect.objectContaining({
+        level: "WARN",
+        message: expect.stringContaining("memory pressure: level=critical reason=rss_threshold"),
+        attributes: expect.objectContaining({
+          subsystem: "gateway/diagnostics/memory",
         }),
-        expect.objectContaining({
-          level: "WARN",
-          message: "critical memory pressure snapshot disabled",
-          attributes: expect.objectContaining({
-            subsystem: "gateway/diagnostics/memory",
-          }),
-        }),
-      ]),
+      }),
+    ]);
+    expect(records[0]?.message).not.toMatch(/snapshot/i);
+    expect(records[0]?.message).toContain(
+      "rssBytes=4000 heapUsedBytes=3000 externalBytes=10 arrayBuffersBytes=5 workerHeapTotalBytes=0 workerHeapUsedBytes=0 workerCount=0 workerHeapSampledCount=0 thresholdBytes=3000",
+    );
+    expect(records[0]?.message).toContain(
+      "nextStep=run openclaw gateway diagnostics export, inspect an existing bundle with openclaw gateway stability --bundle latest, or on Node sample allocations with openclaw gateway call diagnostics.heapProfile --timeout 30000.",
     );
   });
 

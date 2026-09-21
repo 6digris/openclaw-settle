@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { DatabaseSync, StatementSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readUpdateRunDriver } from "../../infra/update-run-driver.js";
@@ -10,9 +11,12 @@ import { startUpdateRunWatcher } from "../update-run-watcher.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
 import { updateStatusHandlers } from "./update-status.js";
 
-vi.mock("../../infra/update-startup.js", () => ({
+vi.mock("../../infra/update-status-state.js", () => ({
   getUpdateAvailable: () => null,
   getUpdateSchedule: () => null,
+}));
+
+vi.mock("../../infra/update-startup.js", () => ({
   getUpdateEffectiveChannel: async () => "stable",
   refreshGatewayUpdateStatus: async () => {},
 }));
@@ -170,12 +174,20 @@ describe("update history RPCs", () => {
       updateAvailable: null,
       effectiveChannel: "stable",
     });
+    const nativeCalls = [
+      vi.spyOn(DatabaseSync.prototype, "prepare"),
+      vi.spyOn(DatabaseSync.prototype, "exec"),
+      ...(["get", "all", "run", "iterate"] as const).map((method) =>
+        vi.spyOn(StatementSync.prototype, method),
+      ),
+    ];
     expect(await requestUpdateRead("update.runs.list")).toHaveBeenCalledWith(true, {
       runs: [latest, completed],
     });
     expect(await requestUpdateRead("update.runs.list", { limit: 1 })).toHaveBeenCalledWith(true, {
       runs: [latest],
     });
+    expect(nativeCalls.reduce((total, call) => total + call.mock.calls.length, 0)).toBe(0);
   });
 
   it("rejects malformed identities, invalid limits, and unsupported query fields", async () => {

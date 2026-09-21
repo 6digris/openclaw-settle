@@ -41,6 +41,7 @@ import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import { cronCreationDraftFor } from "./creation-draft.ts";
+import { CronEditorClearance } from "./editor-clearance.ts";
 import { buildCronSuggestions, THINKING_SUGGESTIONS } from "./form-suggestions.ts";
 import { resolveCronRouteData } from "./route-model.ts";
 import { CronRunTranscript } from "./run-transcript.ts";
@@ -49,6 +50,11 @@ import { renderCron, type CronDetailTab, type CronListTab } from "./view.ts";
 registerCronEnglish();
 
 class CronPage extends OpenClawLightDomElement {
+  constructor() {
+    super();
+    void new CronEditorClearance(this);
+  }
+
   @consume({ context: applicationContext, subscribe: true })
   private context!: ApplicationContext;
 

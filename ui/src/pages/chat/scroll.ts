@@ -96,8 +96,10 @@ export type ChatScrollHost = {
   chatReadingHistory: boolean;
   chatNewMessagesBelow: boolean;
   chatIsProgrammaticScroll?: () => boolean;
+  chatIsMaintenanceScroll?: () => boolean;
   chatScrollElement?: () => HTMLElement | null;
   chatScrollToEnd?: (options: ChatScrollToEndOptions) => boolean;
+  chatCancelScroll?: () => void;
 };
 
 export type ChatScrollToEndOptions = {
@@ -269,12 +271,21 @@ export function handleChatScrollTakeover(host: ChatScrollHost, towardEnd = false
 }
 
 /** Reader-controlled UI can take over even when the transcript is at its end. */
-export function lockChatScroll(host: ChatScrollHost): void {
+export function lockChatScroll(
+  host: ChatScrollHost,
+  source: "reader" | "remote-input" = "reader",
+): void {
+  // A remote receipt is not a reader gesture and cannot cancel a queued local send/latest.
+  if (source === "remote-input" && pendingChatScrolls.get(host)?.manual) {
+    return;
+  }
   const changed = !host.chatFollowLocked || host.chatUserNearBottom;
   cancelChatScroll(host);
   host.chatHasAutoScrolled = true;
   host.chatFollowLocked = true;
   host.chatUserNearBottom = false;
+  // Cancelling queued page work does not retire an already issued native target.
+  host.chatCancelScroll?.();
   if (changed) {
     host.renderLifecycle.invalidate();
   }
@@ -292,7 +303,7 @@ function updateChatScrollPosition(
   // Ignore downward scroll events that we triggered, including intermediate
   // smooth-scroll frames. A real user scroll-up must still pass through so
   // streaming stops pinning them back to the bottom.
-  const isUserScrollUp = takeover !== false || delta < 0;
+  const isUserScrollUp = takeover !== false || (delta < 0 && !host.chatIsMaintenanceScroll?.());
   if (host.chatIsProgrammaticScroll?.() && !isUserScrollUp) {
     return;
   }

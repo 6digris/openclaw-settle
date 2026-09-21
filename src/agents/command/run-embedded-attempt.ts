@@ -1,4 +1,5 @@
 import { sanitizeForLog } from "../../../packages/terminal-core/src/ansi.js";
+import { applyModelRuntimeDirective } from "../../auto-reply/reply/directive-handling.model-runtime.js";
 import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import { clearAgentRunTerminalWriteContext } from "../../infra/agent-run-terminal-writes.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -31,8 +32,10 @@ import { runAgentHarnessBeforeMessageWriteHook } from "../harness/hook-helpers.j
 import { prepareInternalSessionEffectsSession } from "../internal-session-effects.js";
 import { LiveSessionModelSwitchError } from "../live-model-switch.js";
 import { findModelInCatalog, prepareModelRunCapabilities } from "../model-catalog-lookup.js";
-import { resolveThinkingDefault } from "../model-selection.js";
-import { resolveConfiguredThinkingDefault } from "../model-thinking-default.js";
+import {
+  resolveConfiguredThinkingDefault,
+  resolveThinkingSelection,
+} from "../model-thinking-default.js";
 import { createModelVisibilityPolicy } from "../model-visibility-policy.js";
 import {
   isAgentRunRestartAbortReason,
@@ -42,7 +45,6 @@ import { resolveSessionRuntimeOverrideForProvider } from "../session-runtime-com
 import { measureAgentStartup } from "../startup-timing.js";
 import {
   normalizeThinkingCatalogProviders,
-  resolveCandidateThinkingLevel,
   resolveEffectiveAgentRuntime,
   needsThinkHydration,
 } from "../thinking-runtime.js";
@@ -271,6 +273,7 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
           sessionKey && hasNewGeneratedMediaTaskForSessionKey(sessionKey, attemptMediaTaskIds),
         );
       const fallbackResult = await runEmbeddedAgentEntry<AgentAttemptResult>({
+        preparedRunAdmission: params.preparedRunAdmission,
         selection: {
           cfg,
           provider,
@@ -382,19 +385,17 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
             providerOverride === defaultProvider && modelOverride === defaultModel
               ? configuredDefaultAuthProfileId
               : undefined;
-          const agentHarnessRuntimeOverride = resolveSessionRuntimeOverrideForProvider({
-            provider: providerOverride,
-            entry: attemptSessionEntry,
-            cfg,
-          });
-          const candidateRuntime = resolveEffectiveAgentRuntime({
-            cfg,
-            provider: providerOverride,
-            modelId: modelOverride,
-            agentId: sessionAgentId,
-            sessionKey,
-            sessionEntry: attemptSessionEntry,
-          });
+          const agentHarnessRuntimeOverride = runOptions.agentHarnessRuntimeOverride;
+          const candidateRuntime =
+            agentHarnessRuntimeOverride ??
+            resolveEffectiveAgentRuntime({
+              cfg,
+              provider: providerOverride,
+              modelId: modelOverride,
+              agentId: sessionAgentId,
+              sessionKey,
+              sessionEntry: attemptSessionEntry,
+            });
           const candidateConfiguredThinkLevel =
             immutableThinkLevel ??
             resolveConfiguredThinkingDefault({
@@ -403,11 +404,21 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
               provider: providerOverride,
               model: modelOverride,
             });
-          let candidateThinkingCatalog = thinkingCatalog;
+          const changedCandidate =
+            providerOverride !== params.modelSelection.provider ||
+            modelOverride !== params.modelSelection.model;
+          let candidateThinkingCatalog = changedCandidate
+            ? (params.modelSelection.loadDeferredThinkingCatalog?.() ?? thinkingCatalog)
+            : thinkingCatalog;
           if (
             pluginsEnabled &&
             (candidateConfiguredThinkLevel !== "off" || candidateRuntime !== "openclaw") &&
-            needsThinkHydration(thinkingCatalog, providerOverride, modelOverride, candidateRuntime)
+            needsThinkHydration(
+              candidateThinkingCatalog,
+              providerOverride,
+              modelOverride,
+              candidateRuntime,
+            )
           ) {
             const { loadProviderScopedThinkingCatalog } =
               await import("../model-catalog.runtime.js");
@@ -426,7 +437,7 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
                 cfg,
                 catalog: runtimeCatalog,
                 defaultProvider,
-                defaultModel,
+                defaultModel: { provider: defaultProvider, model: defaultModel },
                 agentId: sessionAgentId,
                 allowManifestNormalization: true,
                 allowPluginNormalization: true,
@@ -434,28 +445,15 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
               }).catalog;
             }
           }
-          const candidateRequestedThinkLevel =
-            candidateConfiguredThinkLevel ??
-            resolveThinkingDefault({
-              cfg,
-              agentId: sessionAgentId,
-              provider: providerOverride,
-              model: modelOverride,
-              catalog: candidateThinkingCatalog,
-              agentRuntime: candidateRuntime,
-            });
-          const candidateThinkLevel =
-            resolveCandidateThinkingLevel({
-              cfg,
-              provider: providerOverride,
-              modelId: modelOverride,
-              level: candidateRequestedThinkLevel,
-              catalog: candidateThinkingCatalog,
-              agentId: sessionAgentId,
-              sessionKey,
-              sessionEntry: attemptSessionEntry,
-              agentRuntime: candidateRuntime,
-            }) ?? candidateRequestedThinkLevel;
+          const { level: candidateThinkLevel } = resolveThinkingSelection({
+            cfg,
+            agentId: sessionAgentId,
+            provider: providerOverride,
+            model: modelOverride,
+            level: candidateConfiguredThinkLevel,
+            catalog: candidateThinkingCatalog,
+            agentRuntime: candidateRuntime,
+          });
           effectiveTurnThinkLevel = candidateThinkLevel;
           try {
             return await attemptExecutionRuntime.runAgentAttempt({
@@ -613,11 +611,12 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
         providerForAuthProfileValidation = err.provider;
         if (sessionEntry) {
           sessionEntry = { ...sessionEntry };
-          if (err.agentRuntimeOverride) {
-            sessionEntry.agentRuntimeOverride = err.agentRuntimeOverride;
-          } else {
-            delete sessionEntry.agentRuntimeOverride;
-          }
+          applyModelRuntimeDirective(
+            sessionEntry,
+            err.agentRuntimeOverride
+              ? { kind: "set", runtime: err.agentRuntimeOverride }
+              : { kind: "clear" },
+          );
           sessionEntry.authProfileOverride = err.authProfileId;
           sessionEntry.authProfileOverrideSource = err.authProfileId
             ? err.authProfileIdSource

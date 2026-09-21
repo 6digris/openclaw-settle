@@ -3,12 +3,11 @@ import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import type { CronJob } from "../api/types.ts";
-import { installMockGateway, startControlUiE2eServer } from "../test-helpers/control-ui-e2e.ts";
+import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({
   name: "Control UI creation drafts across routes",
-  startServer: () => startControlUiE2eServer(undefined, { source: true }),
 });
 const name = "Synthetic automation name";
 const prompt = "Synthetic authoring input retained across navigation. 0123456789";
