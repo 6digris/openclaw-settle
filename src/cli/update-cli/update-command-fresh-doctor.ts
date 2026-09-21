@@ -30,6 +30,7 @@ import {
   createUpdateFailureFact,
   type UpdateFailureFact,
 } from "../../infra/update-failure-facts.js";
+import { POST_CORE_UPDATE_ENV } from "../../infra/update-post-core-context.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { buildUpdateDoctorEnv } from "../../infra/update-runner-doctor.js";
 import { redactSupportString } from "../../logging/diagnostic-support-redaction.js";
@@ -51,7 +52,7 @@ import {
   applyPostPluginConfigValidation,
   POST_PLUGIN_DOCTOR_EXECUTION_FAILED_REASON,
 } from "./update-command-post-plugin-validation.js";
-import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
+import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 import {
   disableUpdatedPackageCompileCacheEnv,
   stripGatewayServiceMarkerEnv,
@@ -229,6 +230,9 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
             repair: true,
             yes: params.yes,
             workspaceSuggestions: params.workspaceSuggestions === true,
+            ...(params.phase === "post-plugin" && process.env[POST_CORE_UPDATE_ENV] === "1"
+              ? { postCoreSchemaRepair: true as const }
+              : {}),
           },
         },
         (runCommand) =>
@@ -431,10 +435,10 @@ export async function completePostCorePluginUpdate(params: {
   }
 
   assertCurrent();
-  // Only the target runtime may write state after a version switch: observing
-  // config here could migrate its database back to the parent's newer schema.
+  // The target owns state writes and its version stamp. Read context without
+  // migrating target stores or warning about this parent's expected version skew.
   const configSnapshot = await withNormalConfigValidation(() =>
-    readConfigFileSnapshot({ observe: false }),
+    readConfigFileSnapshot({ observe: false, suppressFutureVersionWarning: true }),
   );
   assertCurrent();
   if (entryPath) {

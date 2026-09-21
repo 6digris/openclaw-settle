@@ -19,7 +19,10 @@ import {
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { hasAuthoritativeTaskBacking } from "./task-backing-authority.js";
-import { finishTaskMutation, retainTaskMutationFlowEffects } from "./task-executor-create.async.js";
+import {
+  finishTaskMutation,
+  retainTaskMutationFlowEffects,
+} from "./task-executor-mutation-effects.async.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import { clearTaskActivity, flushTaskActivity } from "./task-registry-activity.js";
 import { recoverTaskAgentEventPublication } from "./task-registry-agent-event-commit.js";
@@ -324,8 +327,21 @@ function prepareNativeEventConsumption(): { consume: () => void; release: () => 
 
 export const taskAgentEventMutations = {
   prepare: prepareNativeEventConsumption,
-  pending() {
-    for (const entry of pendingEvents) {
+  pendingTaskIds(): readonly string[] {
+    const taskIds: string[] = [];
+    for (const [taskId, entries] of pendingByTask) {
+      for (const entry of entries) {
+        if (entry.phase.kind !== "consumed") {
+          taskIds.push(taskId);
+          break;
+        }
+      }
+    }
+    return taskIds;
+  },
+  pending(taskId?: string) {
+    const entries = taskId === undefined ? pendingEvents : pendingByTask.get(taskId);
+    for (const entry of entries ?? []) {
       if (entry.phase.kind !== "consumed") {
         return true;
       }
@@ -372,6 +388,16 @@ async function persist(pending: PendingEvent): Promise<void> {
           scope,
           admission: context.admission,
           readIdentity: "preserved",
+          prepare: async () => {
+            const owner = taskFlowSyncOwner(taskId);
+            // Native consumption owns settlement even when a held snapshot becomes stale.
+            // Join that read, then let the mutation callback await native commit or rollback.
+            while (pending.phase.kind !== "consumed") {
+              if (await owner.prepare(context, store, 1)) {
+                return;
+              }
+            }
+          },
           onPublicationError: (error) => {
             publicationFailure = { error };
           },
@@ -433,7 +459,6 @@ async function persist(pending: PendingEvent): Promise<void> {
           },
         },
         async (beginRecovery) => {
-          await taskFlowSyncOwner(taskId).prepare(context, store, Number.POSITIVE_INFINITY);
           if (pending.phase.kind === "consumed" || pending.phase.kind === "native") {
             return await pending.native.promise;
           }

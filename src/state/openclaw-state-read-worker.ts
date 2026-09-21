@@ -1,6 +1,7 @@
 import { ensureSqliteLibrarySelected } from "../infra/bun-sqlite-library.js";
 import { resolveRuntimeProcessEntrypointUrl } from "../infra/runtime-process-url.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
+import { SQLITE_IDLE_HANDLE_TTL_MS } from "../infra/sqlite-handle-lifecycle.js";
 import {
   DEFAULT_WORKER_PENDING_BYTES,
   DEFAULT_WORKER_PENDING_TASKS,
@@ -8,7 +9,10 @@ import {
 import { createOwnedWorkerTaskPool, WorkerTaskError } from "../infra/worker-task-pool.js";
 import type { OwnedWorkerTask } from "../infra/worker-task-pool.types.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import { registerOpenClawStateDatabaseAsyncResource } from "./openclaw-state-db-cache.js";
+import {
+  registerOpenClawStateDatabaseAsyncResource,
+  registerOpenClawStateDatabaseLifecycleListener,
+} from "./openclaw-state-db-cache.js";
 import type {
   OpenClawStateReadAuthority,
   OpenClawStateReadCommand,
@@ -34,12 +38,16 @@ function readPool(): ReadPool {
     registerOpenClawStateDatabaseAsyncResource({
       phase: "after-resources",
       async close(identity) {
-        // Per-path retirement closes only that path's operation handles. Idle workers own no DB.
-        if (identity || !owned.pool) {
+        if (!owned.pool) {
           return;
         }
         const pool = owned.pool;
+        if (identity) {
+          await pool.closeResources(identity.key);
+          return;
+        }
         await (owned.closing ??= Promise.resolve()
+          .then(() => pool.closeResources())
           .then(() => pool.close())
           .then(() => {
             owned.pool = undefined;
@@ -48,6 +56,14 @@ function readPool(): ReadPool {
             owned.closing = undefined;
           }));
       },
+    });
+    registerOpenClawStateDatabaseLifecycleListener((event) => {
+      if (event.kind !== "opened" && event.identity) {
+        void owned.pool?.closeResources(event.identity.key).catch((error: unknown) => {
+          // The worker retains failed cleanup; canonical path close retries it.
+          process.emitWarning(`Shared-state reader invalidation failed: ${String(error)}`);
+        });
+      }
     });
     return owned;
   });
@@ -59,7 +75,9 @@ function readPool(): ReadPool {
     ensureSqliteLibrarySelected();
     state.pool = createOwnedWorkerTaskPool({
       workerUrl: resolveRuntimeProcessEntrypointUrl("stateRead"),
+      workerOptions: { resourceLimits: { maxOldGenerationSizeMb: 512 } },
       maxWorkers: 2,
+      idleTimeoutMs: SQLITE_IDLE_HANDLE_TTL_MS,
       maxPendingTasks: DEFAULT_WORKER_PENDING_TASKS,
       maxPendingBytes: DEFAULT_WORKER_PENDING_BYTES,
     });
@@ -68,6 +86,55 @@ function readPool(): ReadPool {
 }
 
 function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCommand {
+  if (command.type === "conversationBindings.inspect") {
+    const { channel, accountId, conversationId, parentConversationId } = command.conversation;
+    return {
+      type: command.type,
+      conversation: {
+        channel,
+        accountId,
+        conversationId,
+        ...(parentConversationId !== undefined ? { parentConversationId } : {}),
+      },
+    };
+  }
+  if (command.type === "cron.observeRunRecovery") {
+    return {
+      type: command.type,
+      storeKey: command.storeKey,
+      proposals: command.proposals.map(({ jobId, queuedAtMs, runningAtMs }) => ({
+        jobId,
+        ...(queuedAtMs === undefined ? {} : { queuedAtMs }),
+        ...(runningAtMs === undefined ? {} : { runningAtMs }),
+      })),
+    };
+  }
+  if (command.type === "devicePairing.bootstrapContext") {
+    return { ...command, input: { ...command.input } };
+  }
+  if (command.type === "operatorApprovals.history") {
+    return { ...command, input: { ...command.input } };
+  }
+  if (command.type === "pluginBlob.lookup") {
+    const { pluginId, namespace, key } = command.input;
+    return { type: command.type, input: { pluginId, namespace, key } };
+  }
+  if (command.type === "pluginBlob.entries") {
+    const { pluginId, namespace } = command.input;
+    return { type: command.type, input: { pluginId, namespace } };
+  }
+  if (command.type === "updateRuns.list") {
+    return { ...command, input: { ...command.input } };
+  }
+  if (
+    command.type === "skills.library.descriptions" ||
+    command.type === "skills.library.manifests"
+  ) {
+    return {
+      type: command.type,
+      input: command.input.map(({ skillId, revision }) => ({ skillId, revision })),
+    };
+  }
   if (command.type === "audit.run.inspect") {
     const input = command.input;
     const common = {
@@ -88,11 +155,67 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
             },
     };
   }
+  if (command.type === "workers.placementProjection") {
+    return structuredClone(command);
+  }
   return { ...command };
 }
 
 function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   let bytes = Buffer.byteLength(command.type, "utf8");
+  if (command.type === "conversationBindings.inspect") {
+    return (
+      bytes +
+      Object.values(command.conversation).reduce(
+        (sum, value) => sum + Buffer.byteLength(value ?? "", "utf8"),
+        0,
+      )
+    );
+  }
+  if (command.type === "cron.observeRunRecovery") {
+    return command.proposals.reduce(
+      (total, proposal) =>
+        total +
+        Buffer.byteLength(proposal.jobId, "utf8") +
+        (proposal.queuedAtMs === undefined ? 0 : 8) +
+        (proposal.runningAtMs === undefined ? 0 : 8),
+      bytes + Buffer.byteLength(command.storeKey, "utf8"),
+    );
+  }
+  if (command.type === "devicePairing.bootstrapContext") {
+    return (
+      bytes +
+      Buffer.byteLength(command.input.token) +
+      Buffer.byteLength(command.input.deviceId) +
+      Buffer.byteLength(command.input.publicKey) +
+      8
+    );
+  }
+  if (command.type === "devicePairing.lookup") {
+    return bytes + Buffer.byteLength(command.deviceId);
+  }
+  if (command.type === "devicePairing.pending") {
+    return bytes + Buffer.byteLength(command.requestId) + 8;
+  }
+  if (command.type === "devicePairing.list") {
+    return bytes + 8 + Buffer.byteLength(command.publishedRevision ?? "");
+  }
+  if (command.type === "operatorApprovals.history") {
+    return (
+      bytes +
+      Buffer.byteLength(command.input.cursor ?? "", "utf8") +
+      Buffer.byteLength(command.input.kind ?? "", "utf8") +
+      16
+    );
+  }
+  if (command.type === "pluginBlob.lookup" || command.type === "pluginBlob.entries") {
+    return (
+      bytes +
+      Buffer.byteLength(command.input.pluginId, "utf8") +
+      Buffer.byteLength(command.input.namespace, "utf8") +
+      (command.type === "pluginBlob.lookup" ? Buffer.byteLength(command.input.key, "utf8") : 0)
+    );
+  }
   if (command.type === "sandboxRegistry.get") {
     return bytes + Buffer.byteLength(command.containerName, "utf8");
   }
@@ -103,14 +226,39 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       Buffer.byteLength(command.scopeKey, "utf8")
     );
   }
+  if (command.type === "updateRuns.get") {
+    return bytes + Buffer.byteLength(command.runId, "utf8");
+  }
+  if (command.type === "updateRuns.list") {
+    return (
+      bytes +
+      Buffer.byteLength(command.input.reason ?? "", "utf8") +
+      Buffer.byteLength(command.input.includeRunId ?? "", "utf8") +
+      (command.input.limit === undefined ? 0 : 8) +
+      (command.input.active === undefined ? 0 : 1)
+    );
+  }
+  if (
+    command.type === "skills.library.descriptions" ||
+    command.type === "skills.library.manifests"
+  ) {
+    return command.input.reduce(
+      (total, pin) =>
+        total + Buffer.byteLength(pin.skillId, "utf8") + Buffer.byteLength(pin.revision, "utf8"),
+      bytes,
+    );
+  }
   if (command.type === "fleet.get") {
     return bytes + Buffer.byteLength(command.tenantId, "utf8");
   }
   if (command.type === "onboardingRecommendations.read") {
     return bytes + Buffer.byteLength(command.configKey, "utf8");
   }
-  if (command.type === "userProfiles.avatar.reconcile") {
+  if (command.type === "userProfiles.reconcile") {
     return bytes + Buffer.byteLength(command.profileId, "utf8");
+  }
+  if (command.type === "userProfiles.email.resolve") {
+    return bytes + Buffer.byteLength(command.email, "utf8");
   }
   if (command.type === "workspace.snapshot") {
     return bytes + Buffer.byteLength(command.workspaceDir, "utf8");
@@ -131,6 +279,9 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       (input.executionOffset === undefined ? 0 : 8) +
       (input.executionLimit === undefined ? 0 : 8)
     );
+  }
+  if (command.type === "workers.placementProjection") {
+    return Buffer.byteLength(JSON.stringify(command), "utf8");
   }
   return bytes;
 }
@@ -158,7 +309,7 @@ function decodeTaskReply(reply: OpenClawStateReadReply): OpenClawStateReadOutcom
   retainOpenClawStateWorkerErrorPayload(error, reply.error);
   return {
     error: hydrateOpenClawStateWorkerError(error, { includeOrdinary: true }),
-    sourceAdmitted: reply.sourceAdmitted,
+    sourceAdmitted: reply.sourceAdmitted === true,
   };
 }
 

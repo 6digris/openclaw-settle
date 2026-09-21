@@ -11,5 +11,6 @@ export const DIAGNOSTIC_STABILITY_EVENT_INTEREST = {
     "gateway.run.owner",
     "gateway.event_loop.sample",
     "diagnostic.gc",
+    "diagnostic.child_process.spawn",
   ],
 } as const satisfies InternalDiagnosticEventInterest<DiagnosticEventPayload["type"]>;

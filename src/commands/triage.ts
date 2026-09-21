@@ -28,6 +28,7 @@ import {
 } from "../infra/installation-target-context.js";
 import { resolveOpenClawPackageRoot } from "../infra/openclaw-root.js";
 import { acceptTriageContinuation } from "../infra/triage-continuation.js";
+import { writeTriageUpdateFailure } from "../infra/update-failure-report-artifact.js";
 import type { UpdateRepairValidation } from "../infra/update-repair-protocol.js";
 import {
   redactSupportString,
@@ -49,7 +50,6 @@ import {
   readTriageUpdateFailure,
   readPendingTriageUpdateFailure,
   sanitizeTriageUpdateFailure,
-  writeTriageUpdateFailure,
   type TriageUpdateFailure,
 } from "./triage-update.js";
 
@@ -384,11 +384,16 @@ export async function triageCommand(
       runtime.log("No repair agent was started.");
     }
     if (!runEmbedded && !manualAgent) {
-      const installAgent =
-        options.agent === "cursor" ? "Cursor Agent (cursor-agent)" : options.agent;
+      const agentName = options.agent === "cursor" ? "Cursor Agent (cursor-agent)" : options.agent;
       runtime.log(
-        `Install ${installAgent ?? "Claude Code or Codex"} on PATH, then run triage again.`,
+        `No ${agentName ?? "supported coding-agent"} CLI executable was found on this process's PATH.`,
       );
+      runtime.log(
+        `If already installed, add its executable to this shell's PATH; otherwise install ${agentName ?? "a supported coding-agent"} CLI, then run triage again.`,
+      );
+      if (promptArtifact.ok) {
+        runtime.log("You can also open the saved debugging prompt in an agent you already use.");
+      }
     }
     const command = runEmbedded
       ? handoffCommands.embedded
@@ -537,22 +542,74 @@ export async function triageCommand(
   }
 
   if (automatic && !automatic.diagnosticOnly) {
-    const result = await withInstallationTarget(target, async () => {
-      const { agentExecCommand } = await import("./agent-exec.js");
-      if (!isCurrent()) {
-        return { exitCode: 1 };
-      }
-      return agentExecCommand(prompt, agentOptions, runtime, {
-        abortSignal: automatic.signal,
-        timeoutMs: 600_000,
-        maxToolCalls: 40,
-        assertSourceCurrent: automatic.assertCurrent,
+    const deadline = Date.now() + 600_000;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([automatic.signal, controller.signal]);
+    const timer = setTimeout(
+      () => controller.abort(new Error("Automatic triage timed out.")),
+      600_000,
+    );
+    try {
+      const result = await withInstallationTarget(target, async () => {
+        const { prepareUpdateRepairInference, runUpdateRepairTurn } =
+          await import("../infra/update-repair-agent.runtime.js");
+        if (!isCurrent()) {
+          return {
+            status: "unavailable" as const,
+            reason: "Repair authority is no longer current.",
+          };
+        }
+        const selected = await prepareUpdateRepairInference(
+          signal,
+          Math.max(1, deadline - Date.now()),
+        );
+        if (!isCurrent()) {
+          return {
+            status: "unavailable" as const,
+            reason: "Repair authority is no longer current.",
+          };
+        }
+        if (!selected.ok) {
+          return { status: "unavailable" as const, reason: selected.reason };
+        }
+        signal.throwIfAborted();
+        return runUpdateRepairTurn({
+          target: {
+            stateDir: target.stateDir,
+            configPath: target.configPath,
+            workspaceDir: target.defaultWorkspaceDir,
+            installRoot: agentCwd ?? process.cwd(),
+          },
+          route: selected.route,
+          modelFallbacks: selected.modelFallbacks,
+          prompt,
+          signal,
+          timeoutMs: Math.max(1, deadline - Date.now()),
+          maxToolCalls: 40,
+          isCurrent,
+        });
       });
-    });
-    if (result.exitCode !== 0) {
-      exitCliAfterOutput(runtime, result.exitCode);
+      if (result.status === "unavailable") {
+        runtime.error(triageCollectionError(result.reason, redaction));
+        exitCliAfterOutput(runtime, controller.signal.aborted ? 2 : 1);
+      }
+      if (result.envelope.final) {
+        runtime.log(
+          redactSupportString(result.envelope.final, redaction, { maxLength: 32 * 1024 }),
+        );
+      }
+      if (result.envelope.error?.message) {
+        runtime.error(triageCollectionError(result.envelope.error.message, redaction));
+      }
+      if (controller.signal.aborted || result.envelope.status !== "ok") {
+        exitCliAfterOutput(
+          runtime,
+          controller.signal.aborted || result.envelope.status === "timeout" ? 2 : 1,
+        );
+      }
+    } finally {
+      clearTimeout(timer);
     }
-
     return;
   }
 

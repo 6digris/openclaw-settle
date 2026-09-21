@@ -1,12 +1,19 @@
 import { channel as diagnosticsChannel } from "node:diagnostics_channel";
 import type { EventEmitter } from "node:events";
 import { setImmediate as nextTurn } from "node:timers/promises";
+import type { MessagePort } from "node:worker_threads";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createOwnedWorkerTaskPool } from "./worker-task-pool.js";
 
-type PostedTask = { input: string; taskId: number; responseId?: number };
+type PostedTask = {
+  input?: string;
+  taskId?: number;
+  responseId?: number;
+  closeResource?: true;
+  resourcePort?: MessagePort;
+};
 type FakeWorker = EventEmitter & {
   postMessage: ReturnType<typeof vi.fn<(message: PostedTask) => void>>;
   terminate: ReturnType<typeof vi.fn<() => Promise<number>>>;
@@ -80,8 +87,77 @@ function holdExit(worker: FakeWorker) {
 beforeEach(() => {
   workers.splice(0);
 });
+
+it("retires only idle slots on critical pressure, after result and resource custody settle", async () => {
+  const pool = createPool({ idleTimeoutMs: 30 * 60_000 });
+  const pressure = diagnosticsChannel("openclaw.memory.critical");
+  const task = pool.runTask("read", {});
+  const worker = workerFor("read");
+  pressure.publish(undefined);
+  reply(worker, "read");
+  await task.result;
+  pressure.publish(undefined);
+  expect(worker.terminate).not.toHaveBeenCalled();
+  await task.close();
+  const cleanup = pool.closeResources("source");
+  pressure.publish(undefined);
+  expect(worker.terminate).not.toHaveBeenCalled();
+  const receipt = expectDefined(
+    worker.postMessage.mock.calls.at(-1)?.[0].resourcePort,
+    "cleanup receipt",
+  );
+  receipt.postMessage({ ok: true }, []);
+  receipt.close();
+  await cleanup;
+  pressure.publish(undefined);
+  await nextTurn();
+  expect(worker.terminate).toHaveBeenCalledOnce();
+  expect(pool.getSnapshot().workers).toBe(0);
+  const next = pool.runTask("next", {});
+  const replacement = workerFor("next");
+  expect(replacement).not.toBe(worker);
+  reply(replacement, "next");
+  await next.result;
+  await next.close();
+});
 afterEach(async () => {
   await Promise.all(pools.splice(0).map((pool) => pool.close()));
+});
+
+it("rejects a lost cleanup receipt and permits the retained worker's cleanup retry", async () => {
+  const pool = createPool();
+  const task = pool.runTask("read", {});
+  await nextTurn();
+  const worker = workerFor("read");
+  reply(worker, "read");
+  await task.result;
+  await task.close();
+  const cleanup = pool.closeResources("source");
+  const refused = expect(cleanup).rejects.toThrow("Worker resource cleanup failed");
+  expectDefined(worker.postMessage.mock.calls.at(-1)?.[0].resourcePort, "cleanup receipt").close();
+  await refused;
+  expect(worker.terminate).not.toHaveBeenCalled();
+  const retry = pool.closeResources("source");
+  const receipt = expectDefined(
+    worker.postMessage.mock.calls.at(-1)?.[0].resourcePort,
+    "retry receipt",
+  );
+  receipt.postMessage({ ok: true }, []);
+  receipt.close();
+  await retry;
+});
+
+it("accepts confirmed worker exit as native cleanup when its receipt is interrupted", async () => {
+  const pool = createPool();
+  const task = pool.runTask("read", {});
+  await nextTurn();
+  const worker = workerFor("read");
+  reply(worker, "read");
+  await task.result;
+  await task.close();
+  const cleanup = pool.closeResources("source");
+  await pool.close();
+  await cleanup;
 });
 
 describe("owned worker tasks", () => {

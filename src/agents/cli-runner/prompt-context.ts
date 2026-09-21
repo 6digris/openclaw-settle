@@ -1,7 +1,10 @@
-import { buildActiveNodeContextText } from "../../infra/active-node-context.js";
+import {
+  buildActiveNodeContextText,
+  prepareActiveNodeContext,
+} from "../../infra/active-node-context.js";
 import type { CliBackendConfig, CliBackendPromptContext } from "../../plugins/cli-backend.types.js";
 import { buildRuntimeContextCustomMessage } from "../embedded-agent-runner/run/runtime-context-prompt.js";
-import { buildMediaTaskRuntimeContext } from "../runtime-facts-prompt.js";
+import { buildMediaTaskRuntimeContext } from "../media-generation-task-status.js";
 
 /** Current-turn facts stay outside native prompts that are retained across CLI turns. */
 export async function buildCliTurnAppendContext(
@@ -13,7 +16,12 @@ export async function buildCliTurnAppendContext(
   },
 ): Promise<string> {
   const { resolveSystemPromptUsage } = await import("./helpers.js");
-  const mediaTaskContext = await buildMediaTaskRuntimeContext(params);
+  const mediaTaskContext = await buildMediaTaskRuntimeContext({
+    capabilityToolNames: params.capabilityToolNames,
+    sessionKey: params.sessionKey,
+    agentId: params.agentId,
+  });
+  await prepareActiveNodeContext();
   return [
     ...params.context,
     buildRuntimeContextCustomMessage(mediaTaskContext)?.content,
@@ -60,5 +68,6 @@ export async function prepareCliSystemPrompt(
       });
     }
   }
+  await prepareActiveNodeContext();
   return buildCliAgentSystemPrompt({ ...params, preparedModelRuntime });
 }

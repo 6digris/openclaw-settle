@@ -28,6 +28,14 @@ export type AgentHarnessHostCapabilities = Readonly<{
   version: 1;
   /** Fails closed unless this exact admitted run capability remains active. */
   assertActive: () => void;
+  /** Retains the original source for already-admitted work beyond foreground completion. */
+  retainSourceAuthority?: () =>
+    | Readonly<{
+        assertCurrent: () => void;
+        signal?: AbortSignal;
+        release: () => void;
+      }>
+    | undefined;
   /** Reports one completed model call's output tokens to this admitted run's live total. */
   reportOutputTokens?: (outputTokens: number) => void;
   /** Adds native provenance only to this host's exact current admitted prompt. */
@@ -103,6 +111,8 @@ export type AgentHarnessHostCapabilities = Readonly<{
     signal?: AbortSignal;
     title: string;
     description: string;
+    /** Full action evidence for authenticated reviewer surfaces, not channel messages. */
+    detail?: string;
     severity: "info" | "warning";
     toolName: string;
     toolCallId?: string;
