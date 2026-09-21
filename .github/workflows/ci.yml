@@ -94,7 +94,7 @@ jobs:
   preflight:
     permissions:
       contents: read
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dispatch_id == 'pr144318-crabbox-diagnostic-v1') && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt != 1)) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     timeout-minutes: 20
     outputs:
@@ -2094,7 +2094,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight]
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dispatch_id == 'pr144318-crabbox-diagnostic-v1') && !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && needs.preflight.outputs.hybrid_hosted_offload != 'true' && github.run_attempt == 1 && github.event_name != 'workflow_dispatch' && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 20
     env:
@@ -3840,6 +3840,133 @@ jobs:
         with:
           path: ${{ steps.docs-i18n-go-cache-key.outputs.paths }}
           key: ${{ steps.docs-i18n-go-cache.outputs.cache-primary-key }}
+
+
+  pr144318-crabbox-diagnostic:
+    name: DIAGNOSTIC ONLY - original tooling12 Crabbox phase trace
+    if: github.event_name == 'workflow_dispatch' && inputs.dispatch_id == 'pr144318-crabbox-diagnostic-v1'
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CHECKOUT_GIT_COMMITS_JSON: '[]'
+    steps:
+      - name: Validate exact diagnostic dispatch
+        env:
+          TARGET_REF: ${{ inputs.target_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          PR_NUMBER: ${{ inputs.pull_request_number }}
+          RELEASE_GATE: ${{ inputs.release_gate }}
+        run: |
+          set -euo pipefail
+          test "$TARGET_REF" = "$WORKFLOW_SHA"
+          test "$PR_NUMBER" = 144318
+          test "$RELEASE_GATE" = false
+      - name: Checkout original failed source and workflow-owned diagnostic
+        shell: bash
+        env:
+          CHECKOUT_REPO: ${{ github.repository }}
+          CHECKOUT_TOKEN: ${{ github.token }}
+          CHECKOUT_SHA: 49631111464ff308dbeee93c2a527404748f7563
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: *owned_checkout_run
+      - name: Bind original source and diagnostic payload
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: python3 .ci-harness/.github/actions/pr144318-crabbox-diagnostic/record.py prepare
+      - name: Setup Node environment
+        uses: ./.ci-harness/.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          node-version: "24.20.0"
+          install-bun: "false"
+          dependency-cache: "false"
+          vitest-fs-cache: "true"
+          vitest-worker-cache: "false"
+          node-compile-cache: "true"
+      - name: Setup Go for docs i18n
+        # The current workflow validates frozen targets whose go.mod may predate this toolchain pin.
+        # Keep the runner toolchain owned by the workflow; cache publication is gated separately.
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.1"
+          cache: false
+
+      - name: Resolve docs i18n Go cache
+        id: docs-i18n-go-cache-key
+        env:
+          DEPENDENCY_HASH: ${{ hashFiles('scripts/docs-i18n/go.sum') }}
+        run: |
+          set -euo pipefail
+          arch="$(node -p process.arch)"
+          image_prefix=""
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            image_prefix="${ImageOS-undefined}-"
+          fi
+          version="$(go env GOVERSION)"
+          {
+            echo "key=setup-go-${RUNNER_OS}-${arch}-${image_prefix}go-${version#go}-${DEPENDENCY_HASH}"
+            echo "paths<<EOF"
+            go env GOMODCACHE
+            go env GOCACHE
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore docs i18n Go cache
+        id: docs-i18n-go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.docs-i18n-go-cache-key.outputs.paths }}
+          key: ${{ steps.docs-i18n-go-cache-key.outputs.key }}
+
+      - name: Verify docs i18n Go toolchain
+        run: test "$(go env GOVERSION)" = "go1.27.1"
+
+      - name: Build Node test runtime
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+          OPENCLAW_BUILD_PRIVATE_QA: "0"
+          VITEST: "1"
+        run: pnpm build qaRuntime
+      - name: Configure original hosted test resources
+        run: echo "OPENCLAW_VITEST_MAX_WORKERS=2" >> "$GITHUB_ENV"
+      - name: Run original 57-file shard with phase witness
+        id: diagnostic
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+          FROZEN_TARGET: "false"
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: ""
+          OPENCLAW_NODE_TEST_GROUPS_JSON: ""
+          OPENCLAW_NODE_TEST_CONFIGS_JSON: '["test/vitest/vitest.tooling.config.ts"]'
+          OPENCLAW_NODE_TEST_ENV_JSON: "null"
+          OPENCLAW_NODE_TEST_TARGETS_JSON: "null"
+          OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: "[]"
+          OPENCLAW_VITEST_SHARD_NAME: core-tooling-12
+          OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: "300000"
+          OPENCLAW_VITEST_NO_OUTPUT_RETRY: "1"
+          OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: ""
+        shell: bash
+        run: bash .ci-harness/.github/actions/pr144318-crabbox-diagnostic/run.sh
+      - name: Record runner memory peak
+        if: always()
+        run: cat /sys/fs/cgroup/memory.peak || true
+      - name: Record diagnostic completeness (never acceptance)
+        if: always()
+        env:
+          DIAGNOSTIC_OUTCOME: ${{ steps.diagnostic.outcome }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: python3 .ci-harness/.github/actions/pr144318-crabbox-diagnostic/record.py finish
+      - name: Upload bounded diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr144318-crabbox-DIAGNOSTIC-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/pr144318-crabbox-diagnostic
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
 
   # Types, lint, and format check shards.
   check-shard:
@@ -6181,7 +6308,7 @@ jobs:
       - docker-seed-e2e
     # Report failed prerequisites, but let superseded runs release their slot
     # without waiting for an aggregate runner after workflow cancellation.
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dispatch_id == 'pr144318-crabbox-diagnostic-v1') && !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     # The gate only aggregates job results; keep it independent of Blacksmith capacity.
     runs-on: ubuntu-24.04
     timeout-minutes: 5

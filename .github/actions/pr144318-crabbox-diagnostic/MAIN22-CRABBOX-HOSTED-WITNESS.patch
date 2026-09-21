@@ -1,0 +1,39 @@
+--- a/test/scripts/crabbox-staging.test.ts
++++ b/test/scripts/crabbox-staging.test.ts
+@@ -535,8 +535,13 @@
+       "holds claim-bound stages and changed namespaces without rewriting claims",
+       async () =>
+         withFixture(async (f) => {
++          if (!process.env.OPENCLAW_CRABBOX_WITNESS_MODULE || !process.env.OPENCLAW_CRABBOX_WITNESS_FILE) throw new Error("Hosted witness inputs missing");
++          f.env.NODE_OPTIONS = (f.env.NODE_OPTIONS ?? "") + " --import=" + process.env.OPENCLAW_CRABBOX_WITNESS_MODULE;
++          f.env.OPENCLAW_CRABBOX_WITNESS_FILE = process.env.OPENCLAW_CRABBOX_WITNESS_FILE;
++          f.env.OPENCLAW_CRABBOX_WITNESS_PHASE = "01-prepare-bound";
+           const bound = await f.prepare();
+           f.inventory([{ leaseId: "cbx_bound_fixture", repoRoot: bound.source }]);
++          f.env.OPENCLAW_CRABBOX_WITNESS_PHASE = "02-recover-bound-claim";
+           const held = await f.recover(bound);
+           expect(held.report).toMatchObject({
+             recovered: false,
+@@ -545,10 +550,14 @@
+           expect(f.receipt(bound).hold).toBe("claims");
+           expect(existsSync(bound.root)).toBe(true);
+           f.inventory();
++          f.env.OPENCLAW_CRABBOX_WITNESS_PHASE = "03-automatic-hold";
+           expect((await f.automatic()).result).toBeUndefined();
++          f.env.OPENCLAW_CRABBOX_WITNESS_PHASE = "04-recover-released";
+           expect((await f.recover(bound)).report.recovered).toBe(true);
++          f.env.OPENCLAW_CRABBOX_WITNESS_PHASE = "05-prepare-namespace";
+           const changed = await f.prepare();
+           const calls = readFileSync(f.calls, "utf8");
++          f.env.OPENCLAW_CRABBOX_WITNESS_PHASE = "06-recover-wrong-namespace";
+           const wrongNamespace = await f.recover(changed, [], {
+             XDG_STATE_HOME: join(f.root, "other-state"),
+           });
+@@ -557,6 +566,7 @@
+             reason: expect.stringContaining("location changed"),
+           });
+           expect(readFileSync(f.calls, "utf8")).toBe(calls);
++          f.env.OPENCLAW_CRABBOX_WITNESS_PHASE = "07-recover-correct-namespace";
+           expect((await f.recover(changed)).report.recovered).toBe(true);
+           for (const line of readFileSync(f.calls, "utf8").trim().split("\n")) {
+             expect(JSON.parse(line)).toEqual(["claims", "list", "--json"]);
