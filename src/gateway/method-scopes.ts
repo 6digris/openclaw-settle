@@ -7,7 +7,7 @@ import {
 } from "../infra/node-commands.js";
 import { getPluginRegistryForContext } from "../plugins/runtime/gateway-request-scope.js";
 import { resolveReservedGatewayMethodScope } from "../shared/gateway-method-policy.js";
-import { operatorScopeSatisfied } from "../shared/operator-scope-compat.js";
+import { operatorScopeSatisfied, roleScopesAllow } from "../shared/operator-scope-compat.js";
 import {
   resolveSessionMethodScope,
   type SessionOperatorScope,
@@ -227,6 +227,42 @@ export function resolveLeastPrivilegeOperatorScopesForMethod(
   }
   // Default-deny for unclassified methods.
   return [];
+}
+
+/** Projects requested scopes through the original grant and this call's exact scope policy. */
+export function projectOperatorScopesForMethod(params: {
+  method: string;
+  requestParams: unknown;
+  requestedScopes: readonly string[];
+  allowedScopes: readonly string[];
+  requiredScope?: OperatorScope;
+}): string[] {
+  const requiredScopes = params.requiredScope
+    ? [params.requiredScope]
+    : resolveLeastPrivilegeOperatorScopesForMethod(params.method, params.requestParams);
+  const sessionScope = resolveSessionMethodScope(params.method, params.requestParams);
+  return params.requestedScopes.flatMap((requestedScope) => {
+    if (
+      roleScopesAllow({
+        role: "operator",
+        requestedScopes: [requestedScope],
+        allowedScopes: params.allowedScopes,
+      })
+    ) {
+      return [requestedScope];
+    }
+    // Only the method's required scope may use its narrow alternative. Unrelated
+    // requested permissions and params-sensitive admin calls cannot borrow it.
+    if (!isOperatorScope(requestedScope) || !requiredScopes.includes(requestedScope)) {
+      return [];
+    }
+    const authorization = authorizeOperatorScopesForRequiredScope(
+      requestedScope,
+      params.allowedScopes,
+      sessionScope,
+    );
+    return authorization.allowed && authorization.sessionScope ? [authorization.sessionScope] : [];
+  });
 }
 
 /** Checks whether a presented operator scope set authorizes a gateway method call. */

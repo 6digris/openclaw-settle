@@ -3,6 +3,7 @@ import { resolveSessionMethodScope } from "../shared/session-method-scopes-base.
 import {
   authorizeOperatorScopesForMethod,
   authorizeOperatorScopesForRequiredScope,
+  projectOperatorScopesForMethod,
 } from "./method-scopes.js";
 
 describe("session-scoped method admission", () => {
@@ -42,6 +43,16 @@ describe("session-scoped method admission", () => {
       expect(
         authorizeOperatorScopesForMethod("config.get", ["operator.sessions.read"]),
       ).toMatchObject({ allowed: false });
+      for (const allowed of ["operator.sessions.read", "operator.sessions.write"]) {
+        expect(
+          projectOperatorScopesForMethod({
+            method,
+            requestParams: {},
+            requestedScopes: ["operator.read", "operator.admin"],
+            allowedScopes: [allowed],
+          }),
+        ).toEqual(["operator.sessions.read"]);
+      }
     },
   );
 
@@ -62,25 +73,59 @@ describe("session-scoped method admission", () => {
     expect(authorizeOperatorScopesForMethod(method, ["operator.write"], params)).toEqual({
       allowed: true,
     });
+    expect(
+      projectOperatorScopesForMethod({
+        method,
+        requestParams: params,
+        requestedScopes: ["operator.write", "operator.approvals"],
+        allowedScopes: ["operator.sessions.write"],
+      }),
+    ).toEqual(["operator.sessions.write"]);
   });
 
   it.each([
     ["sessions.create", { incognito: true }],
+    ["sessions.create", { key: "agent:main:dashboard:incognito-secret" }],
+    ["sessions.create", { parentSessionKey: "agent:main:dashboard:incognito-secret" }],
+    ["sessions.create", { execNode: "remote" }],
+    ["sessions.create", { toolOverrides: { allow: [] } }],
+    ["sessions.create", { permissionMode: "full" }],
     ["sessions.patch", { key: "agent:main:own", permissionMode: "full" }],
     ["sessions.patchMany", { targets: [{ key: "agent:main:own" }], patch: { sandboxMode: "off" } }],
+    ["sessions.patch", { key: "agent:main:own", unknownMutation: true }],
     ["sessions.delete", { key: "agent:main:own" }],
     ["agent", { message: "/reset" }],
     ["users.setDisplayName", {}],
     ["tools.invoke", {}],
     ["question.get", {}],
     ["question.resolve", {}],
+    ["plugins.sessionAction", { pluginId: "custom", actionId: "protected" }],
   ] as const)("does not turn the session grant into broader authority for %s", (method, params) => {
     expect(
       authorizeOperatorScopesForMethod(method, ["operator.sessions.write"], params),
     ).toMatchObject({ allowed: false });
+    expect(
+      projectOperatorScopesForMethod({
+        method,
+        requestParams: params,
+        requestedScopes: ["operator.write", "operator.admin", "operator.questions"],
+        allowedScopes: ["operator.sessions.write"],
+      }),
+    ).toEqual([]);
   });
 
   it("preserves a dispatch registry's stronger scope and does not borrow broad read for a write", () => {
+    for (const requiredScope of ["operator.admin", "operator.approvals"] as const) {
+      expect(
+        projectOperatorScopesForMethod({
+          method: "sessions.patch",
+          requestParams: { label: "updated" },
+          requestedScopes: ["operator.write"],
+          allowedScopes: ["operator.sessions.write"],
+          requiredScope,
+        }),
+      ).toEqual([]);
+    }
     for (const required of ["operator.read", "operator.approvals"] as const) {
       expect(
         authorizeOperatorScopesForRequiredScope(required, [required, "operator.sessions.write"]),
@@ -104,4 +149,23 @@ describe("session-scoped method admission", () => {
       authorizeOperatorScopesForMethod("sessions.patch", ["operator.read"], { label: "updated" }),
     ).toEqual({ allowed: false, missingScope: "operator.write" });
   });
+
+  it.each([
+    { requestedScopes: [] },
+    { requestedScopes: ["operator.admin"] },
+    { requestedScopes: ["operator.approvals"] },
+    { requestedScopes: ["operator.read"] },
+  ])(
+    "does not derive a session write from unrelated requested scopes $requestedScopes",
+    ({ requestedScopes }) => {
+      expect(
+        projectOperatorScopesForMethod({
+          method: "sessions.create",
+          requestParams: {},
+          requestedScopes,
+          allowedScopes: ["operator.sessions.write"],
+        }),
+      ).toEqual([]);
+    },
+  );
 });
