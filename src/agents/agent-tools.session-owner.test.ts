@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createOpenClawCodingTools } from "./agent-tools.js";
 import "./test-helpers/fast-bash-tools.js";
 import "./test-helpers/fast-coding-tools.js";
-import { createOpenClawCodingTools } from "./agent-tools.js";
 import * as inProcessGateway from "./tools/in-process-gateway.js";
+import { withSessionToolTestCaller } from "./tools/sessions-tool.test-helpers.js";
 
 vi.mock("./openclaw-plugin-tools.js", () => ({
   resolveOpenClawPluginToolsForOptions: () => [],
@@ -40,11 +41,13 @@ describe("session responsibility assignment in non-owner turns", () => {
         "required",
         expect.arrayContaining(["ownerType", "ownerId", "action"]),
       );
-      const result = await tool.execute("assign-requester", {
-        action: "assign_owner",
-        ownerType: "human",
-        ownerId: "profile-requester",
-      });
+      const result = await withSessionToolTestCaller(() =>
+        tool.execute("assign-requester", {
+          action: "assign_owner",
+          ownerType: "human",
+          ownerId: "profile-requester",
+        }),
+      );
       expect(result.details).toMatchObject({
         status: "updated",
         owner: { type: "human", id: "profile-requester" },
@@ -53,6 +56,7 @@ describe("session responsibility assignment in non-owner turns", () => {
         method: "sessions.assignOwner",
         params: { key: "agent:main:main", owner: { type: "human", id: "profile-requester" } },
         agentToolCaller: { agentId: "main", sessionKey: "agent:main:main" },
+        assertDispatchCurrent: expect.any(Function),
       });
       const denied = createOpenClawCodingTools({
         config: { tools: { allow: ["sessions"], deny: ["sessions"] } },

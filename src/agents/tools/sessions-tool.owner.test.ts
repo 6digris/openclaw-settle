@@ -1,7 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
 import { createSessionsTool } from "./sessions-tool.js";
+import { withSessionToolTestCaller } from "./sessions-tool.test-helpers.js";
 
 describe("sessions tool ownership", () => {
+  it.each([false, undefined])(
+    "rejects unadmitted assignment with owner posture %s",
+    async (senderIsOwner) => {
+      const callGateway = vi.fn();
+      const tool = createSessionsTool({
+        senderIsOwner,
+        agentSessionKey: "agent:main:main",
+        config: {},
+        callGateway,
+      });
+      await expect(
+        tool.execute("unadmitted", {
+          action: "assign_owner",
+          ownerType: "human",
+          ownerId: "profile-colin",
+        }),
+      ).rejects.toThrow("requires an admitted agent turn");
+      expect(callGateway).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([true, false, undefined])(
     "assigns a visible session owner (senderIsOwner=%s)",
     async (senderIsOwner) => {
@@ -26,11 +48,13 @@ describe("sessions tool ownership", () => {
         senderIsOwner,
       });
 
-      const result = await tool.execute("assign-colin", {
-        action: "assign_owner",
-        ownerType: "human",
-        ownerId: "profile-colin",
-      });
+      const result = await withSessionToolTestCaller(() =>
+        tool.execute("assign-colin", {
+          action: "assign_owner",
+          ownerType: "human",
+          ownerId: "profile-colin",
+        }),
+      );
 
       expect(callGateway).toHaveBeenCalledWith({
         method: "sessions.assignOwner",
@@ -39,6 +63,7 @@ describe("sessions tool ownership", () => {
           owner: { type: "human", id: "profile-colin" },
         },
         agentToolCaller: { agentId: "main", sessionKey: "agent:main:main" },
+        assertDispatchCurrent: expect.any(Function),
       });
       expect(result).toMatchObject({
         content: [
@@ -94,12 +119,14 @@ describe("sessions tool ownership", () => {
       callGateway,
     });
     await expect(
-      tool.execute("hidden-owner", {
-        action: "assign_owner",
-        sessionKey,
-        ownerType: "human",
-        ownerId: "profile-colin",
-      }),
+      withSessionToolTestCaller(() =>
+        tool.execute("hidden-owner", {
+          action: "assign_owner",
+          sessionKey,
+          ownerType: "human",
+          ownerId: "profile-colin",
+        }),
+      ),
     ).rejects.toThrow(error);
     expect(callGateway).not.toHaveBeenCalled();
   });

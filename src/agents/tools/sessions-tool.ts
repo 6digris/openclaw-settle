@@ -1,9 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { Type } from "typebox";
-import type {
-  SessionsAssignOwnerResult,
-  SessionsPatchResult,
-} from "../../../packages/gateway-protocol/src/index.js";
+import type { SessionsPatchResult } from "../../../packages/gateway-protocol/src/index.js";
 import { SessionMoveProfileTargetSchema } from "../../../packages/gateway-protocol/src/schema/session-placement.js";
 import { SESSIONS_PATCH_MANY_MAX_TARGETS } from "../../../packages/gateway-protocol/src/schema/sessions-patch.js";
 import {
@@ -48,6 +45,7 @@ import {
 import { listSessionCloudProfiles } from "./sessions-cloud-profiles.js";
 import { resolveSessionToolContext } from "./sessions-helpers.js";
 import { resolveSessionReference, shouldResolveSessionIdInput } from "./sessions-resolution.js";
+import { assignSessionToolOwner } from "./sessions-tool-owner.js";
 import {
   readSessionsToolPatch,
   runSessionsToolPatchMany,
@@ -471,36 +469,10 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
         return jsonResult(await callGateway("sessions.groups.list", {}));
       }
       if (action === "assign_owner") {
-        const ownerType = readToolStringParam(params, "ownerType", { required: true });
-        const ownerId = normalizeOptionalString(
-          readToolStringParam(params, "ownerId", { required: true }),
-        );
-        if ((ownerType !== "human" && ownerType !== "agent") || !ownerId) {
-          throw new ToolInputError("assign_owner requires ownerType and ownerId");
-        }
-        const { agentId, key, requesterAgentId, requesterSessionKey } = await resolvePatchTarget(
-          opts,
-          normalizeOptionalString(readToolStringParam(params, "sessionKey")),
+        return assignSessionToolOwner(params, {
+          assignmentOnly,
           gatewayRequest,
-        );
-        const agentScope = parseAgentSessionKey(key) ? {} : { agentId };
-        const result = await gatewayRequest<SessionsAssignOwnerResult>({
-          method: "sessions.assignOwner",
-          params: {
-            key,
-            ...agentScope,
-            owner: { type: ownerType, id: ownerId },
-          },
-          agentToolCaller: { agentId: requesterAgentId, sessionKey: requesterSessionKey },
-        });
-        return jsonResult({
-          status: "updated",
-          sessionKey: result.key,
-          owner: {
-            type: result.owner.actor.type,
-            id: result.owner.actor.id,
-            ...(result.owner.actor.label ? { label: result.owner.actor.label } : {}),
-          },
+          resolveTarget: (sessionKey) => resolvePatchTarget(opts, sessionKey, gatewayRequest),
         });
       }
       // Group catalog is global by contract. The action-level owner gate protects mutations.

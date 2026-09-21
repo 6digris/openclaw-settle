@@ -210,6 +210,7 @@ describe("resolveGatewayScopedTools excludeToolNames", () => {
       cfg: {} as OpenClawConfig,
       sessionKey: "agent:main:direct:test",
       surface: "loopback",
+      senderIsOwner: true,
       excludeToolNames: ["read", "apply_patch"],
     });
 
@@ -407,6 +408,7 @@ describe("resolveGatewayScopedTools excludeToolNames", () => {
       "computer",
       "mobile_ui",
       "openclaw",
+      "sessions",
     ]);
     expect(args.inheritedToolDenylist).toEqual([
       "automations",
@@ -422,11 +424,12 @@ describe("resolveGatewayScopedTools excludeToolNames", () => {
       "computer",
       "mobile_ui",
       "openclaw",
+      "sessions",
     ]);
   });
 
   it.each([
-    { surface: "loopback" as const, senderIsOwner: false, available: true },
+    { surface: "loopback" as const, senderIsOwner: false, available: false },
     { surface: "http" as const, senderIsOwner: false, available: false },
     { surface: "http" as const, senderIsOwner: undefined, available: false },
     { surface: "http" as const, senderIsOwner: true, available: true },
@@ -452,6 +455,7 @@ describe("resolveGatewayScopedTools excludeToolNames", () => {
       } as OpenClawConfig,
       sessionKey: "agent:main:direct:test",
       surface: "loopback",
+      senderIsOwner: true,
       excludeToolNames: ["read", "apply_patch"],
     });
 
@@ -992,6 +996,7 @@ describe("resolveGatewayScopedTools excludeToolNames", () => {
       } as OpenClawConfig,
       sessionKey: "agent:main:direct:test",
       surface: "loopback",
+      senderIsOwner: true,
     });
 
     expect(result.tools.map((tool) => tool.name)).toEqual(["read", "sessions_spawn"]);
