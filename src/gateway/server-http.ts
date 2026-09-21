@@ -26,6 +26,7 @@ import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
 import { parseControlUiUserAvatarPath, parseControlUiResourcePath } from "./control-ui-contract.js";
 import { respondNotFound, respondPlainText } from "./control-ui-http-utils.js";
+import { CONTROL_UI_IMAGE_HTTP_ROUTES } from "./control-ui-image-http-routes.js";
 import { controlUiPluginAssetRoot } from "./control-ui-plugin-assets-contract.js";
 import { createControlUiPublicSessionRoute } from "./control-ui-public-session.js";
 import { resolveAssistantMediaRoutePath } from "./control-ui-resource-routes.js";
@@ -115,13 +116,6 @@ const getManagedMediaAttachmentsModule = createLazyRuntimeModule(
   () => import("./managed-image-attachments.js"),
 );
 const getMcpAppStandaloneModule = createLazyRuntimeModule(() => import("./mcp-app-standalone.js"));
-const getPluginIconHttpModule = createLazyRuntimeModule(() => import("./plugin-icon-http.js"));
-const getWorkspaceIconHttpModule = createLazyRuntimeModule(
-  () => import("./workspace-icon-http.js"),
-);
-const getChannelAvatarHttpModule = createLazyRuntimeModule(
-  () => import("./channel-avatar-http.js"),
-);
 const getModelsHttpModule = createLazyRuntimeModule(() => import("./models-http.js"));
 const getOpenAiHttpModule = createLazyRuntimeModule(() => import("./openai-http.js"));
 const getOpenResponsesHttpModule = createLazyRuntimeModule(() => import("./openresponses-http.js"));
@@ -350,6 +344,10 @@ export function createGatewayHttpServer(opts: {
         allowRealIpFallback,
         rateLimiter,
       };
+      const operatorAuth = () => ({
+        ...routeAuth,
+        resolveGatewayContext: opts.getGatewayRequestContext?.()?.resolveGatewayContext,
+      });
       const controlUiRouteOptions = {
         basePath: controlUiBasePath,
         config: configSnapshot,
@@ -495,7 +493,7 @@ export function createGatewayHttpServer(opts: {
         (await getEmbeddingsHttpModule()).handleOpenAiEmbeddingsHttpRequest(req, res, routeAuth),
       );
       addAdmittedStage(scopedRequestPath === "/tools/invoke", async () =>
-        (await getToolsInvokeHttpModule()).handleToolsInvokeHttpRequest(req, res, routeAuth),
+        (await getToolsInvokeHttpModule()).handleToolsInvokeHttpRequest(req, res, operatorAuth()),
       );
       addAdmittedStage(/^\/sessions\/[^/]+\/kill$/.test(scopedRequestPath), async () =>
         (await getSessionKillHttpModule()).handleSessionKillHttpRequest(req, res, routeAuth),
@@ -534,18 +532,16 @@ export function createGatewayHttpServer(opts: {
       );
       addAdmittedStage(openResponsesEnabled && scopedRequestPath === "/v1/responses", async () =>
         (await getOpenResponsesHttpModule()).handleOpenResponsesHttpRequest(req, res, {
-          ...routeAuth,
+          ...operatorAuth(),
           config: openResponsesConfig,
-          resolveGatewayContext: opts.getGatewayRequestContext?.()?.resolveGatewayContext,
         }),
       );
       addAdmittedStage(
         openAiChatCompletionsEnabled && scopedRequestPath === "/v1/chat/completions",
         async () =>
           (await getOpenAiHttpModule()).handleOpenAiHttpRequest(req, res, {
-            ...routeAuth,
+            ...operatorAuth(),
             config: openAiChatCompletionsConfig,
-            resolveGatewayContext: opts.getGatewayRequestContext?.()?.resolveGatewayContext,
           }),
       );
       const approvalDocument = isControlUiApprovalDocumentPath({
@@ -688,20 +684,7 @@ export function createGatewayHttpServer(opts: {
             { ...routeAuth, basePath: controlUiRouteBasePath },
           ),
       );
-      for (const [routes, loadHandler] of [
-        [
-          ["pluginIcon", "pluginActivityIcon", "catalogIcon", "linkFavicon"],
-          async () => (await getPluginIconHttpModule()).handlePluginIconHttpRequest,
-        ],
-        [
-          ["workspaceIcon"],
-          async () => (await getWorkspaceIconHttpModule()).handleWorkspaceIconHttpRequest,
-        ],
-        [
-          ["channelAvatar"],
-          async () => (await getChannelAvatarHttpModule()).handleChannelAvatarHttpRequest,
-        ],
-      ] as const) {
+      for (const [routes, loadHandler] of CONTROL_UI_IMAGE_HTTP_ROUTES) {
         addRequestStage(
           controlUiEnabled &&
             routes.some(
