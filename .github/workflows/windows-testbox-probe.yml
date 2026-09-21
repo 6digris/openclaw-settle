@@ -32,7 +32,7 @@ jobs:
             if ($env:NATIVE_RUNNER_ENVIRONMENT -ne "github-hosted" -or $env:RUNNER_OS -ne "Windows") {
               throw "Expected a newly allocated GitHub-hosted Windows runner."
             }
-            if ($env:EXPECTED_HEAD -cne "71aede4c4e4a0d04a3228d18fd81d0f376d4ac16") {
+            if ($env:EXPECTED_HEAD -cne "6f9e6ba62855e0cc7824708d2a2e4484a2123aa9") {
               throw "Native proof requires an exact 40-character target_ref."
             }
             # Actions artifact/cache credentials are infrastructure-only. The
@@ -141,7 +141,7 @@ jobs:
           foreach ($key in @("runId","runAttempt","artifactId","producerJobId","integrityJobId")) {
             if ([string]$b.$key -notmatch '^[1-9][0-9]*$') { throw "Invalid numeric package binding" }
           }
-          if ($b.sourceSha -cne "71aede4c4e4a0d04a3228d18fd81d0f376d4ac16" -or $b.workflowSha -cne "9343ea4099ba46475db5fdc5e7293d4db65f4e68") { throw "Wrong package source or producer" }
+          if ($b.sourceSha -cne "6f9e6ba62855e0cc7824708d2a2e4484a2123aa9" -or $b.workflowSha -cne "9343ea4099ba46475db5fdc5e7293d4db65f4e68") { throw "Wrong package source or producer" }
           if ($b.packageSha256 -cnotmatch '^[0-9a-f]{64}$' -or $b.artifactDigest -cnotmatch '^sha256:[0-9a-f]{64}$') { throw "Invalid digest" }
           $raw = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$($b.runId)"
           if ($LASTEXITCODE -ne 0) { throw "Cannot inspect package producer" }
@@ -185,7 +185,7 @@ jobs:
           if ($metadata.packageSourceSha -cne $b.sourceSha -or $metadata.sha256 -cne $b.packageSha256) { throw "Candidate metadata mismatch" }
           if ((Get-FileHash $package -Algorithm SHA256).Hash.ToLowerInvariant() -cne $b.packageSha256) { throw "Candidate package hash mismatch" }
           $driver = Join-Path $env:GITHUB_WORKSPACE ".maintainer/pr-119052/RUN-PUBLISHED-UPGRADE.mjs"
-          if ((Get-FileHash $driver -Algorithm SHA256).Hash.ToLowerInvariant() -cne "ab6b295d4e113301b25c9ce6781852258d68b781d04ee55d68fef7870a7e76a6") { throw "Driver bytes differ from review" }
+          if ((Get-FileHash $driver -Algorithm SHA256).Hash.ToLowerInvariant() -cne "b2cd2627cb76c554c9795647ea5b59d1b53a572e87482f32e7300306a09883d7") { throw "Driver bytes differ from review" }
           $npmCli = Join-Path (Split-Path (Get-Command node.exe).Source) "node_modules/npm/bin/npm-cli.js"
           if (-not (Test-Path $npmCli)) { throw "Missing installed npm CLI" }
           $drive = Get-PSDrive -Name ([IO.Path]::GetPathRoot($env:RUNNER_TEMP).Substring(0,1))

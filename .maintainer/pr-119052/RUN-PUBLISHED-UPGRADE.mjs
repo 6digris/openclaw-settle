@@ -12,7 +12,7 @@ import path from "node:path";
 assert.equal(process.platform, "win32", "Native Windows is mandatory");
 const [packageFile, packageHash, candidateSha, npmCli, proofDir] = process.argv.slice(2);
 assert.match(packageHash, /^[a-f0-9]{64}$/);
-assert.equal(candidateSha, "71aede4c4e4a0d04a3228d18fd81d0f376d4ac16");
+assert.equal(candidateSha, "6f9e6ba62855e0cc7824708d2a2e4484a2123aa9");
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 const driverHash = sha256(await fs.readFile(new URL(import.meta.url)));
 assert.equal(sha256(await fs.readFile(packageFile)), packageHash);
