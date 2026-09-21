@@ -15,7 +15,7 @@ import {
   wrapAnthropicProviderStream,
 } from "./stream-wrappers.js";
 
-useProviderCatalogMetadata(new URL(".", import.meta.url));
+useProviderCatalogMetadata(new URL(".", import.meta.url), new URL("../google/", import.meta.url));
 
 const CONTEXT_1M_BETA = "context-1m-2025-08-07";
 const OAUTH_BETA = "oauth-2025-04-20";
@@ -442,7 +442,10 @@ describe("anthropic stream wrappers", () => {
         baseUrl: "https://us-east5-aiplatform.googleapis.com",
       },
     },
-  ])("does not send native fast mode over $label routes", ({ params }) => {
+  ])("does not send native fast mode over $label routes", ({ label, params }) => {
+    if (label === "Vertex") {
+      expect(resolveProviderEndpoint(params.baseUrl).endpointClass).toBe("google-vertex");
+    }
     const captured = runNativeFastModeWrapper(params);
 
     expect(captured.headers).toBeUndefined();
