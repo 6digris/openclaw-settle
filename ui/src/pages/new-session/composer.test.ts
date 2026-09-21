@@ -690,7 +690,7 @@ describe("new-session composer sizing lifecycle", () => {
     await Promise.resolve();
 
     expect(scrollHeightReads).toBeGreaterThan(readsAfterInput);
-    expect(readsAfterAttach).toBeGreaterThan(0);
+    expect(readsAfterAttach).toBe(0);
     expect(resizeObserverConstructed).toHaveBeenCalledOnce();
     expect(disconnect).not.toHaveBeenCalled();
     textareaController.disconnect();

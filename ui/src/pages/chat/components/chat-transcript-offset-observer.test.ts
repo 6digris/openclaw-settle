@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 it.each([false, true])(
-  "reports maintenance as idle while preserving native backward input=%s",
+  "preserves above-reader compensation unless native input takes over=%s",
   (readerMovesBackward) => {
     vi.useFakeTimers();
     const scroller = document.body.appendChild(document.createElement("div"));
@@ -39,7 +39,6 @@ it.each([false, true])(
       requestUpdate: vi.fn(),
       onReaderScroll: vi.fn(),
     };
-    const offsets = vi.fn();
     const controller = new VirtualizerController<HTMLDivElement, HTMLElement>(
       {
         addController: vi.fn(),
@@ -56,10 +55,7 @@ it.each([false, true])(
           callback({ width: 800, height: 400 });
         },
         observeElementOffset: (instance, callback) =>
-          observeTranscriptOffset(owner, instance, (offset, scrolling) => {
-            offsets(offset, scrolling);
-            callback(offset, scrolling);
-          }),
+          observeTranscriptOffset(owner, instance, callback),
         scrollToFn: (offset, options, instance) =>
           scrollTranscriptOffset(state, offset, options, instance),
       },
@@ -75,14 +71,10 @@ it.each([false, true])(
       instance.resizeItem(0, 401);
       scroller.dispatchEvent(new Event("scroll"));
       expect(scroller.scrollTop).toBe(901);
-      expect(offsets).toHaveBeenLastCalledWith(901, false);
-      expect(instance.scrollDirection).toBeNull();
       if (readerMovesBackward) {
         scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
         scroller.scrollTop -= 40;
         scroller.dispatchEvent(new Event("scroll"));
-        expect(offsets).toHaveBeenLastCalledWith(861, true);
-        expect(instance.scrollDirection).toBe("backward");
       }
       // No idle timer has elapsed: maintenance must not suppress this resize,
       // while a real backward gesture still owns its native position.

@@ -139,32 +139,37 @@ function updateTextareaOverflow(el: HTMLTextAreaElement) {
 }
 
 export function adjustTextareaHeight(el: HTMLTextAreaElement) {
-  // A surface that declares the compact shape is a fixed CSS box: it holds one
-  // line whatever the draft is, so an inline height left by an earlier measured
-  // pass would silently outrank the stylesheet. Which shape a composer is in is
-  // declared in its markup, never inferred here from how much text it holds.
-  if (el.closest('[data-composer-layout="single-line"]')) {
+  // Compact surfaces declare a fixed CSS box. Empty one-row editors also stay
+  // CSS-sized: their placeholder does not wrap. This does not switch layout
+  // modes; populated multiline drafts still use measured sizing below.
+  const compact = Boolean(el.closest('[data-composer-layout="single-line"]'));
+  const useCssHeight = compact || (el.rows === 1 && el.value.length === 0);
+  // Repeated empty-editor width notifications must not remeasure the entire
+  // conversation. Preserve its edge only when clearing an old measured height.
+  const thread =
+    !compact && (!useCssHeight || el.style.height)
+      ? (el.closest(".chat")?.querySelector<HTMLElement>(".chat-thread") ?? null)
+      : null;
+  const preserveBottomAnchor = thread
+    ? captureChatSessionScrollPosition(thread).anchorToEnd
+    : false;
+  if (useCssHeight) {
     el.style.height = "";
     el.style.overflowY = "";
     el.removeAttribute("data-scroll-fade-top");
     el.removeAttribute("data-scroll-fade-bottom");
-    return;
+  } else {
+    // Hide the scrollbar while measuring; restore it only when the final
+    // CSS-constrained height actually clips the draft.
+    el.style.overflowY = "hidden";
+    el.style.height = "auto";
+    // Detached/test controls can have a non-pixel computed cap.
+    const computedMaxHeight = getComputedStyle(el).maxHeight.trim();
+    const pixelMaxHeight = /^(\d+(?:\.\d+)?)px$/u.exec(computedMaxHeight);
+    const maxHeight = pixelMaxHeight ? Number(pixelMaxHeight[1]) : 150;
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+    updateTextareaOverflow(el);
   }
-  const thread = el.closest(".chat")?.querySelector<HTMLElement>(".chat-thread") ?? null;
-  const preserveBottomAnchor = thread
-    ? captureChatSessionScrollPosition(thread).anchorToEnd
-    : false;
-  // Hide the browser's scrollbar while measuring; restore it only when the
-  // final CSS-constrained height actually clips the draft.
-  el.style.overflowY = "hidden";
-  el.style.height = "auto";
-  // The owning surface declares its cap in CSS. Retain the historical fallback
-  // for detached/test controls whose computed max-height is not a pixel value.
-  const computedMaxHeight = getComputedStyle(el).maxHeight.trim();
-  const pixelMaxHeight = /^(\d+(?:\.\d+)?)px$/u.exec(computedMaxHeight);
-  const maxHeight = pixelMaxHeight ? Number(pixelMaxHeight[1]) : 150;
-  el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
-  updateTextareaOverflow(el);
   // Once capped, the textarea can perturb the sibling transcript without
   // resizing its viewport, so ResizeObserver has no correction to apply.
   if (thread && preserveBottomAnchor) {

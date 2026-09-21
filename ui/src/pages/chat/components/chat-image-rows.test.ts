@@ -168,6 +168,20 @@ describe("consecutive image sets", () => {
     },
   );
 
+  it.each([
+    { name: "omitted", block: { type: "image", omitted: true, bytes: 100 } },
+    { name: "expired", block: { type: "openclaw_pairing_qr", expiresAtMs: 1 } },
+  ])("keeps $name notices between their image runs", ({ block }) => {
+    for (const caption of ["", "Compare these images"]) {
+      drawMessage([text(caption), image("a"), block, image("b")]);
+      expect(rows()).toEqual([["a"], ["b"]]);
+      const content = [...container.querySelectorAll("img, .chat-assistant-attachment-card")];
+      expect(
+        content.map((node) => (node instanceof HTMLImageElement ? node.alt : "notice")),
+      ).toEqual(["a", "notice", "b"]);
+    }
+  });
+
   it("retains user grids and never mixes their lightbox gallery with assistant images", () => {
     drawTranscript([
       { role: "user", content: [image("user-a"), image("user-b")] },

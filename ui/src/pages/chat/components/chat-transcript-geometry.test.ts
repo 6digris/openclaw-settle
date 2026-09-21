@@ -58,11 +58,24 @@ describe("chat transcript geometry", () => {
     controller.hostUpdated();
     const virtualizer = controller.getVirtualizer();
     virtualizer.getVirtualItems();
+    const readStyle = vi.spyOn(globalThis, "getComputedStyle");
     try {
       expect(measureConnectedTranscriptRows(container, virtualizer)).toBe(true);
       expect(virtualizer.itemSizeCache.get("fractional")).toBe(100.375);
       expect(measureConnectedTranscriptRows(container, virtualizer)).toBe(false);
+      // Chromium serializes this observer height as 1849.66px in CSSOM.
+      // Re-measuring the same box must not compensate or invalidate it again.
+      virtualizer.resizeItem(0, 1849.65625);
+      const serialized = document.createElement("div").style;
+      serialized.height = "1849.66px";
+      readStyle.mockReturnValue(serialized);
+      expect(measureConnectedTranscriptRows(container, virtualizer)).toBe(false);
+      expect(virtualizer.itemSizeCache.get("fractional")).toBe(1849.65625);
+      serialized.height = "1849.75px";
+      expect(measureConnectedTranscriptRows(container, virtualizer)).toBe(true);
+      expect(virtualizer.itemSizeCache.get("fractional")).toBe(1849.75);
     } finally {
+      readStyle.mockRestore();
       controller.hostDisconnected();
     }
   });

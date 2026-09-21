@@ -47,6 +47,16 @@ export class TranscriptImageResizeAnchor {
     const bounds = viewport.getBoundingClientRect();
     let preceding: ImageResizeAnchor | null = null;
     for (const group of groups) {
+      let visibleBottom = bounds.bottom;
+      const disclosure = group.closest<HTMLElement>(".chat-message-disclosure__content");
+      if (disclosure && disclosure.scrollHeight > disclosure.clientHeight) {
+        // A collapsed forwarded message keeps its images mounted below a clip.
+        // Their unclipped rectangles must not become the reader's anchor.
+        visibleBottom = Math.min(visibleBottom, disclosure.getBoundingClientRect().bottom);
+        if (visibleBottom <= bounds.top) {
+          continue;
+        }
+      }
       const groupBounds = group.getBoundingClientRect();
       if (groupBounds.bottom <= bounds.top) {
         // Text following images can share the same fold-spanning virtual row.
@@ -95,10 +105,10 @@ export class TranscriptImageResizeAnchor {
       for (let index = low; index < frames.length; index += 1) {
         const candidate = frames[index]!;
         const rect = candidate.getBoundingClientRect();
-        if (rect.top >= bounds.bottom || (nextRowTop !== undefined && rect.top > nextRowTop)) {
+        if (rect.top >= visibleBottom || (nextRowTop !== undefined && rect.top > nextRowTop)) {
           break;
         }
-        const visible = Math.min(rect.bottom, bounds.bottom) - Math.max(rect.top, bounds.top);
+        const visible = Math.min(rect.bottom, visibleBottom) - Math.max(rect.top, bounds.top);
         if (visible > visibleHeight) {
           frame = candidate;
           visibleHeight = visible;

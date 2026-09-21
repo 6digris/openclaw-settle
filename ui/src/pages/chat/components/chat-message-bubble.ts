@@ -487,6 +487,12 @@ export function renderGroupedMessage(
       if (item.type === "images") {
         return renderMessageImages(item.images, imageRenderOptions);
       }
+      if (item.type === "omitted_media") {
+        return renderOmittedMedia([item]);
+      }
+      if (item.type === "expired_pairing_qr") {
+        return renderPairingQrExpiryNotices(1);
+      }
       return renderAssistantAttachments(
         [item],
         imageRenderOptions,
@@ -528,7 +534,7 @@ export function renderGroupedMessage(
           )
         : nothing
     }
-    ${renderPairingQrExpiryNotices(expiredPairingQrCount)}
+    ${renderInOrder ? nothing : renderPairingQrExpiryNotices(expiredPairingQrCount)}
     ${renderMessageImages(
       renderInOrder ? supplementalImages : images,
       imageRenderOptions,
@@ -540,7 +546,7 @@ export function renderGroupedMessage(
         `,
       ),
     )}
-    ${renderOmittedMedia(omittedMedia)}
+    ${renderInOrder ? nothing : renderOmittedMedia(omittedMedia)}
     ${renderAssistantAttachments(
       renderInOrder ? supplementalAttachments : cardAttachments,
       imageRenderOptions,

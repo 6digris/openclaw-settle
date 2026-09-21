@@ -96,6 +96,7 @@ export function observeTranscriptOffset(
 ): () => void {
   const element = owner.getScrollElement();
   let nativeOffset = element?.scrollTop ?? 0;
+  let backwardMaintenance = false;
   let touchY: number | undefined;
   const contactIds = new Set<number>();
   const localTouchY = (event: TouchEvent) =>
@@ -124,6 +125,7 @@ export function observeTranscriptOffset(
       owner.state.maintenanceScrollOffset = null;
     } else if (before !== after) {
       owner.state.maintenanceScrollOffset = after;
+      backwardMaintenance = after < before;
     }
   };
   owner.state.recordProgrammaticScroll = recordProgrammaticScroll;
@@ -159,9 +161,13 @@ export function observeTranscriptOffset(
       programmatic,
     });
     const changed = offset !== instance.scrollOffset;
-    // Maintenance can move backward without a reader gesture. Reporting that
-    // as scrolling makes TanStack suppress the next above-fold size correction.
-    callback(offset, scrolling && !isTranscriptMaintenanceScroll(owner.state, element));
+    // Backward compensation must not suppress the next above-fold correction.
+    // Keep forward movement active so TanStack retains its observer-driven
+    // measurements instead of synchronously remeasuring every rendered row.
+    callback(
+      offset,
+      scrolling && !(backwardMaintenance && isTranscriptMaintenanceScroll(owner.state, element)),
+    );
     // Range notifications are memoized: the viewport midpoint can cross
     // a rail landmark without changing the visible rows. Lit coalesces
     // this request with the virtualizer's own update when both fire.

@@ -16,6 +16,7 @@ import {
   gatewayPluginTestFiles,
   gatewayServerExcludedTestFiles,
   gatewayServerIsolatedTestFiles,
+  gatewayServerSerialTestFiles,
   isGatewayServerBackedHttpTestFile,
   isGatewayServerTestFile,
 } from "../../test/vitest/vitest.gateway-server-paths.mjs";
@@ -780,10 +781,75 @@ function usesMeasuredCompactWorkers(group: NodeTestShardGroup, runnerBackend: st
   );
 }
 
+function isParallelGatewayServerGroup(group: NodeTestShardGroup): boolean {
+  return (
+    group.configs.length === 1 && group.configs[0] === "test/vitest/vitest.gateway-server.config.ts"
+  );
+}
+
+function gatewayServerEffectiveWorkers(group: NodeTestShardGroup): number {
+  return Math.max(
+    1,
+    Math.min(
+      2,
+      group.includePatterns?.filter((file) => !gatewayServerSerialTestFiles.includes(file))
+        .length ?? 2,
+    ),
+  );
+}
+
+function gatewayServerSerialSeconds(
+  files: readonly string[] | undefined,
+  runnerBackend: string | undefined,
+): number {
+  const scale =
+    runnerBackend === "github"
+      ? COMPACT_GITHUB_GROUP_SECONDS_SCALE
+      : runnerBackend === "hybrid"
+        ? COMPACT_HYBRID_GROUP_SECONDS_SCALE
+        : 1;
+  return (files ?? []).reduce(
+    (seconds, file) =>
+      seconds + (gatewayServerSerialTestFiles.includes(file) ? stripeFileWeight(file) * scale : 0),
+    0,
+  );
+}
+
+function estimateLegacyGatewayServerSeconds(
+  group: NodeTestShardGroup,
+  profile: "blacksmith" | "github",
+  hint: number | undefined,
+): number | undefined {
+  const { OPENCLAW_VITEST_MAX_WORKERS: _workers, ...env } = group.env ?? {};
+  const generation = createCompactSplitTimingGeneration({
+    configs: group.configs,
+    env,
+    parentShardName: group.shard_name,
+    stripes: [group.includePatterns ?? []],
+  });
+  const measured = readCompactGroupTimings(profile)[group.shard_name];
+  const complete = readCompleteSplitGenerationSeconds(profile, generation.selectorKey);
+  const seconds = measured ?? hint;
+  const serialSeconds = gatewayServerSerialSeconds(group.includePatterns, profile);
+  return seconds === undefined && complete === undefined
+    ? undefined
+    : serialSeconds +
+        Math.max(0, Math.max(seconds ?? 0, complete ?? 0) - serialSeconds) /
+          gatewayServerEffectiveWorkers(group);
+}
+
 function applyCompactGroupWorkerPins(
   group: NodeTestShardGroup,
   runnerBackend: string | undefined,
 ): NodeTestShardGroup {
+  if (isParallelGatewayServerGroup(group)) {
+    // New measurements must not be divided again after serial files become parallel.
+    return {
+      ...group,
+      timing_key: `${group.shard_name}-parallel${gatewayServerSerialSeconds(group.includePatterns, runnerBackend) > 0 ? "-native-serial" : ""}`,
+      env: { ...group.env, ...PINNED_COMPACT_GROUP_ENV },
+    };
+  }
   if (usesMeasuredCompactWorkers(group, runnerBackend)) {
     return { ...group, fallbackMaxWorkers: 2 };
   }
@@ -816,7 +882,13 @@ function readCompactGroupSeconds(
 function estimateDefaultCompactGroupSeconds(group: NodeTestShardGroup): number {
   const hint =
     readCompactGroupSeconds(group, "blacksmith") ??
-    COMPACT_GROUP_SECONDS_HINTS.get(group.shard_name);
+    (isParallelGatewayServerGroup(group)
+      ? estimateLegacyGatewayServerSeconds(
+          group,
+          "blacksmith",
+          COMPACT_GROUP_SECONDS_HINTS.get(group.shard_name),
+        )
+      : COMPACT_GROUP_SECONDS_HINTS.get(group.shard_name));
   if (hint !== undefined) {
     return hint;
   }
@@ -867,15 +939,34 @@ function estimateCompactGroupSeconds(
   // hosted retries, but its packing weights must describe the runner that
   // normally executes the plan.
   if (runnerBackend === "hybrid") {
-    return estimateHybridCompactGroupSeconds(group, defaultSeconds);
+    return Math.max(
+      isParallelGatewayServerGroup(group)
+        ? gatewayServerSerialSeconds(group.includePatterns, runnerBackend)
+        : 0,
+      estimateHybridCompactGroupSeconds(group, defaultSeconds),
+    );
   }
   if (runnerBackend !== "github") {
-    return defaultSeconds;
+    return Math.max(
+      defaultSeconds,
+      isParallelGatewayServerGroup(group)
+        ? gatewayServerSerialSeconds(group.includePatterns, runnerBackend)
+        : 0,
+    );
   }
-  return (
+  return Math.max(
+    isParallelGatewayServerGroup(group)
+      ? gatewayServerSerialSeconds(group.includePatterns, runnerBackend)
+      : 0,
     readCompactGroupSeconds(group, "github") ??
-    COMPACT_GITHUB_GROUP_SECONDS_HINTS.get(group.shard_name) ??
-    Math.round(defaultSeconds * COMPACT_GITHUB_GROUP_SECONDS_SCALE)
+      (isParallelGatewayServerGroup(group)
+        ? estimateLegacyGatewayServerSeconds(
+            group,
+            "github",
+            COMPACT_GITHUB_GROUP_SECONDS_HINTS.get(group.shard_name),
+          )
+        : COMPACT_GITHUB_GROUP_SECONDS_HINTS.get(group.shard_name)) ??
+      Math.round(defaultSeconds * COMPACT_GITHUB_GROUP_SECONDS_SCALE),
   );
 }
 
@@ -883,7 +974,7 @@ function estimateCompactStripeSeconds(
   group: NodeTestShardGroup,
   runnerBackend: string | undefined,
 ): number {
-  if (group.timing_key) {
+  if (group.timing_key && parseCompactSplitTimingKey(group.timing_key)) {
     // The parent-derived floor owns a new split until its exact child has samples.
     // File-count fallbacks would price the same work again after partitioning.
     const seconds =
@@ -892,7 +983,7 @@ function estimateCompactStripeSeconds(
       ] ?? 0;
     return runnerBackend === "hybrid" ? estimateHybridCompactGroupSeconds(group, seconds) : seconds;
   }
-  if (runnerBackend === "github") {
+  if (runnerBackend === "github" || isParallelGatewayServerGroup(group)) {
     return estimateCompactGroupSeconds(group, runnerBackend);
   }
   const blacksmithSeconds =
@@ -2256,12 +2347,62 @@ export function createNodeTestShards(options: NodeTestPlanOptions = {}): NodeTes
 }
 
 /** Select planner envelopes that produce the protected Vitest transform-cache seed. */
-export function createVitestCacheWarmGroups(): Array<{
+export function createVitestCacheWarmGroups(profile: "full" | "hybrid-hosted" = "full"): Array<{
   configs: string[];
   env?: Record<string, string>;
   includePatterns?: string[];
   shard_name: string;
 }> {
+  // Preserve the package root and aliases used by checks-ui in either backend.
+  const uiGroup = {
+    configs: ["ui/vitest.config.ts"],
+    env: { OPENCLAW_VITEST_MAX_WORKERS: "1" },
+    includePatterns: [
+      "ui/src/components/app-sidebar.test.ts",
+      "ui/src/pages/chat/chat-view.test.ts",
+      "ui/src/pages/chat/chat-pane-lifecycle.test.ts",
+      "ui/src/pages/usage/metrics.node.test.ts",
+    ],
+    shard_name: "cache-warm:ui-package",
+  };
+  if (profile === "hybrid-hosted") {
+    // Seed the hosted CI-routing and contract closures without collecting all
+    // tooling tests or building the runtime. Ordinary CI still runs every test.
+    return [
+      {
+        configs: ["test/vitest/vitest.unit-fast.config.ts", "test/vitest/vitest.tooling.config.ts"],
+        includePatterns: [
+          "src/commands/status.scan-result.test.ts",
+          "test/scripts/ci-workflow-guards.test.ts",
+          "test/scripts/ci-run-node-test-shard.test.ts",
+        ],
+        shard_name: "cache-warm:hosted-tooling",
+      },
+      ...(
+        [
+          ["plugin", "src/plugins/contracts/registry.contract.test.ts"],
+          ["channel-surface", "src/channels/plugins/contracts/channel-catalog.contract.test.ts"],
+          [
+            "channel-config",
+            "src/channels/plugins/contracts/gateway-auth-artifact.contract.test.ts",
+          ],
+          [
+            "channel-registry",
+            "src/channels/plugins/contracts/plugins-core.registry.contract.test.ts",
+          ],
+          [
+            "channel-session",
+            "src/channels/plugins/contracts/session-key-artifact.contract.test.ts",
+          ],
+        ] as const
+      ).map(([name, file]) => ({
+        configs: [`test/vitest/vitest.contracts-${name}.config.ts`],
+        includePatterns: [file],
+        shard_name: `cache-warm:hosted-contracts-${name}`,
+      })),
+      uiGroup,
+    ];
+  }
   const additionalShardNames = new Set([
     "agentic-agents-embedded",
     "agentic-gateway-methods",
@@ -2293,18 +2434,7 @@ export function createVitestCacheWarmGroups(): Array<{
         shard_name: `cache-warm:${shard.shardName}:${config}`,
       })),
     ),
-    {
-      // Seed the same root/aliases as checks-ui; repository-root UI transforms have different keys.
-      configs: ["ui/vitest.config.ts"],
-      env: { OPENCLAW_VITEST_MAX_WORKERS: "1" },
-      includePatterns: [
-        "ui/src/components/app-sidebar.test.ts",
-        "ui/src/pages/chat/chat-view.test.ts",
-        "ui/src/pages/chat/chat-pane-lifecycle.test.ts",
-        "ui/src/pages/usage/metrics.node.test.ts",
-      ],
-      shard_name: "cache-warm:ui-package",
-    },
+    uiGroup,
   ];
 }
 
@@ -2732,9 +2862,22 @@ function splitOversizedCompactGroup(
     (group.includePatterns?.length ?? 0) > storageStateFileLimit;
   const measuredProfileSeconds = estimateCompactGroupSeconds(group, runnerBackend);
   const measuredHostedSeconds = estimateCompactGroupSeconds(group, "github");
-  const splitTimingPrefix = `${group.shard_name}#selector-`;
-  const hasSplitTimingHistory = (["blacksmith", "github"] as const).some((profile) =>
-    Object.keys(readCompactGroupTimings(profile)).some((key) => key.startsWith(splitTimingPrefix)),
+  const parallelGateway = isParallelGatewayServerGroup(group);
+  // Whole parallel walls and sums of split invocations have different worker costs.
+  const splitTimingParent = `${compactGroupTimingKey(group)}${parallelGateway ? "-stripes" : ""}`;
+  const splitTimingPrefix = `${splitTimingParent}#selector-`;
+  const splitParentSeconds = {
+    blacksmith: parallelGateway
+      ? (readCompactGroupTimings("blacksmith")[splitTimingParent] ?? 0)
+      : 0,
+    github: parallelGateway ? (readCompactGroupTimings("github")[splitTimingParent] ?? 0) : 0,
+  };
+  const hasSplitTimingHistory = (["blacksmith", "github"] as const).some(
+    (profile) =>
+      splitParentSeconds[profile] > 0 ||
+      Object.keys(readCompactGroupTimings(profile)).some((key) =>
+        key.startsWith(splitTimingPrefix),
+      ),
   );
   if (
     !isCliProcess &&
@@ -2890,7 +3033,7 @@ function splitOversizedCompactGroup(
   let timingGeneration = createCompactSplitTimingGeneration({
     configs: group.configs,
     env: group.env,
-    parentShardName: group.shard_name,
+    parentShardName: splitTimingParent,
     stripes,
   });
   // The measured worker cutover changes timing identity, not admission budgets.
@@ -2899,7 +3042,7 @@ function splitOversizedCompactGroup(
     ? createCompactSplitTimingGeneration({
         configs: group.configs,
         env: { ...group.env, ...PINNED_COMPACT_GROUP_ENV },
-        parentShardName: group.shard_name,
+        parentShardName: splitTimingParent,
         stripes,
       })
     : undefined;
@@ -2907,9 +3050,11 @@ function splitOversizedCompactGroup(
     (selector): selector is string => selector !== undefined,
   );
   const completeBlacksmithSeconds = Math.max(
+    splitParentSeconds.blacksmith,
     ...selectors.map((selector) => readCompleteSplitGenerationSeconds("blacksmith", selector) ?? 0),
   );
   const completeHostedSeconds = Math.max(
+    splitParentSeconds.github,
     ...selectors.map((selector) => readCompleteSplitGenerationSeconds("github", selector) ?? 0),
   );
   const completeMeasuredSeconds =
@@ -2921,6 +3066,7 @@ function splitOversizedCompactGroup(
   if (
     !runtimePartition &&
     !exceedsStorageStateFileLimit &&
+    (!parallelGateway || completeMeasuredSeconds === 0) &&
     Math.max(splitSeconds, completeMeasuredSeconds) <= COMPACT_GITHUB_MAX_PREDICTED_SECONDS
   ) {
     return [{ group, seconds: profileSeconds }];
@@ -2930,7 +3076,7 @@ function splitOversizedCompactGroup(
     timingGeneration = createCompactSplitTimingGeneration({
       configs: group.configs,
       env: group.env,
-      parentShardName: group.shard_name,
+      parentShardName: splitTimingParent,
       stripes,
     });
   }
@@ -2945,10 +3091,40 @@ function splitOversizedCompactGroup(
     ? createCompactSplitTimingGeneration({
         configs: group.configs,
         env: { ...group.env, ...PINNED_COMPACT_GROUP_ENV },
-        parentShardName: group.shard_name,
+        parentShardName: splitTimingParent,
         stripes,
       }).timingKeys
     : [];
+  const gatewaySingletonWorkers = parallelGateway ? gatewayServerEffectiveWorkers(group) : 1;
+  const serialSeconds = parallelGateway
+    ? gatewayServerSerialSeconds(includePatterns, runnerBackend)
+    : 0;
+  const parallelWeight = includePatterns.reduce(
+    (sum, file) => sum + (gatewayServerSerialTestFiles.includes(file) ? 0 : weightForFile(file)),
+    0,
+  );
+  const mixedPhaseSeconds = (patterns: string[]) => {
+    const childSerialSeconds = gatewayServerSerialSeconds(patterns, runnerBackend);
+    const childParallelWeight = patterns.reduce(
+      (sum, file) => sum + (gatewayServerSerialTestFiles.includes(file) ? 0 : weightForFile(file)),
+      0,
+    );
+    if (parallelWeight === 0) {
+      return (
+        (Math.max(profileSeconds, distributedProfileSeconds) * childSerialSeconds) / serialSeconds
+      );
+    }
+    const fraction = childParallelWeight / parallelWeight;
+    const childWorkers = gatewayServerEffectiveWorkers({ ...group, includePatterns: patterns });
+    return (
+      childSerialSeconds +
+      Math.max(
+        (Math.max(0, profileSeconds - serialSeconds) * gatewaySingletonWorkers) / childWorkers,
+        Math.max(0, distributedProfileSeconds - serialSeconds),
+      ) *
+        fraction
+    );
+  };
   return stripes.map((patterns, index) => ({
     group: {
       ...group,
@@ -2960,9 +3136,14 @@ function splitOversizedCompactGroup(
     // Round once at the job boundary; per-child rounding can duplicate a build
     // when many small consumers together still fit one preparation budget.
     seconds: Math.max(
-      (distributedProfileSeconds *
-        patterns.reduce((seconds, file) => seconds + weightForFile(file), 0)) /
-        totalWeight,
+      serialSeconds > 0
+        ? mixedPhaseSeconds(patterns)
+        : (Math.max(
+            distributedProfileSeconds,
+            patterns.length === 1 ? profileSeconds * gatewaySingletonWorkers : 0,
+          ) *
+            patterns.reduce((seconds, file) => seconds + weightForFile(file), 0)) /
+            totalWeight,
       previousWorkerTimingKeys[index]
         ? estimateCompactStripeSeconds(
             { ...group, timing_key: previousWorkerTimingKeys[index] },
@@ -3226,6 +3407,7 @@ function createCompactNodeTestShardBundles(
     let plannedGroups =
       usesExpandedRunnerProfile(options.runnerBackend) ||
       COMPACT_BLACKSMITH_SPLIT_OWNERS.has(group.shard_name) ||
+      isParallelGatewayServerGroup(group) ||
       runtimePartition !== undefined ||
       (group.pretestBuildMode !== undefined && group.includePatterns === undefined)
         ? splitOversizedCompactGroup(

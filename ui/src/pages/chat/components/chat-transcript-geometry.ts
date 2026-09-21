@@ -56,15 +56,27 @@ export function measureConnectedTranscriptRows(
   }
   // Width changes and retired smooth commands can have undelivered sizes.
   // Ordinary row refs stay on TanStack's observer path; never clear its cache.
+  // Read one layout snapshot before compensation writes scroll offsets and
+  // invalidates skipped-row geometry for the remaining measurements.
+  const measurements = Array.from(
+    scrollElement.querySelectorAll<HTMLElement>(".chat-virtual-row"),
+    (row) => {
+      const index = virtualizer.indexFromElement(row);
+      // Rows are border-boxes; read fractional layout height without transforms.
+      const height = Number.parseFloat(getComputedStyle(row).height);
+      return { index, height: Number.isFinite(height) ? height : row.offsetHeight };
+    },
+  );
   let changed = false;
-  for (const row of scrollElement.querySelectorAll<HTMLElement>(".chat-virtual-row")) {
-    const index = virtualizer.indexFromElement(row);
-    // Rows are border-boxes; read their fractional layout height, not a scaled
-    // client rect when a containing board or sidebar is transitioning.
-    const height = Number.parseFloat(getComputedStyle(row).height);
+  for (const { index, height } of measurements) {
     const key = virtualizer.options.getItemKey(index);
     const previousSize = virtualizer.itemSizeCache.get(key);
-    virtualizer.resizeItem(index, Number.isFinite(height) ? height : row.offsetHeight);
+    // CSSOM rounds used heights more coarsely than ResizeObserver. Keep its
+    // fractional measurement instead of repeatedly compensating the same box.
+    if (previousSize !== undefined && Math.abs(previousSize - height) < 0.01) {
+      continue;
+    }
+    virtualizer.resizeItem(index, height);
     changed ||= virtualizer.itemSizeCache.get(key) !== previousSize;
   }
   return changed;
