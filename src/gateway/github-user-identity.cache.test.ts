@@ -77,24 +77,36 @@ describe("GitHub public identity metadata cache", () => {
   it("deduplicates concurrent metadata without caching Access verification or local profiles", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const gate = createDeferred();
+      const metadataStarted = createDeferred();
       const metadata = vi.fn<typeof fetch>().mockImplementation(async () => {
+        metadataStarted.resolve();
         await gate.promise;
         return jsonResponse({ id: 101, login: "ada", name: "Ada" });
       });
       const transport = stubIdentityFetch(metadata);
-      const pending = Promise.all([createAccessSync()(), createAccessSync()()]);
-      await vi.waitFor(() =>
-        expect(transport).toHaveBeenCalledTimes(metadata.mock.calls.length + 2),
-      );
-      gate.resolve();
-      const [first, second] = await pending;
-      expect(second.profileId).toBe(first.profileId);
-      expect(metadata).toHaveBeenCalledOnce();
-      setDisplayName(first.profileId, "Locally Edited");
-      await createAccessSync()();
-      expect(getUserProfileListItem(first.profileId).displayName).toBe("Locally Edited");
-      expect(metadata).toHaveBeenCalledOnce();
-      expect(transport).toHaveBeenCalledTimes(4);
+      const requests = [createAccessSync()(), createAccessSync()()] as const;
+      const pending = Promise.all(requests);
+      try {
+        await Promise.race([
+          metadataStarted.promise,
+          pending.then(() => {
+            throw new Error("Identity sync completed before the metadata request started");
+          }),
+        ]);
+        expect(transport).toHaveBeenCalledTimes(metadata.mock.calls.length + 2);
+        gate.resolve();
+        const [first, second] = await pending;
+        expect(second.profileId).toBe(first.profileId);
+        expect(metadata).toHaveBeenCalledOnce();
+        setDisplayName(first.profileId, "Locally Edited");
+        await createAccessSync()();
+        expect(getUserProfileListItem(first.profileId).displayName).toBe("Locally Edited");
+        expect(metadata).toHaveBeenCalledOnce();
+        expect(transport).toHaveBeenCalledTimes(4);
+      } finally {
+        gate.resolve();
+        await Promise.allSettled(requests);
+      }
     });
   });
 
