@@ -22,6 +22,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { initializeGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
+import type { PluginHookBeforeMessageWriteEvent } from "../../plugins/types.js";
 import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { createGatewayMethodRegistry } from "../methods/registry.js";
@@ -67,7 +68,7 @@ async function createHostedChildFixture(system = false) {
     pluginId: "child-custody-fixture",
     hookName: "before_message_write",
     source: "test",
-    handler: ({ message }) => {
+    handler: ({ message }: PluginHookBeforeMessageWriteEvent) => {
       if (message.role === "user") {
         beforeInputCommit();
       }
