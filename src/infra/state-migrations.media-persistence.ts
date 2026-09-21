@@ -3,7 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { resolveStateDir } from "../config/paths.js";
 import {
   decodeSessionArchiveBytes,
   encodeSessionArchiveContent,
@@ -583,11 +582,7 @@ export async function migrateLegacyMediaPersistence(
     const preparedDiscovery = prepareAgentDatabaseMigrationDiscovery({
       env,
       configuredAgentDatabaseTargets: params.configuredAgentDatabaseTargets ?? [],
-      deletionJournal:
-        params.preparedDiscovery?.stateDir === resolveStateDir(env) &&
-        params.preparedDiscovery.discovery.deletionJournal.status === "unavailable"
-          ? params.preparedDiscovery.discovery.deletionJournal
-          : undefined,
+      preparedDiscovery: params.preparedDiscovery,
     });
     const advisory = agentDatabaseMigrationAdvisory(preparedDiscovery.discovery);
     if (advisory) {
