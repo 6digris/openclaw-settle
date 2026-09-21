@@ -302,7 +302,7 @@ describe("gateway MCP tool grants", () => {
       await Promise.race([entered.promise, request]);
       expect(settled).toBe(false);
       release.resolve();
-      const { aux, pending, record } = await request;
+      const { pending, record } = await request;
       expect(await aux.pluginApprovalManager.resolve(record.id, "deny")).toBe(true);
       await pending;
     } finally {
