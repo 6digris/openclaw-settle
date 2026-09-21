@@ -27,17 +27,8 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
 
     func updateUIView(_ textView: ChatComposerUITextView, context: Context) {
         context.coordinator.parent = self
-        textView.isEditable = self.isEnabled
-        textView.isSelectable = self.isEnabled
         self.configureHistoryHandlers(textView)
-
-        // UIKit owns user-initiated focus. A false focus request is not a blur request;
-        // conflating the two cancels a tap before SwiftUI observes first-responder state.
-        if self.focusRequested, self.isEnabled, !textView.isFirstResponder {
-            textView.becomeFirstResponder()
-        } else if !self.isEnabled, textView.isFirstResponder {
-            textView.resignFirstResponder()
-        }
+        context.coordinator.scheduleEditorStateUpdate(textView)
 
         let isEcho = context.coordinator.lastReportedText == self.text
         if textView.isFirstResponder, isEcho {
@@ -54,6 +45,12 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
             textView.invalidateIntrinsicContentSize()
         }
         context.coordinator.lastReportedText = self.text
+    }
+
+    static func dismantleUIView(_ textView: ChatComposerUITextView, coordinator _: Coordinator) {
+        textView.delegate = nil
+        textView.onHistoryUp = nil
+        textView.onHistoryDown = nil
     }
 
     private func configureHistoryHandlers(_ textView: ChatComposerUITextView) {
@@ -79,9 +76,36 @@ struct ChatComposerTextViewIOS: UIViewRepresentable {
         var parent: ChatComposerTextViewIOS
         var isProgrammaticUpdate = false
         var lastReportedText: String?
+        private var isEditorStateUpdateScheduled = false
 
         init(_ parent: ChatComposerTextViewIOS) {
             self.parent = parent
+        }
+
+        func scheduleEditorStateUpdate(_ textView: ChatComposerUITextView) {
+            guard !self.isEditorStateUpdateScheduled else { return }
+            self.isEditorStateUpdateScheduled = true
+            // Disabling a focused UITextView implicitly resigns first responder. Doing
+            // that inside updateUIView re-enters SwiftUI's responder graph and can loop
+            // indefinitely. Coalesce updates outside the active graph transaction.
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self else { return }
+                self.isEditorStateUpdateScheduled = false
+                guard let textView, textView.delegate === self else { return }
+                let parent = self.parent
+                if textView.isEditable != parent.isEnabled {
+                    textView.isEditable = parent.isEnabled
+                }
+                if textView.isSelectable != parent.isEnabled {
+                    textView.isSelectable = parent.isEnabled
+                }
+                // UIKit owns user-initiated focus: false is not a blur request.
+                if parent.focusRequested, parent.isEnabled, !textView.isFirstResponder {
+                    textView.becomeFirstResponder()
+                } else if !parent.isEnabled, textView.isFirstResponder {
+                    textView.resignFirstResponder()
+                }
+            }
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {

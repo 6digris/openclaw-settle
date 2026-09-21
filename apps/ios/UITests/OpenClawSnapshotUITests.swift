@@ -579,6 +579,65 @@ final class OpenClawSnapshotUITests: XCTestCase {
         self.attachScreenshot(named: "voice-note-sent-after-stopping-response")
     }
 
+    func testLibraryPhotoSendWithFocusedComposerKeepsAppResponsive() throws {
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .phone, "Phone photo-send proof only")
+        self.executionTimeAllowance = 120
+        self.launchApp(
+            for: Self.chatScreenshotTarget,
+            additionalArguments: ["--openclaw-long-chat-fixture"])
+        let app = try XCTUnwrap(self.app)
+        let input = self.chatMessageInput(in: app)
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+
+        let attachments = app.buttons["chat-attachment-picker"]
+        XCTAssertTrue(attachments.waitForExistence(timeout: 5))
+        attachments.tap()
+        let photoLibrary = app.buttons["Photo Library"]
+        XCTAssertTrue(photoLibrary.waitForExistence(timeout: 5))
+        photoLibrary.tap()
+
+        // Seed this simulator with a synthetic photo using `xcrun simctl addmedia`.
+        // Use the real system picker so transfer, resizing, and composer staging run.
+        let photo = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
+        guard photo.waitForExistence(timeout: 10) else {
+            throw XCTSkip("Photos library has no images; seed one with `xcrun simctl addmedia`.")
+        }
+        photo.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let addPhoto = app.buttons.matching(NSPredicate(
+            format: "label == %@ OR label == %@ OR label BEGINSWITH %@", "Done", "Add", "Add (")).firstMatch
+        XCTAssertTrue(addPhoto.waitForExistence(timeout: 5))
+        XCTAssertTrue(addPhoto.isEnabled)
+        addPhoto.tap()
+
+        let stagedPhoto = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "photo-"))
+            .firstMatch
+        XCTAssertTrue(stagedPhoto.waitForExistence(timeout: 15), "Selected photo did not finish staging")
+        let prompt = "Describe the synthetic photo responsiveness fixture."
+        input.tap()
+        input.typeText(prompt)
+        XCTAssertEqual(input.value as? String, prompt)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        let send = app.buttons["chat-send-message"]
+        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        self.waitForEnabled(send)
+        self.attachScreenshot(named: "library-photo-before-send")
+        send.tap()
+
+        let reply = app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ AND label CONTAINS %@", "I can help with", prompt)).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 15), "Photo Send did not reach the fixture response")
+        input.tap()
+        input.typeText("Still responsive")
+        XCTAssertEqual(input.value as? String, "Still responsive")
+        self.attachScreenshot(named: "library-photo-after-send")
+
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+        try self.selectSidebarDestination("Settings")
+        XCTAssertTrue(app.descendants(matching: .any)["SettingsHub.Fallback"].waitForExistence(timeout: 8))
+        self.attachScreenshot(named: "library-photo-settings-responsive")
+    }
+
     func testKeyboardOpenPreservesTranscriptAndFollowsLiveEdgeAfterSend() throws {
         try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .phone, "Phone keyboard proof only")
         self.launchApp(
