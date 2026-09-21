@@ -46,11 +46,12 @@ const activationModule = resolveRuntimeWorkerUrl(updateExecutorEntrypoints.activ
 const program = `
   import fs from "node:fs";
   import assert from "node:assert/strict";
+  import {text} from "node:stream/consumers";
   import {setTimeout} from "node:timers/promises";
   import {withDelegatedUpdateCommandExecutor,withUpdateCommandExecutorChild,captureUpdateCommandExecutorAuthority,requiresRetainedUpdateCommandOwner,releaseUpdateCommandPreflightForHandoff} from ${JSON.stringify(ownerModule)};
   import {runUtf8CommandWithTimeout} from ${JSON.stringify(commandModule)};
   import {assertNoPendingPackageActivation} from ${JSON.stringify(activationModule)};
-  const input=JSON.parse(fs.readFileSync(0,"utf8"));
+  const input=JSON.parse(await text(process.stdin));
   await withDelegatedUpdateCommandExecutor(input.grant,input.grant.runId,input.grant.root,async(fence)=>{
     assert.deepEqual(captureUpdateCommandExecutorAuthority(fence),input.authority);
     assert.equal(requiresRetainedUpdateCommandOwner(fence),true);

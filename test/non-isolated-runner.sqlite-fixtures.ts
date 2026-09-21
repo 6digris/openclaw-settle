@@ -42,8 +42,29 @@ async function useReadPool() {
   }
 }
 `;
+  const taskStoreFixtures: Record<string, string> = {};
+  for (const generation of ["first", "second"]) {
+    taskStoreFixtures[`13-${generation === "first" ? "a" : "b"}-task-store.test.ts`] = `
+import path from "node:path";
+import { expect, it, vi } from "vitest";
+import { createTaskFixture } from ${source("tasks/task-registry.test-support.ts")};
+import { runOpenClawStateWriteTransaction } from ${source("state/openclaw-state-db.ts")};
+import { listTaskRegistryRecordsByRuntimeSourceIdFromSqlite } from ${source("tasks/task-registry.store.sqlite.ts")};
+it("persists task history through the ${generation} file's database owner", () => {
+  vi.stubEnv("OPENCLAW_STATE_DIR", path.join(import.meta.dirname, "task-state-${generation}"));
+  const sourceId = "cron-${generation}";
+  const task = runOpenClawStateWriteTransaction(() => createTaskFixture("cron", {
+    sourceId, runId: sourceId, task: "Keep task history in the current database generation",
+    scopeKind: "system", ownerKey: "", status: "succeeded", notifyPolicy: "silent",
+  }));
+  expect(listTaskRegistryRecordsByRuntimeSourceIdFromSqlite({ runtime: "cron", sourceId }))
+    .toEqual([expect.objectContaining({ taskId: task.taskId, status: "succeeded" })]);
+});
+`;
+  }
   return {
     ...stateReadPoolFixtureFiles(repoRoot),
+    ...taskStoreFixtures,
     "11-a-sqlite-owner.test.ts": `
 import { afterAll, expect, it, vi } from "vitest";
 import path from "node:path";
