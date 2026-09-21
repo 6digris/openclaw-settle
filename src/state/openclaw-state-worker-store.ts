@@ -343,6 +343,14 @@ function createSharedStateWorkerOwner() {
   return {
     close,
     retainOperation,
+    // Source and bundled callers must share the owner's backend URL.
+    openCleanup(databasePath: string, context: SqliteWorkerStateContext, assertOwned: () => void) {
+      return openSharedStateSqliteWorkerStore<OpenClawStateWorkerCleanupOperations>(
+        { ...captureRuntimeWorkerSource(moduleUrl), databasePath, existingOnly: true },
+        context,
+        assertOwned,
+      );
+    },
     async open(
       context: OpenClawStateWorkerContext,
       existingOnly = false,
@@ -554,11 +562,7 @@ export function openOpenClawStateWorkerCleanupStore(
   context: SqliteWorkerStateContext,
   assertOwned: () => void,
 ) {
-  return openSharedStateSqliteWorkerStore<OpenClawStateWorkerCleanupOperations>(
-    { ...captureRuntimeWorkerSource(moduleUrl), databasePath, existingOnly: true },
-    context,
-    assertOwned,
-  );
+  return owner().openCleanup(databasePath, context, assertOwned);
 }
 
 export async function executeOpenClawStateWorker<Key extends keyof OpenClawStateWorkerOperations>(
