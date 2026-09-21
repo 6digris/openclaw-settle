@@ -49,7 +49,10 @@ import {
   resolveEffectiveChatHistoryMaxChars,
   sanitizeChatHistoryMessages,
 } from "../chat-display-projection.js";
-import { createTestApprovalManager } from "../exec-approval-manager.test-support.js";
+import {
+  createPreparedTestApprovalManager,
+  createTestApprovalManager,
+} from "../exec-approval-manager.test-support.js";
 import type { HealthSummary } from "../health/types.js";
 import { createChatAbortMarker, createChatRunState } from "../server-chat-state.js";
 import { HEALTH_REFRESH_INTERVAL_MS } from "../server-constants.js";
@@ -93,19 +96,11 @@ function expectRecordFields(record: unknown, expected: Record<string, unknown>) 
 }
 
 function mockCallArg(mock: ReturnType<typeof vi.fn>, callIndex = 0, argIndex = 0) {
-  const call = mock.mock.calls[callIndex];
-  if (!call) {
-    throw new Error(`Expected mock call ${callIndex}`);
-  }
-  return call[argIndex];
+  return expectDefined(mock.mock.calls[callIndex], `mock call ${callIndex}`)[argIndex];
 }
 
 function lastMockCallArg(mock: ReturnType<typeof vi.fn>, argIndex = 0) {
-  const call = mock.mock.calls.at(-1);
-  if (!call) {
-    throw new Error("Expected mock call");
-  }
-  return call[argIndex];
+  return expectDefined(mock.mock.calls.at(-1), "last mock call")[argIndex];
 }
 
 type ChatHistoryTestRole = "assistant" | "custom" | "system" | "toolResult" | "user";
@@ -2784,6 +2779,7 @@ describe("exec approval handlers", () => {
   function createForwardingExecApprovalFixture(
     testContext: TestContext,
     opts?: {
+      manager?: Parameters<typeof createExecApprovalHandlers>[0];
       webPushDelivery?: {
         handleRequested: ReturnType<typeof vi.fn>;
         handleResolved: ReturnType<typeof vi.fn>;
@@ -2796,7 +2792,7 @@ describe("exec approval handlers", () => {
       };
     },
   ) {
-    const manager = createTestApprovalManager(testContext);
+    const manager = opts?.manager ?? createTestApprovalManager(testContext);
     const forwarder = {
       handleRequested: vi.fn(async () => false),
       handleResolved: vi.fn(async () => {}),
@@ -4181,10 +4177,12 @@ describe("exec approval handlers", () => {
 
   it("keeps approvals pending when iOS push delivery accepted the request", async (testContext) => {
     const iosPushDelivery = createIosPushDelivery();
+    const { manager: preparedManager } = await createPreparedTestApprovalManager(testContext);
     const { manager, handlers, forwarder, respond, context } = createForwardingExecApprovalFixture(
       testContext,
       {
         iosPushDelivery,
+        manager: preparedManager,
       },
     );
     const expireSpy = vi.spyOn(manager, "expire");
@@ -4370,10 +4368,11 @@ describe("exec approval handlers", () => {
   });
 
   it("keeps approvals pending when the originating chat can handle /approve directly", async (testContext) => {
+    const { manager: preparedManager } = await createPreparedTestApprovalManager(testContext);
     vi.useFakeTimers();
     try {
       const { manager, handlers, forwarder, respond, context } =
-        createForwardingExecApprovalFixture(testContext);
+        createForwardingExecApprovalFixture(testContext, { manager: preparedManager });
       const expireSpy = vi.spyOn(manager, "expire");
 
       const requestPromise = requestExecApproval({
