@@ -2,6 +2,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { listAgentIds, tryResolveLegacyCompatibilityAgentId } from "../agents/agent-scope.js";
 import { getRuntimeConfig } from "../config/io.js";
+import { operatorScopeSatisfied } from "../shared/operator-scope-compat.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
 import {
@@ -19,7 +20,7 @@ import {
   type AuthorizedGatewayHttpRequest,
   resolveOpenAiCompatibleHttpOperatorScopes,
 } from "./http-utils.js";
-import { authorizeOperatorScopesForMethod } from "./method-scopes.js";
+import { READ_SCOPE } from "./operator-scopes.js";
 
 type OpenAiModelsHttpOptions = {
   auth: ResolvedGatewayAuth;
@@ -100,9 +101,9 @@ export async function handleOpenAiModelsHttpRequest(
   }
 
   const requestedScopes = resolveOpenAiCompatibleHttpOperatorScopes(req, requestAuth);
-  const scopeAuth = authorizeOperatorScopesForMethod("models.list", requestedScopes);
-  if (!scopeAuth.allowed) {
-    sendMissingScopeForbidden(res, scopeAuth.missingScope);
+  // The compatibility catalog exposes global agent targets and keeps its general read floor.
+  if (!operatorScopeSatisfied(READ_SCOPE, requestedScopes)) {
+    sendMissingScopeForbidden(res, READ_SCOPE);
     return true;
   }
 

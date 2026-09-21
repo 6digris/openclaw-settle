@@ -80,6 +80,7 @@ export function resolveDraftModelControls(params: {
   const modelCatalogState: ChatModelCatalogState = {
     // Agent defaults and the catalog hydrate independently; both must identify this draft.
     hasSnapshot: agent !== undefined && metadata.hasSnapshot,
+    initialized: !metadata.retired && (metadata.initialized ?? metadata.hasSnapshot),
     refreshFailed: metadata.refreshFailed,
     pendingProviders: metadata.pendingProviders,
     modelSelectionPolicy: policy,
@@ -216,6 +217,19 @@ export function resolveDraftModelUnavailableReason(params: {
     : resolveChatModelUnavailableReason(model, undefined, metadata.catalog);
 }
 
+export function isDraftAccountModelAvailable(
+  account: { model: string; provider: string },
+  catalog: ModelCatalogEntry[],
+  agentRuntime?: string,
+): boolean {
+  const target = resolveDraftModelTarget(account.model, undefined, catalog, agentRuntime);
+  return (
+    target?.entry?.available === true &&
+    target.entry.manualSelectionAllowed !== false &&
+    target.provider === account.provider
+  );
+}
+
 export function resolveDraftModelSelectionBlockedReason(params: {
   model: string;
   agentRuntime?: string;
@@ -227,7 +241,11 @@ export function resolveDraftModelSelectionBlockedReason(params: {
   metadataPending: boolean;
 }): string | undefined {
   const { metadata, model, agentRuntime } = params;
-  if (metadata.retired || params.initialModelPending) {
+  if (
+    metadata.retired ||
+    params.initialModelPending ||
+    (!metadata.hasSnapshot && Boolean(model || agentRuntime))
+  ) {
     return t(
       metadata.status === "error"
         ? "chat.modelControls.modelsUnavailable"

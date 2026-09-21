@@ -16,6 +16,7 @@ type ChatModelSetupState = {
   agentModel?: string | null;
   modelSelectionPolicy?: ModelCatalogResult["modelSelectionPolicy"];
   catalogRetired?: boolean;
+  catalogInitialized?: boolean;
 };
 
 export function resolveChatModelSetup(
@@ -28,7 +29,9 @@ export function resolveChatModelSetup(
   const policy = state.modelSelectionPolicy;
   const model = policy?.restricted
     ? resolveChatModelOverrideValue(state) || policy.defaultModel
-    : (state.activeSession?.model ?? state.agentModel);
+    : state.catalogInitialized === false
+      ? undefined
+      : (state.activeSession?.model ?? state.agentModel);
   return {
     modelSetupRequired: requiresChatModelSetup(state),
     modelUnavailableBanner: chatModelUnavailableBanner(
@@ -38,6 +41,7 @@ export function resolveChatModelSetup(
       state.onSetup,
       {
         retired: state.catalogRetired === true,
+        initialized: state.catalogInitialized,
         error: state.catalogError,
         modelSelectionPolicy: policy,
       },
@@ -49,6 +53,7 @@ export function requiresChatModelSetup(state: ChatModelSetupState): boolean {
   if (
     state.catalog ||
     state.catalogRetired ||
+    state.catalogInitialized === false ||
     state.modelSelectionPolicy?.restricted ||
     !state.connected ||
     !state.agentsLoaded ||
@@ -78,11 +83,12 @@ function chatModelUnavailableBanner(
   onSetup: () => void,
   catalogState?: {
     retired: boolean;
+    initialized?: boolean;
     error: string | null;
     modelSelectionPolicy?: ModelCatalogResult["modelSelectionPolicy"];
   },
 ): ChatComposerDisabledBanner | undefined {
-  if (catalogState?.retired) {
+  if (catalogState?.retired || (catalogState?.initialized === false && !model)) {
     return {
       kind: "above-composer",
       text: t(

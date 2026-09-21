@@ -102,13 +102,17 @@ enum AppKitTestSupport {
         _ button: AnyObject,
         in window: NSWindow,
         waitForDismissal: Bool = false,
+        requireCompositedPopup: Bool = false,
         file: StaticString = #fileID,
         line: UInt = #line,
         inspect: @escaping (NSMenu) throws -> Void) async throws
     {
         let role: NSAccessibility.Role? = button.accessibilityRole?()
         let controlType = String(reflecting: type(of: button))
-        let tracking = AppKitTestMenuTracking(waitForDismissal: waitForDismissal, inspect: inspect)
+        let tracking = AppKitTestMenuTracking(
+            waitForDismissal: waitForDismissal,
+            requireCompositedPopup: requireCompositedPopup,
+            inspect: inspect)
         tracking.start()
         defer { tracking.stop() }
         try Task.checkCancellation()
@@ -302,6 +306,7 @@ private final class AppKitTestMenuTracking: NSObject {
     let inspect: (NSMenu) throws -> Void
     let expiresAt: ContinuousClock.Instant
     let waitForDismissal: Bool
+    let requireCompositedPopup: Bool
     private(set) var observed = false
     private(set) var inspectionCompleted = false
     private(set) var timedOut = false
@@ -317,9 +322,14 @@ private final class AppKitTestMenuTracking: NSObject {
         self.inspectionCompleted && (!self.waitForDismissal || self.dismissalObserved)
     }
 
-    init(waitForDismissal: Bool, inspect: @escaping (NSMenu) throws -> Void) {
+    init(
+        waitForDismissal: Bool,
+        requireCompositedPopup: Bool,
+        inspect: @escaping (NSMenu) throws -> Void)
+    {
         self.inspect = inspect
         self.waitForDismissal = waitForDismissal
+        self.requireCompositedPopup = requireCompositedPopup
         self.expiresAt = ContinuousClock.now + .seconds(Self.timeout)
     }
 
@@ -363,11 +373,11 @@ private final class AppKitTestMenuTracking: NSObject {
         }
         // AppKit tracks menus in a nested run loop; inspect and cancel in that mode too.
         let inspection = Timer(
-            timeInterval: 0,
+            timeInterval: self.requireCompositedPopup ? 0.02 : 0,
             target: self,
             selector: #selector(self.inspectMenu),
             userInfo: nil,
-            repeats: false)
+            repeats: self.requireCompositedPopup)
         self.inspection = inspection
         for mode in [RunLoop.Mode.eventTracking, .common] {
             RunLoop.main.add(inspection, forMode: mode)
@@ -394,14 +404,22 @@ private final class AppKitTestMenuTracking: NSObject {
             self.expire()
             return
         }
-        // didBeginTracking can precede Window Server publication, even when NSApp reports a visible window.
-        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], 0)
-            as? [[String: Any]] ?? []
-        guard windows.contains(where: {
-            $0[kCGWindowOwnerPID as String] as? Int32 == ProcessInfo.processInfo.processIdentifier &&
-                $0[kCGWindowLayer as String] as? Int == NSWindow.Level.popUpMenu.rawValue
-        }) else { return }
+        guard NSApp.windows.contains(where: { $0.level == .popUpMenu && $0.isVisible }) else { return }
+        if self.requireCompositedPopup {
+            // Window Server publication can follow the last AppKit update; retry within the same menu deadline.
+            let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], 0)
+                as? [[String: Any]] ?? []
+            guard windows.contains(where: { window in
+                guard window[kCGWindowOwnerPID as String] as? Int32 == ProcessInfo.processInfo.processIdentifier,
+                      window[kCGWindowLayer as String] as? Int == NSWindow.Level.popUpMenu.rawValue,
+                      let fields = window[kCGWindowBounds as String] as? [String: Any],
+                      let bounds = CGRect(dictionaryRepresentation: fields as CFDictionary)
+                else { return false }
+                return !bounds.isEmpty
+            }) else { return }
+        }
         self.inspectionStarted = true
+        self.inspection?.invalidate()
         defer {
             self.inspectionCompleted = true
             if !self.waitForDismissal || self.error != nil {

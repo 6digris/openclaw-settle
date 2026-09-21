@@ -151,6 +151,23 @@ describe("operator model discovery at registered reads", () => {
         "primary",
       ]);
 
+      const tentative = structuredClone(f.cfg);
+      delete expectDefined(tentative.gateway?.roles?.definitions.visitor, "tentative role")
+        .modelPolicy;
+      f.context.getRuntimeConfig = () => tentative;
+      f.context.getCommittedRuntimeConfig = () => f.cfg;
+      for (const view of ["default", "configured", "all", "provider-config"]) {
+        expect((await read("models.list", view)).models.map(({ id }) => id).toSorted()).toEqual([
+          "fallback",
+          "primary",
+        ]);
+      }
+      expect((await read("chat.metadata")).models.map(({ id }) => id).toSorted()).toEqual([
+        "fallback",
+        "primary",
+      ]);
+      f.context.getRuntimeConfig = () => f.cfg;
+
       f.role.modelPolicy = {
         sourceAgent: "main",
         allow: ["example/primary", "example/fallback", "custom-choice"],
@@ -165,7 +182,7 @@ describe("operator model discovery at registered reads", () => {
       expect(custom.models.find(({ id }) => id === "custom")?.alias).toBe("custom-choice");
 
       const presentation = expectDefined(
-        prepareOperatorModelPresentation({ cfg: f.cfg, client: f.client }),
+        prepareOperatorModelPresentation({ cfg: f.cfg, policyConfig: f.cfg, client: f.client }),
         "restricted presentation",
       ).forAgent("main", catalog);
       const accountResult = {
@@ -246,7 +263,7 @@ describe("operator model discovery at registered reads", () => {
     });
   });
 
-  it("projects permitted startup and roster defaults without rewriting historical session models", async () => {
+  it("projects committed startup and roster defaults without rewriting historical session models", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const f = createFixture();
       expectDefined(f.cfg.agents?.defaults, "agent defaults").model = {
@@ -254,6 +271,14 @@ describe("operator model discovery at registered reads", () => {
         fallbacks: ["example/fallback"],
       };
       await state.writeConfig(f.cfg);
+      const tentative = structuredClone(f.cfg);
+      const tentativeRole = expectDefined(
+        tentative.gateway?.roles?.definitions.visitor,
+        "tentative role",
+      );
+      delete tentativeRole.modelPolicy;
+      f.context.getRuntimeConfig = () => tentative;
+      f.context.getCommittedRuntimeConfig = () => f.cfg;
       const scope = { agentId: "main", sessionKey: "agent:main:historical-model" };
       await upsertSessionEntryCore(scope, {
         sessionId: "historical-model",
@@ -287,6 +312,7 @@ describe("operator model discovery at registered reads", () => {
 
       // Roster reads also apply the model ceiling when the caller holds their registered read scope.
       f.role.scopes = [READ_SCOPE];
+      tentativeRole.scopes = [READ_SCOPE];
       f.client.connect.scopes = [READ_SCOPE];
       const agents = await f.request("agents.list", {});
       expect(agents).toHaveBeenCalledWith(

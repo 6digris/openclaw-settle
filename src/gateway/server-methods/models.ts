@@ -104,10 +104,11 @@ export const modelsHandlers: GatewayRequestHandlers = {
               models: projectSessionModelCatalog(scope, result.models, currentConfig),
             }
           : result;
-      const policy = prepareOperatorModelPresentation({ cfg: currentConfig, client })?.forAgent(
-        resolved.agentId,
-        projected.models,
-      );
+      const policy = prepareOperatorModelPresentation({
+        cfg: currentConfig,
+        policyConfig: context.getCommittedRuntimeConfig?.() ?? currentConfig,
+        client,
+      })?.forAgent(resolved.agentId, projected.models);
       respond(true, policy ? policy.catalog(projected) : projected, undefined);
     } catch (error) {
       if (error instanceof SessionMutationAuthorizationChangedError) {

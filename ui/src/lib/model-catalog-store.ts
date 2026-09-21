@@ -39,6 +39,7 @@ registerModelControlsEnglish();
 
 export type ChatModelCatalogState = {
   hasSnapshot: boolean;
+  initialized?: boolean;
   retired?: boolean;
   modelSelectionPolicy?: ModelCatalogResult["modelSelectionPolicy"];
   refreshFailed?: boolean;
@@ -92,20 +93,31 @@ export function resolveModelCatalogState(
     loading = false,
     error = null,
     retired = false,
+    initialized = true,
   }: {
     connected?: boolean;
     loading?: boolean;
     error?: string | null;
     retired?: boolean;
+    initialized?: boolean;
   } = {},
 ): ChatModelCatalogState {
   return {
-    hasSnapshot: !retired && (result.models.length > 0 || (!loading && !error)),
+    hasSnapshot: initialized && !retired && (result.models.length > 0 || (!loading && !error)),
+    initialized,
     retired,
     modelSelectionPolicy: result.modelSelectionPolicy,
     refreshFailed: result.refreshFailed,
     pendingProviders: result.pendingProviders,
-    status: !connected ? "offline" : error ? "error" : loading ? "loading" : "ready",
+    status: !connected
+      ? "offline"
+      : error
+        ? "error"
+        : loading
+          ? "loading"
+          : initialized
+            ? "ready"
+            : "idle",
   };
 }
 

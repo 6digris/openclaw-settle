@@ -30,6 +30,7 @@ type ChatModelSelectStateInput = {
   sessionsResult: SessionsListResult | null;
   modelSelectionPolicy?: ModelCatalogResult["modelSelectionPolicy"];
   catalogRetired?: boolean;
+  catalogInitialized?: boolean;
 };
 
 type ChatModelSelectOption = {
@@ -109,7 +110,7 @@ export function resolveChatModelOverrideValue(state: ChatModelSelectStateInput):
 }
 
 function resolveDefaultModelValue(state: ChatModelSelectStateInput): string {
-  if (state.catalogRetired) {
+  if (state.catalogRetired || state.catalogInitialized === false) {
     return "";
   }
   if (state.modelSelectionPolicy?.restricted) {

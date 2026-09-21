@@ -31,15 +31,17 @@ export function projectOperatorModelRead<
   },
 >(
   scope: {
-    context: Pick<GatewayRequestContext, "getRuntimeConfig">;
+    context: Pick<GatewayRequestContext, "getRuntimeConfig" | "getCommittedRuntimeConfig">;
     client: GatewayClient | null;
     agentId: string;
     catalog?: ModelCatalogEntry[];
   },
   result: T,
 ): T {
+  const cfg = scope.context.getRuntimeConfig();
   const policy = prepareOperatorModelPresentation({
-    cfg: scope.context.getRuntimeConfig(),
+    cfg,
+    policyConfig: scope.context.getCommittedRuntimeConfig?.() ?? cfg,
     client: scope.client,
   })?.forAgent(scope.agentId, scope.catalog);
   return policy
@@ -54,17 +56,23 @@ export function projectOperatorModelRead<
 /** Build after read preparation; responses consume current role and prepared metadata together. */
 export function prepareOperatorModelPresentation(params: {
   cfg: OpenClawConfig;
+  policyConfig: OpenClawConfig;
   client: GatewayClient | null;
   metadataSnapshot?: PluginMetadataSnapshot;
 }) {
-  const { cfg, client } = params;
-  const modelPolicy = resolveOperatorRolePolicy(client, cfg)?.modelPolicy;
+  const { cfg, policyConfig, client } = params;
+  // Catalog facts retain their runtime owner; permissions exclude tentative config activation.
+  const modelPolicy = resolveOperatorRolePolicy(client, policyConfig)?.modelPolicy;
   if (!modelPolicy) {
     return undefined;
   }
   const metadataSnapshot = params.metadataSnapshot ?? getGatewayPluginMetadataSnapshot();
   const manifestPlugins = metadataSnapshot ?? [];
-  const policy = prepareOperatorModelPolicy({ cfg, policy: modelPolicy, manifestPlugins });
+  const policy = prepareOperatorModelPolicy({
+    cfg: policyConfig,
+    policy: modelPolicy,
+    manifestPlugins,
+  });
   if (!policy) {
     return undefined;
   }

@@ -149,6 +149,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       agentModel: agentDefaultModel,
       modelSelectionPolicy: state.chatModelSelectionPolicy,
       catalogRetired: state.chatModelCatalogRetired,
+      catalogInitialized: state.chatModelCatalogInitialized,
       catalogError: state.chatModelCatalogError,
       onSetup: () => this.context.navigate("model-setup"),
     });

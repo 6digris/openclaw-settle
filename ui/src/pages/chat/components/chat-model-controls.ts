@@ -233,7 +233,8 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
   const catalog = prepareChatModelCatalog(props.modelCatalog);
   const policy = props.modelCatalogState?.modelSelectionPolicy;
   const retired = props.modelCatalogState?.retired === true;
-  const catalogOwnsChoices = retired || policy?.restricted === true;
+  const uninitialized = props.modelCatalogState?.initialized === false;
+  const catalogOwnsChoices = retired || uninitialized || policy?.restricted === true;
   const providerAuth = new Map<string, ChatModelProviderAuth>();
   const headingKey = (id: string) =>
     normalizeChatModelProviderGroupId(
@@ -270,6 +271,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
     sessionsResult: props.sessionsResult,
     modelSelectionPolicy: policy,
     catalogRetired: retired,
+    catalogInitialized: props.modelCatalogState?.initialized,
   });
   const currentOverride =
     !catalogOwnsChoices || (!retired && catalog.entry(rawCurrentOverride))
@@ -439,6 +441,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
     defaultModel &&
     (sessionModelPinned || policy?.restricted) &&
     !retired &&
+    !uninitialized &&
     !modelOptions.some((option) => option.isDefault)
   ) {
     modelOptions.unshift({
@@ -632,7 +635,8 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
           !props.modelSelectionLocked &&
           catalogLoadingWithoutSnapshot &&
           !selectionKnown,
-        onModelSetup: policy?.restricted || retired ? undefined : props.onModelSetup,
+        onModelSetup:
+          policy?.restricted || retired || uninitialized ? undefined : props.onModelSetup,
         onOpen: props.onModelPickerOpen,
         onOpenChange: props.onModelPickerOpenChange,
         onModelSelect: async (next, targetSessionKey, agentRuntime) =>

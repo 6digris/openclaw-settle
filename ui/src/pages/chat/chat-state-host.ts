@@ -79,6 +79,7 @@ export type ChatPageHost = ChatHost &
     chatModelSwitchPromises: Record<string, Promise<boolean>>;
     chatModelPickerOpenSessionKey?: string | null;
     chatModelCatalog: ModelCatalogEntry[];
+    chatModelCatalogInitialized?: boolean;
     chatModelCatalogError: string | null;
     chatModelCatalogRefreshFailed?: boolean;
     chatModelCatalogPendingProviders?: readonly string[];

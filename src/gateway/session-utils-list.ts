@@ -111,6 +111,7 @@ function buildSessionsListResult(
   params: Pick<SessionListFilterParams, "cfg" | "opts" | "modelCatalog">,
   list: SessionEntrySelection & { now: number; storePath: string },
   sessions: GatewaySessionRow[],
+  policyConfig: OpenClawConfig,
   client?: GatewayClient | null,
 ): SessionsListResult {
   const { cfg, opts, modelCatalog } = params;
@@ -133,7 +134,7 @@ function buildSessionsListResult(
   const policy =
     client === undefined
       ? undefined
-      : prepareOperatorModelPresentation({ cfg, client, metadataSnapshot })?.forAgent(
+      : prepareOperatorModelPresentation({ cfg, policyConfig, client, metadataSnapshot })?.forAgent(
           defaultsAgentId,
           defaultsCatalog,
         );
@@ -472,6 +473,7 @@ export async function listProjectedSessions(params: {
           prepared,
           { ...selection, now, storePath: prepared.storePath },
           sessions,
+          context?.getCommittedRuntimeConfig?.() ?? cfg,
           client,
         );
         if (client !== undefined) {

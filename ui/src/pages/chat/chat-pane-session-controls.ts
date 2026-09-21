@@ -173,6 +173,7 @@ export function renderChatPaneComposerControls(params: {
       loading: state.chatModelsLoading,
       error: state.chatModelCatalogError,
       retired: state.chatModelCatalogRetired,
+      initialized: state.chatModelCatalogInitialized,
     },
   );
   const thinkingLevelOverride = state.sessions.think(sessionKey, agentScope.agentId);

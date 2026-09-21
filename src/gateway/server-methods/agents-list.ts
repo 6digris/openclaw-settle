@@ -51,7 +51,11 @@ export const agentListHandler: GatewayRequestHandler = async ({
     respond(false, undefined, roleError);
     return;
   }
-  const policy = prepareOperatorModelPresentation({ cfg: currentConfig, client });
+  const policy = prepareOperatorModelPresentation({
+    cfg: currentConfig,
+    policyConfig: context.getCommittedRuntimeConfig?.() ?? currentConfig,
+    client,
+  });
   respond(
     true,
     policy

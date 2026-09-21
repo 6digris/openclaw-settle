@@ -288,6 +288,14 @@ export function isModelCatalogRetired(
   );
 }
 
+/** An accepted unrestricted receipt also covers another cold view on this connection. */
+export function hasUnrestrictedModelCatalogSnapshot(
+  client: ModelCatalogClient | null | undefined,
+): boolean {
+  const cache = client && modelCatalogCache.get(client);
+  return Boolean(cache?.entries.size && cache.requiresSnapshot === false);
+}
+
 /** Retire read eligibility while preserving the last accepted, scoped display snapshot. */
 export function invalidateModelCatalogCache(
   client: ModelCatalogClient,

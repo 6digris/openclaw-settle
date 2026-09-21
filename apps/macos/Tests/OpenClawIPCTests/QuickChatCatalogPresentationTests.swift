@@ -162,7 +162,7 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
             var button = try await self.guestModelButton(in: panel, model: model)
             var sceneBounds = CGRect.null
             try AppKitTestSupport.pointAtModelButton(button, in: panel)
-            try await AppKitTestSupport.openMenu(button, in: panel) { menu in
+            try await AppKitTestSupport.openMenu(button, in: panel, requireCompositedPopup: true) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-permitted")
                 sceneBounds = sceneBounds.union(try XCTUnwrap(Self.guestSceneBounds(panel: panel)).scene)
                 let choices = try XCTUnwrap(menu.items.first { $0.title == "Fixture" }?.submenu)
@@ -180,7 +180,7 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
             try await self.waitForModel { model.modelChoices.map(\.modelID) == ["custom"] && model.canUseModelControls }
             button = try await self.guestModelButton(in: panel, model: model)
             try AppKitTestSupport.pointAtModelButton(button, in: panel)
-            try await AppKitTestSupport.openMenu(button, in: panel) { menu in
+            try await AppKitTestSupport.openMenu(button, in: panel, requireCompositedPopup: true) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-null")
                 sceneBounds = sceneBounds.union(try XCTUnwrap(Self.guestSceneBounds(panel: panel)).scene)
                 XCTAssertFalse(menu.items.contains { $0.title == "Session default" })
@@ -219,7 +219,9 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
             try AppKitTestSupport.pointAtModelButton(button, in: panel)
             var dismissalError: Error?
             do {
-                try await AppKitTestSupport.openMenu(button, in: panel, waitForDismissal: true) { menu in
+                try await AppKitTestSupport.openMenu(
+                    button, in: panel, waitForDismissal: true, requireCompositedPopup: true)
+                { menu in
                     cue.label.stringValue = "PROOF · Resting menu; update signal pending"
                     cue.window.displayIfNeeded()
                     try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-open")
@@ -247,7 +249,7 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
             button = try await self.guestModelButton(in: panel, model: model)
             cue.label.stringValue = "PROOF · Catalog refresh failed"
             try AppKitTestSupport.pointAtModelButton(button, in: panel)
-            try await AppKitTestSupport.openMenu(button, in: panel) { menu in
+            try await AppKitTestSupport.openMenu(button, in: panel, requireCompositedPopup: true) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-invalidated")
                 self.assertGuestSceneContained(panel: panel, bounds: captureBounds)
                 XCTAssertTrue(menu.items.allSatisfy { $0.action == nil && $0.submenu == nil })
@@ -264,7 +266,7 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
             button = try await self.guestModelButton(in: panel, model: model)
             cue.label.stringValue = "PROOF · Catalog recovered"
             try AppKitTestSupport.pointAtModelButton(button, in: panel)
-            try await AppKitTestSupport.openMenu(button, in: panel) { menu in
+            try await AppKitTestSupport.openMenu(button, in: panel, requireCompositedPopup: true) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-recovered")
                 self.assertGuestSceneContained(panel: panel, bounds: captureBounds)
                 XCTAssertTrue(menu.items.contains { $0.title == "Session default" })
@@ -294,27 +296,40 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
     }
 
     private func guestModelButton(in panel: NSWindow, model: QuickChatModel) async throws -> AnyObject {
-        try await AppKitTestSupport.waitForAccessibilityElement(
-            in: panel, description: "the Model button after its owned panel settles")
-        { elements in
-            guard let content = panel.contentView, let screen = panel.screen else { return nil }
-            let fitting = content.fittingSize
-            guard fitting.width > 0, fitting.height > 0 else { return nil }
-            let target = QuickChatPlacement.barFrame(
-                contentSize: NSSize(width: fitting.width, height: ceil(fitting.height)),
-                visibleFrame: screen.visibleFrame)
-            guard let expected = try? AppKitTestSupport.screenCaptureRect(for: target),
-                  let actual = Self.guestSceneBounds(panel: panel)?.panel,
-                  abs(expected.minX - actual.minX) < 0.5,
-                  abs(expected.minY - actual.minY) < 0.5,
-                  abs(expected.width - actual.width) < 0.5,
-                  abs(expected.height - actual.height) < 0.5
-            else { return nil }
-            return elements.first {
-                let value: Any? = $0.accessibilityValue?()
-                return $0.accessibilityLabel?() == "Model" && $0.isAccessibilityEnabled?() == true &&
-                    value as? String == model.modelControlLabel
+        var previousGeometry: (panel: NSRect, content: NSRect, compositor: CGRect)?
+        var lastGeometry = "No owned geometry was observed"
+        do {
+            return try await AppKitTestSupport.waitForAccessibilityElement(
+                in: panel, description: "the Model button after its owned panel settles")
+            { elements in
+                guard let content = panel.contentView else { return nil }
+                let frame = panel.frame
+                let bounds = content.bounds
+                let actual = Self.guestSceneBounds(panel: panel)?.panel
+                lastGeometry = "panel=\(frame) content=\(bounds) WindowServer=\(String(describing: actual))"
+                guard !frame.isEmpty, !bounds.isEmpty,
+                      bounds.size == panel.contentRect(forFrameRect: frame).size,
+                      let expected = try? AppKitTestSupport.screenCaptureRect(for: frame),
+                      let actual, expected.integral == actual.integral
+                else {
+                    previousGeometry = nil
+                    return nil
+                }
+                // Applied panel and content geometry must remain stable across accessibility observations.
+                let previous = previousGeometry
+                previousGeometry = (frame, bounds, actual)
+                guard previous?.panel == frame, previous?.content == bounds, previous?.compositor == actual else {
+                    return nil
+                }
+                return elements.first {
+                    let value: Any? = $0.accessibilityValue?()
+                    return $0.accessibilityLabel?() == "Model" && $0.isAccessibilityEnabled?() == true &&
+                        value as? String == model.modelControlLabel
+                }
             }
+        } catch {
+            print("Guest panel readiness failed: \(lastGeometry)")
+            throw error
         }
     }
 

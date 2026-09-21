@@ -124,4 +124,86 @@ describe("New Session policy presentation", () => {
       }
     },
   );
+
+  it.each(["policy", "error"] as const)(
+    "withholds retained selection and default across a new connection until its first receipt (%s)",
+    async (outcome) => {
+      const previous = {
+        id: "previous",
+        name: "Previous model",
+        provider: "fixture",
+        available: true,
+      };
+      const first = contextWith([previous]);
+      const next = contextWith(models);
+      const wire = createDeferred<ModelCatalogResult>();
+      next.request.mockReturnValue(wire.promise);
+      const initialPublished = createDeferred();
+      const nextPublished = createDeferred();
+      let nextActive = false;
+      const control = new NewSessionModelControl(() => {
+        if (!nextActive && control.modelForSubmission() === "fixture/previous") {
+          initialPublished.resolve();
+        }
+        if (
+          nextActive &&
+          (outcome === "error"
+            ? control.modelSelectionBlockedReason(agent) === "Models unavailable"
+            : control.modelForSubmission() === "" &&
+              control.modelSelectionBlockedReason(agent) === undefined)
+        ) {
+          nextPublished.resolve();
+        }
+      });
+      try {
+        control.load(first.context, "main", true, {
+          agent,
+          preference: { model: "fixture/previous" },
+        });
+        await loadModelCatalog(first.context.gateway.snapshot.client!, scope);
+        await initialPublished.promise;
+        expect(control.modelForSubmission()).toBe("fixture/previous");
+        expect(
+          renderControl(control, first.context, "main", agent).querySelector(
+            '[data-chat-model-option="fixture/previous"]',
+          ),
+        ).not.toBeNull();
+
+        nextActive = true;
+        control.load(next.context, "main", true, { agent });
+        const pending = loadModelCatalog(next.context.gateway.snapshot.client!, scope);
+        expect(control.modelForSubmission()).toBe("fixture/previous");
+        expect(control.modelSelectionBlockedReason(agent)).toBe("Loading models…");
+        const waiting = renderControl(control, next.context, "main", agent);
+        expect(waiting.textContent).not.toContain("previous");
+        expect(waiting.textContent).not.toContain("Previous model");
+        expect(waiting.textContent).not.toContain("forbidden-default");
+        expect(waiting.querySelector("[data-chat-model-option]")).toBeNull();
+
+        if (outcome === "error") {
+          wire.reject(new Error("Catalog unavailable"));
+          await expect(pending).rejects.toThrow("Catalog unavailable");
+          await nextPublished.promise;
+          expect(control.modelSelectionBlockedReason(agent)).toBe("Models unavailable");
+          expect(renderControl(control, next.context, "main", agent).textContent).not.toContain(
+            "previous",
+          );
+        } else {
+          wire.resolve(restricted);
+          await pending;
+          await nextPublished.promise;
+          expect(control.modelForSubmission()).toBe("");
+          expect(control.modelSelectionBlockedReason(agent)).toBeUndefined();
+          const confirmed = renderControl(control, next.context, "main", agent);
+          expect(
+            confirmed.querySelector('[data-chat-model-option="fixture/permitted"]'),
+          ).not.toBeNull();
+          expect(confirmed.textContent).not.toContain("previous");
+        }
+      } finally {
+        wire.resolve(restricted);
+        control.reset();
+      }
+    },
+  );
 });

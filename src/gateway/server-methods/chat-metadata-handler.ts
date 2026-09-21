@@ -142,8 +142,10 @@ export async function handleChatMetadataRequest(
     const metadata = await context.readChatMetadata(scope);
     scope.draftAccountSelection?.assertCurrent();
     scope.assertCurrent?.();
+    const cfg = context.getRuntimeConfig();
     const policy = prepareOperatorModelPresentation({
-      cfg: context.getRuntimeConfig(),
+      cfg,
+      policyConfig: context.getCommittedRuntimeConfig?.() ?? cfg,
       client,
     })?.forAgent(scope.agentId, metadata.models);
     respond(true, policy ? policy.metadata(metadata) : metadata);

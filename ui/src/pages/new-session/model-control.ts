@@ -12,6 +12,7 @@ import { buildQualifiedChatModelValue } from "../../lib/chat/model-ref.ts";
 import { normalizeChatFastModeInput } from "../../lib/chat/model-select-state.ts";
 import { normalizeThinkingOptionValue } from "../../lib/chat/thinking.ts";
 import {
+  hasUnrestrictedModelCatalogSnapshot,
   invalidateModelCatalogCache,
   isModelCatalogRetired,
   type ModelCatalogReadScope,
@@ -30,6 +31,7 @@ import { CatalogTargetDiscovery } from "./catalog-target.ts";
 import type { DraftCloudProfile } from "./discovery.ts";
 import {
   reconcileDraftModelSelection,
+  isDraftAccountModelAvailable,
   resolveDraftDevicePlacementUnsupportedReason,
   resolveDraftCloudRuntimeUnsupportedReason,
   resolveDraftAgentRuntime,
@@ -171,7 +173,13 @@ export class NewSessionModelControl {
   }
 
   private updateMetadataState(next: NewSessionModelMetadata) {
-    this.metadataState = next;
+    this.metadataState = {
+      ...next,
+      initialized:
+        !next.retired &&
+        next.status !== "offline" &&
+        (next.hasSnapshot || hasUnrestrictedModelCatalogSnapshot(this.metadataClient)),
+    };
     this.notify();
   }
 
@@ -460,13 +468,13 @@ export class NewSessionModelControl {
   requiresModelSetup(
     state: Omit<
       Parameters<typeof requiresChatModelSetup>[0],
-      "modelSelectionPolicy" | "catalogRetired"
+      "modelSelectionPolicy" | "catalogRetired" | "catalogInitialized"
     >,
   ): boolean {
     return requiresChatModelSetup({
       ...state,
       modelSelectionPolicy: this.metadataState.modelSelectionPolicy,
-      catalogRetired: this.metadataState.retired,
+      catalogInitialized: this.metadataState.hasSnapshot && !this.metadataState.retired,
     });
   }
 
@@ -516,17 +524,7 @@ export class NewSessionModelControl {
     ) {
       return false;
     }
-    const target = resolveDraftModelTarget(
-      this.draftAccount.model,
-      undefined,
-      this.catalog,
-      this.agentRuntime,
-    );
-    return (
-      target?.entry?.available === true &&
-      target.entry.manualSelectionAllowed !== false &&
-      target.provider === this.draftAccount.provider
-    );
+    return isDraftAccountModelAvailable(this.draftAccount, this.catalog, this.agentRuntime);
   }
 
   private restorePreference() {
