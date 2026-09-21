@@ -1,7 +1,3 @@
-import { expect } from "vitest";
-import { markdownToIR } from "../../packages/markdown-core/src/ir.js";
-import type { ReplyPayload } from "../auto-reply/types.js";
-
 export const settledParagraph =
   "Another paragraph is visible before the next streaming update.\n\n";
 
@@ -66,54 +62,3 @@ export const blockDirectiveCases = [
     textOnly: true,
   },
 ] as const;
-
-export function expectRenderedCodeDelivery({
-  delivered,
-  assistantSnapshots,
-  chunks,
-  renderedCode,
-  continuationText,
-  phase,
-}: {
-  delivered: readonly ReplyPayload[];
-  assistantSnapshots: readonly string[];
-  chunks: readonly string[];
-  renderedCode: string;
-  continuationText: string;
-  phase: "streaming" | "final";
-}) {
-  // Delivery owns prepared Markdown; raw assistant events retain authored indentation.
-  const parts = delivered.map((payload) => markdownToIR(payload.text ?? ""));
-  const codeParts = parts.filter((part) => part.styles.length > 0);
-  expect(codeParts.map(({ text, styles }) => ({ text, styles }))).toEqual([
-    {
-      text: renderedCode,
-      styles: [{ start: 0, end: renderedCode.length, style: "code_block" }],
-    },
-  ]);
-  const codeIndex = parts.findIndex((part) => part.styles.length > 0);
-  expect(
-    parts
-      .slice(0, codeIndex)
-      .map((part) => part.text)
-      .join(" "),
-  ).toBe("Intro.");
-  const continuation = parts
-    .slice(codeIndex + 1)
-    .map((part) => part.text)
-    .join(" ");
-  expect(continuation).not.toBe("");
-  expect(continuation).toBe(
-    phase === "final"
-      ? continuationText.trimEnd()
-      : continuationText.trimEnd().slice(0, continuation.length),
-  );
-  expect(assistantSnapshots).toEqual(
-    chunks.map((_, index) =>
-      chunks
-        .slice(0, index + 1)
-        .join("")
-        .trimEnd(),
-    ),
-  );
-}

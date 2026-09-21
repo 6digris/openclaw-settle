@@ -4,6 +4,7 @@ import { consumeGoogleGenerateContentStream } from "../../packages/ai/src/provid
 import { createResponsesAssistantOutput } from "../../packages/ai/src/providers/openai-responses-shared.js";
 import { createAssistantOutput } from "../../packages/ai/src/transports/assistant-output.js";
 import { processResponsesStream } from "../../packages/ai/src/transports/openai-responses-stream-internal.js";
+import { markdownToIR } from "../../packages/markdown-core/src/ir.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import { isAudioPayload } from "../auto-reply/reply/agent-runner-helpers.js";
@@ -20,7 +21,6 @@ import { runAgentLoop } from "../plugin-sdk/agent-core.js";
 import { sanitizeUserFacingText } from "./embedded-agent-helpers/sanitize-user-facing-text.js";
 import {
   blockDirectiveCases,
-  expectRenderedCodeDelivery,
   settledParagraph,
 } from "./embedded-agent-subscribe.directive-delivery.block-code.test-support.js";
 import { inlineDirectiveCases } from "./embedded-agent-subscribe.directive-delivery.inline-code.test-support.js";
@@ -62,7 +62,6 @@ function createDeliveryHarness(
   options: { minChars?: number; blockReplyBreak?: "text_end" | "message_end" } = {},
 ) {
   const delivered: ReplyPayload[] = [];
-  const assistantSnapshots: string[] = [];
   const blocks: ReplyPayload[] = [];
   const record = (payload: ReplyPayload) => {
     delivered.push(structuredClone(payload));
@@ -88,18 +87,12 @@ function createDeliveryHarness(
   });
   return {
     delivered,
-    assistantSnapshots,
     blocks,
     pipeline,
     typing,
     handler,
     ...createSubscribedSessionHarness({
       runId: "run-directive-delivery",
-      onAgentEvent: (event) => {
-        if (event.stream === "assistant" && typeof event.data.text === "string") {
-          assistantSnapshots.push(event.data.text);
-        }
-      },
       onBlockReply: (payload) => {
         blocks.push(structuredClone(payload));
         return handler(payload);
@@ -208,7 +201,9 @@ const cases = [
   {
     name: "authored indented code after a drained paragraph",
     chunks: ["Intro.\n\n", "    const value = 1;\n    use(value);\n\n"],
-    renderedCode: "const value = 1;\nuse(value);\n",
+    marker: "const value = 1;\nuse(value);",
+    literal: true,
+    code: true,
   },
   ...inlineDirectiveCases,
   {
@@ -312,8 +307,7 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
     ...cases,
     ...(route === "responses prepared" ? prefixCorrectionCases : rawDirectiveCases),
   ])("preserves $name through the delivery handler", async (scenario) => {
-    const { delivered, assistantSnapshots, pipeline, typing, handler, emit, subscription } =
-      createDeliveryHarness();
+    const { delivered, pipeline, typing, handler, emit, subscription } = createDeliveryHarness();
     const hasAudio = "audioAsVoice" in scenario;
     const bufferAudioFirst = "bufferAudioFirst" in scenario;
     if (bufferAudioFirst) {
@@ -348,18 +342,17 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
         true,
       );
     };
-    const expectRenderedCode = (phase: "streaming" | "final") => {
-      if (!("renderedCode" in scenario)) {
+    const expectCodeContent = () => {
+      if (!("code" in scenario)) {
         return;
       }
-      expectRenderedCodeDelivery({
-        delivered,
-        assistantSnapshots,
-        chunks,
-        renderedCode: scenario.renderedCode,
-        continuationText: nextParagraph,
-        phase,
+      const codeBlocks = delivered.flatMap((payload) => {
+        const ir = markdownToIR(payload.text ?? "");
+        return ir.styles
+          .filter((span) => span.style === "code_block")
+          .map((span) => ir.text.slice(span.start, span.end));
       });
+      expect.soft(codeBlocks).toEqual([`${scenario.marker}\n`]);
     };
     const beforeEnd = createDeferred();
     const releaseTerminal = createDeferred();
@@ -477,9 +470,7 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
         );
       }
       const text = delivered.map((payload) => payload.text ?? "").join("");
-      if ("renderedCode" in scenario) {
-        expectRenderedCode("streaming");
-      } else if ("literal" in scenario) {
+      if ("literal" in scenario) {
         expect.soft(text).toContain(scenario.marker);
         if ("literalText" in scenario) {
           expect
@@ -522,6 +513,7 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
         );
       }
       expectOrdinaryContent("streaming");
+      expectCodeContent();
       releaseTerminal.resolve();
       await settled;
       await subscription.waitForPendingEvents();
@@ -546,7 +538,7 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
         );
       }
       expectOrdinaryContent("final");
-      expectRenderedCode("final");
+      expectCodeContent();
       if (hasAudio) {
         const audio = delivered.filter(isAudioPayload);
         expect(audio).toHaveLength(1);
