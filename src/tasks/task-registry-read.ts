@@ -1,7 +1,17 @@
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
-import { captureTaskRegistryReadFence } from "./task-registry-listener-state.js";
-import { cloneTaskRecord, selectTaskRecordsForOwnerTree } from "./task-registry-records.js";
+import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
+import {
+  captureTaskRegistryReadFence,
+  hasPendingTaskRegistryEvents,
+} from "./task-registry-listener-state.js";
+import {
+  cloneTaskRecord,
+  compareTasksNewestFirst,
+  listTasksFromIndex,
+  selectTaskRecordsForOwnerTree,
+} from "./task-registry-records.js";
 import {
   assertTaskRegistryOwnerCurrent,
   ensureTaskRegistryReadyAsync,
@@ -15,18 +25,23 @@ import {
   matchesScope,
   type PendingTaskRegistryMutation,
 } from "./task-registry.process-state.js";
-import { getTaskRegistryStore } from "./task-registry.store.js";
+import { getTaskRegistryStore, type TaskRegistryStore } from "./task-registry.store.js";
 import type { TaskRegistryMutationScope } from "./task-registry.store.types.js";
 import type { TaskRecord } from "./task-registry.types.js";
+import { taskMatchesRelatedSession } from "./task-session-identity.js";
 
 export type TaskRegistryRead = {
+  assertOwnerCurrent: () => void;
   assertCurrent: () => void;
   isTaskCurrent: (taskId: string) => boolean;
+  isTaskSettled: (taskId: string) => boolean;
   isChildSessionCurrent: (childSessionKey: string) => boolean;
   getTaskById: (taskId: string) => TaskRecord | undefined;
   getTasksByRunId: (runId: string) => TaskRecord[];
   listTaskRecordsForChildSessionKey: (childSessionKey: string) => TaskRecord[];
   listTaskRecordsForOwnerTree: (rootOwnerKeys: ReadonlySet<string>) => TaskRecord[];
+  listTasksForRelatedSessionKey: (sessionKey: string, sessionAgentId?: string) => TaskRecord[];
+  listTasksForAgentId: (agentId: string) => TaskRecord[];
 };
 
 function isTaskRegistryReadScopeCurrent(
@@ -57,7 +72,7 @@ function isTaskRegistryReadScopeCurrent(
   return [...projection.dirtyScopes].every((scope) => observed.has(scope) || !intersects(scope));
 }
 
-function isTaskRegistryReadIdentityCurrent(taskId: string): boolean {
+function isTaskRegistryReadCurrent(taskId: string, mode: "identity" | "settled"): boolean {
   const { projection } = getTaskRegistryProcessState();
   if (projection.pending.size === 0 && projection.dirtyScopes.size === 0) {
     return true;
@@ -65,7 +80,7 @@ function isTaskRegistryReadIdentityCurrent(taskId: string): boolean {
   const task = tasks.get(taskId);
   const preserved = new Set<TaskRegistryMutationScope>();
   for (const pending of projection.pending) {
-    if (pending.readIdentity === "preserved") {
+    if (mode === "identity" && pending.readIdentity === "preserved") {
       preserved.add(pending.scope);
     } else if (
       pending.scope.taskId === taskId ||
@@ -85,8 +100,14 @@ function isTaskRegistryReadIdentityCurrent(taskId: string): boolean {
   return true;
 }
 
+type TaskRegistryReadOwner = {
+  context: OpenClawStateWorkerContext;
+  store: TaskRegistryStore;
+  assertCurrent: () => void;
+};
+
 /** External readers join a fixed accepted prefix; persistence preparation must never use this fence. */
-export async function prepareTaskRegistryRead(): Promise<TaskRegistryRead | undefined> {
+export async function prepareTaskRegistryReadOwner(): Promise<TaskRegistryReadOwner> {
   const context = captureOpenClawStateWorkerContext();
   const store = getTaskRegistryStore();
   const fence = captureTaskRegistryReadFence(context.admission);
@@ -98,12 +119,24 @@ export async function prepareTaskRegistryRead(): Promise<TaskRegistryRead | unde
   if (errors.length > 1) {
     throw createSqliteLifecycleAggregateError(errors, "Task read preparation failed", errors[0]);
   }
-  assertTaskRegistryOwnerCurrent(context, store);
+  const assertCurrent = () => assertTaskRegistryOwnerCurrent(context, store);
+  assertCurrent();
+  return { context, store, assertCurrent };
+}
+
+export async function prepareTaskRegistryRead(
+  owner?: TaskRegistryReadOwner,
+): Promise<TaskRegistryRead | undefined> {
+  const {
+    context,
+    store,
+    assertCurrent: assertOwnerCurrent,
+  } = owner ?? (await prepareTaskRegistryReadOwner());
   if (!(await prepareTaskRegistryProjectionAsync(context, store, 3))) {
     return undefined;
   }
   const assertCurrent = () => {
-    assertTaskRegistryOwnerCurrent(context, store);
+    assertOwnerCurrent();
     if (getTaskRegistryProcessState().projection.dirty) {
       throw new Error("Task registry read projection is no longer ready");
     }
@@ -111,7 +144,7 @@ export async function prepareTaskRegistryRead(): Promise<TaskRegistryRead | unde
   assertCurrent();
   const isTaskCurrent = (taskId: string) => {
     assertCurrent();
-    return isTaskRegistryReadIdentityCurrent(taskId.trim());
+    return isTaskRegistryReadCurrent(taskId.trim(), "identity");
   };
   const readScope = (field: "runId" | "childSessionKey", value: string, ids: Iterable<string>) => {
     assertCurrent();
@@ -127,8 +160,13 @@ export async function prepareTaskRegistryRead(): Promise<TaskRegistryRead | unde
     });
   };
   return {
+    assertOwnerCurrent,
     assertCurrent,
     isTaskCurrent,
+    isTaskSettled(taskId) {
+      assertCurrent();
+      return !hasPendingTaskRegistryEvents(taskId) && isTaskRegistryReadCurrent(taskId, "settled");
+    },
     isChildSessionCurrent(childSessionKey) {
       assertCurrent();
       return isTaskRegistryReadScopeCurrent("childSessionKey", childSessionKey.trim());
@@ -165,6 +203,35 @@ export async function prepareTaskRegistryRead(): Promise<TaskRegistryRead | unde
         }
         return cloneTaskRecord(task);
       });
+    },
+    listTasksForRelatedSessionKey(sessionKey, sessionAgentId) {
+      assertCurrent();
+      const key = normalizeOptionalString(sessionKey);
+      if (!key) {
+        return [];
+      }
+      return listTasksFromIndex(tasks, taskIdsByRelatedSessionKey, key).filter((task) => {
+        if (!isTaskCurrent(task.taskId)) {
+          throw new Error("Task registry read identity requires preparation");
+        }
+        return taskMatchesRelatedSession(task, key, sessionAgentId);
+      });
+    },
+    listTasksForAgentId(agentId) {
+      assertCurrent();
+      const lookup = agentId.trim();
+      if (!lookup) {
+        return [];
+      }
+      return [...tasks.values()]
+        .filter((task) => task.agentId?.trim() === lookup)
+        .map((task) => {
+          if (!isTaskCurrent(task.taskId)) {
+            throw new Error("Task registry read identity requires preparation");
+          }
+          return cloneTaskRecord(task);
+        })
+        .toSorted(compareTasksNewestFirst);
     },
   };
 }

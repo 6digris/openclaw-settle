@@ -11,7 +11,7 @@ import {
 const suite = createNewSessionPageE2eSuite();
 
 suite.define(() => {
-  it.each([1, 2])("keeps setup selectors in two phone rows with %s agents", async (agentCount) => {
+  it.each([1, 2])("stacks phone setup selectors with %s agents", async (agentCount) => {
     await suite.withPage(
       { viewport: { width: 390, height: 844 }, hasTouch: true },
       async ({ page }) => {
@@ -78,15 +78,17 @@ suite.define(() => {
           const layout = await selectors.evaluateAll((buttons) =>
             buttons.map((button) => {
               const box = button.getBoundingClientRect();
+              // Flex/grid aligns the wrapper; inline button baselines can differ within one row.
+              const item = button.closest(".new-session-page__select")!.getBoundingClientRect();
               return {
-                row: Math.round(box.top + box.height / 2),
+                row: Math.round(item.top + item.height / 2),
                 left: box.left,
                 right: box.right,
                 height: box.height,
               };
             }),
           );
-          expect(new Set(layout.map((box) => box.row)).size).toBe(width <= 560 ? 2 : 1);
+          expect(new Set(layout.map((box) => box.row)).size).toBe(width <= 560 ? layout.length : 1);
           for (const [index, box] of layout.entries()) {
             expect(box.left).toBeGreaterThanOrEqual(0);
             expect(box.right).toBeLessThanOrEqual(width);

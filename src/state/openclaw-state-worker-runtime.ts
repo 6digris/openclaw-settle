@@ -20,9 +20,10 @@ import {
   patchConfigHealthEntryInDatabase,
   readConfigHealthSnapshotInDatabase,
 } from "../config/io.health-state.kernel.js";
-import { loadMutableCronStoreInWorker } from "../cron/store/load.worker.js";
-import { proposeCronRunRecoveryInWorker } from "../cron/store/run-recovery.worker.js";
-import { executeCronStoreSaveCommand } from "../cron/store/save.worker.js";
+import {
+  executeCronStateCommand,
+  isCronStateWorkerCommand,
+} from "../cron/store/dispatch.worker.js";
 import {
   acquireFleetCellOperationInDatabase,
   assertFleetCellOperationInDatabase,
@@ -32,21 +33,16 @@ import {
   reserveFleetCellInDatabase,
   updateFleetCellImageInDatabase,
 } from "../fleet/registry.kernel.js";
+import { readPendingRepositoryGitHubPublicationInDatabase } from "../gateway/github-repository-publication.kernel.js";
 import {
   readManagedImageRecordInDatabase,
   listManagedImageRecordEntriesInDatabase,
   listManagedImageOriginalMediaIdsInDatabase,
 } from "../gateway/managed-image-record-store.kernel.js";
+import { registerSessionGroupInDatabase } from "../gateway/session-group-registration.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
-import {
-  countFailedDeliveryQueueEntriesInDatabase,
-  pruneExpiredDeliveryQueueTombstonesInDatabase,
-} from "../infra/delivery-queue-sqlite.kernel.js";
+import * as deliveryQueue from "../infra/delivery-queue.worker.js";
 import * as deviceAuth from "../infra/device-auth-store.kernel.js";
-import { executeDeliveryQueueAck } from "../infra/outbound/delivery-queue-ack.worker.js";
-import { executeDeliveryQueueEnqueue } from "../infra/outbound/delivery-queue-enqueue.worker.js";
-import { loadDeliveryQueueMediaRetentionSnapshotInDatabase } from "../infra/outbound/delivery-queue-media-staging.kernel.js";
-import { executePendingDeliveryFailure } from "../infra/outbound/delivery-queue-pending-failure.worker.js";
 import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
 import {
   readApnsRegistrationFromDatabase,
@@ -54,6 +50,7 @@ import {
 } from "../infra/push-apns-store.js";
 import { readPersistedVapidKeyPairInDatabase } from "../infra/push-web-store.kernel.js";
 import { executeWebPushCommand } from "../infra/push-web-store.worker.js";
+import { isSessionDeliveryCommand } from "../infra/session-delivery-queue.worker-contract.js";
 import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
 import { createSqliteAuditRecordKernel } from "../infra/sqlite-audit-record.kernel.js";
 import {
@@ -71,6 +68,8 @@ import {
 } from "../infra/telemetry-store.kernel.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
+import { executePluginBlobCommand } from "../plugin-state/plugin-blob-store.worker.js";
+import { isPluginBlobWorkerCommand } from "../plugin-state/plugin-blob-worker-contract.js";
 import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
 import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
 import {
@@ -97,10 +96,11 @@ import {
 } from "../sessions/session-state-events.kernel.js";
 import { listWatchedSessionUpstreamLinksInDatabase } from "../sessions/session-upstream-links.kernel.js";
 import { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
+import * as skillWorkshop from "../skills/workshop/store.worker.js";
 import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contract.js";
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
-import { ensureMeetingTranscriptsSchema } from "../transcripts/sqlite-schema.js";
 import { executeTranscriptRead } from "../transcripts/store-worker-read.js";
+import { executeTranscriptWrite } from "../transcripts/store-worker-write.js";
 import {
   listAgentProvenanceInDatabase,
   readAgentProvenanceBatchInDatabase,
@@ -302,10 +302,14 @@ export function executeSharedStateCommand(
     return readDeferredPluginMigrations({
       path: context.databasePath,
       env: getSqliteWorkerStateContext().environment,
+      artifactPreservingReadOnly: command.input.artifactPreservingReadOnly,
     });
   }
   if (command.type === "claws.install-schema-versions") {
-    return withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+    const read = command.input.artifactPreservingReadOnly
+      ? withExistingOpenClawStateDatabaseArtifactPreservingReadOnly
+      : withExistingOpenClawStateDatabaseReadOnly;
+    return read(
       ({ db, path: pathname }) => {
         assertOpenClawStateDatabaseOwner(db, { pathname });
         return readClawInstallSchemaVersionRows(db);
@@ -346,6 +350,9 @@ export function executeSharedStateCommand(
       env: getSqliteWorkerStateContext().environment,
     });
   }
+  if (isPluginBlobWorkerCommand(command)) {
+    return executePluginBlobCommand(command, context.databasePath, open);
+  }
   if (isPluginStateWorkerCommand(command)) {
     return executePluginStateCommand(
       command,
@@ -381,10 +388,20 @@ export function executeSharedStateCommand(
       : read(open().db);
   }
   const database = open();
+  if (command.type === "githubRepository.personalPending") {
+    return readPendingRepositoryGitHubPublicationInDatabase(database.db, command.input);
+  }
+  if (skillWorkshop.isSkillWorkshopCommand(command)) {
+    return skillWorkshop.executeSkillWorkshopCommand(command, database, context.databasePath);
+  }
   if (command.type === "deviceAuth.list") {
     return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
   }
+  if (command.type === "transcripts.append" || command.type === "transcripts.writeSummary") {
+    return executeTranscriptWrite(command, { database, path: context.databasePath });
+  }
   switch (command.type) {
+    case "transcripts.readEntries":
     case "transcripts.sessionEntries":
     case "transcripts.matches":
     case "transcripts.session":
@@ -397,13 +414,7 @@ export function executeSharedStateCommand(
     case "transcripts.summarySnapshot":
     case "transcripts.utterances":
     case "transcripts.summary": {
-      ensureMeetingTranscriptsSchema({
-        database,
-        path: context.databasePath,
-        env: getSqliteWorkerStateContext().environment,
-        readOnly: command.input.readOnly,
-      });
-      return executeTranscriptRead(database.db, command);
+      return executeTranscriptRead({ database, path: context.databasePath }, command);
     }
     default:
       break;
@@ -444,39 +455,10 @@ export function executeSharedStateCommand(
   if (command.type === "sessionUpstream.listWatched") {
     return listWatchedSessionUpstreamLinksInDatabase(database.db);
   }
-  if (command.type === "cron.loadMutable") {
-    return loadMutableCronStoreInWorker(database, command.input.storeKey);
+  if (isCronStateWorkerCommand(command)) {
+    return executeCronStateCommand(command, database);
   }
-  if (command.type === "cron.proposeRunRecovery") {
-    return proposeCronRunRecoveryInWorker(database, command.input);
-  }
-  if (command.type === "cron.save" || command.type === "cron.saveChanges") {
-    return executeCronStoreSaveCommand(command, database);
-  }
-  if (command.type === "deliveryQueue.countFailed") {
-    return countFailedDeliveryQueueEntriesInDatabase(database);
-  }
-  if (command.type === "deliveryQueue.pruneTombstones") {
-    return pruneExpiredDeliveryQueueTombstonesInDatabase(database);
-  }
-  if (command.type === "deliveryQueue.mediaRetentionSnapshot") {
-    return loadDeliveryQueueMediaRetentionSnapshotInDatabase(database, command.input);
-  }
-  if (
-    command.type === "sessionDelivery.enqueue" ||
-    command.type === "sessionDelivery.enqueueClaimed" ||
-    command.type === "sessionDelivery.releaseClaim" ||
-    command.type === "sessionDelivery.defer" ||
-    command.type === "sessionDelivery.advanceAgentRun" ||
-    command.type === "sessionDelivery.mergePreparedMedia" ||
-    command.type === "sessionDelivery.markAttemptStarted" ||
-    command.type === "sessionDelivery.markSettlement" ||
-    command.type === "sessionDelivery.complete" ||
-    command.type === "sessionDelivery.fail" ||
-    command.type === "sessionDelivery.load" ||
-    command.type === "sessionDelivery.list" ||
-    command.type === "sessionDelivery.moveToFailed"
-  ) {
+  if (isSessionDeliveryCommand(command)) {
     return executeSessionDeliveryCommand(command, database);
   }
   const writeOptions = {
@@ -484,17 +466,14 @@ export function executeSharedStateCommand(
     path: context.databasePath,
     env: getSqliteWorkerStateContext().environment,
   };
-  if (command.type === "deliveryQueue.ack") {
-    return executeDeliveryQueueAck(command.input, writeOptions);
+  if (command.type === "sessionGroups.register") {
+    return registerSessionGroupInDatabase(database, command.input.name, writeOptions.env);
   }
-  if (command.type === "deliveryQueue.failPending") {
-    return executePendingDeliveryFailure(command.input, writeOptions);
+  if (deliveryQueue.isDeliveryQueueCommand(command)) {
+    return deliveryQueue.executeDeliveryQueueCommand(command, writeOptions);
   }
   if (command.type === "skillUploads.commit") {
     return commitSkillUploadInDatabase(command.input, writeOptions);
-  }
-  if (command.type === "deliveryQueue.enqueue") {
-    return executeDeliveryQueueEnqueue(command.input, writeOptions);
   }
   if (
     command.type === "deviceAuth.store" ||

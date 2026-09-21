@@ -18,6 +18,7 @@ import {
 import {
   createInMemoryTaskRegistryStore,
   createInMemoryTaskFlowRegistryStore,
+  reconcileTaskFlowRestoreForTests,
 } from "../test-utils/task-registry-store.js";
 import { ensureTaskRuntimeStateReady } from "./runtime-internal.js";
 import { createAcpTaskBackingDetail } from "./task-backing-records.js";
@@ -154,7 +155,7 @@ function identityRestoreFixture(kind: "task" | "flow", options?: { sameIdentity?
         async withSnapshotAsync(context, consume) {
           loads.push(selected(context));
           await beforeSnapshot(context);
-          return consume(taskRestoreResult(stores.task(context).loadSnapshot()));
+          return consume(taskRestoreResult(stores.task(context).loadSnapshot()), async () => {});
         },
       },
       observers: {
@@ -205,6 +206,40 @@ function identityRestoreFixture(kind: "task" | "flow", options?: { sameIdentity?
 }
 
 describe("asynchronous registry restoration", () => {
+  it.each(["native", "worker"] as const)(
+    "leaves legacy task identifiers to Doctor during %s hydration, including after database close",
+    async (mode) => {
+      const runId = ` \t${task.runId}\n`;
+      const childSessionKey = "\u00a0agent:main:legacy-child\u00a0";
+      upsertTaskWithDeliveryStateToSqlite({
+        task,
+        deliveryState: { taskId: task.taskId, lastNotifiedEventAt: 12 },
+      });
+      const { db } = openOpenClawStateDatabase();
+      db.prepare("UPDATE task_runs SET run_id = ?, child_session_key = ? WHERE task_id = ?").run(
+        runId,
+        childSessionKey,
+        task.taskId,
+      );
+      const readRows = () => {
+        const { db: current } = openOpenClawStateDatabase();
+        return {
+          tasks: current.prepare("SELECT * FROM task_runs ORDER BY task_id").all(),
+          delivery: current.prepare("SELECT * FROM task_delivery_state ORDER BY task_id").all(),
+        };
+      };
+      const before = readRows();
+      for (let generation = 0; generation < 2; generation += 1) {
+        await closeOpenClawStateDatabaseAsync();
+        if (mode === "worker") {
+          await ensureTaskRegistryReadyAsync(captureOpenClawStateWorkerContext());
+        }
+        expect(getTaskById(task.taskId)).toMatchObject({ runId, childSessionKey });
+        expect(readRows()).toEqual(before);
+      }
+    },
+  );
+
   it("reads one complete flow snapshot for a synchronous run lookup after close", async () => {
     upsertTaskFlowRegistryRecordToSqlite({
       ...flow,
@@ -244,7 +279,7 @@ describe("asynchronous registry restoration", () => {
     "refreshes a flow write pending %s after synchronous snapshot installation",
     async (when) => {
       const store = createInMemoryTaskFlowRegistryStore({ flows: new Map([[flow.flowId, flow]]) });
-      const loadSnapshot = vi.fn(() => store.loadSnapshot());
+      const loadSnapshot = vi.fn(store.loadSnapshot);
       const release = createDeferred();
       const context = captureOpenClawStateWorkerContext();
       let pending: Promise<void> | undefined;
@@ -277,6 +312,8 @@ describe("asynchronous registry restoration", () => {
           currentStep: "pending mutation",
         });
         expect(loadSnapshot).toHaveBeenCalledTimes(2);
+        expect(loadSnapshot).toHaveBeenNthCalledWith(1);
+        expect(loadSnapshot).toHaveBeenNthCalledWith(2, [flow.flowId]);
       } finally {
         release.resolve();
         await pending;
@@ -388,17 +425,20 @@ describe("asynchronous registry restoration", () => {
         ...store,
         async withSnapshotAsync(_context, consume) {
           loads += 1;
-          return consume({
-            ...taskRestoreResult(store.loadSnapshot()),
-            flowSyncs: [
-              {
-                taskId: task.taskId,
-                flowId: flow.flowId,
-                kind: "result",
-                result: { ok: true, flow },
-              },
-            ],
-          });
+          return consume(
+            {
+              ...taskRestoreResult(store.loadSnapshot()),
+              flowSyncs: [
+                {
+                  taskId: task.taskId,
+                  flowId: flow.flowId,
+                  kind: "result",
+                  result: { ok: true, flow },
+                },
+              ],
+            },
+            () => reconcileTaskFlowRestoreForTests(context, [flow.flowId]),
+          );
         },
       },
       observers: { onEvent: (event) => observed.push(event.kind) },
@@ -461,17 +501,20 @@ describe("asynchronous registry restoration", () => {
           loads += 1;
           started.resolve();
           await release.promise;
-          return consume({
-            ...taskRestoreResult(store.loadSnapshot()),
-            flowSyncs: [
-              {
-                taskId: task.taskId,
-                flowId: flow.flowId,
-                kind: "result",
-                result: { ok: true, flow: { ...flow, revision: 1 } },
-              },
-            ],
-          });
+          return consume(
+            {
+              ...taskRestoreResult(store.loadSnapshot()),
+              flowSyncs: [
+                {
+                  taskId: task.taskId,
+                  flowId: flow.flowId,
+                  kind: "result",
+                  result: { ok: true, flow: { ...flow, revision: 1 } },
+                },
+              ],
+            },
+            () => reconcileTaskFlowRestoreForTests(context, [flow.flowId]),
+          );
         },
       },
       observers: {
@@ -531,7 +574,7 @@ describe("asynchronous registry restoration", () => {
             if (outcome === "failure") {
               throw failure;
             }
-            return consume(taskRestoreResult(snapshot));
+            return consume(taskRestoreResult(snapshot), async () => {});
           },
         },
       });
@@ -588,19 +631,22 @@ describe("asynchronous registry restoration", () => {
               started.resolve();
               await release.promise;
             }
-            return consume({
-              ...taskRestoreResult(store.loadSnapshot()),
-              flowSyncs: settled
-                ? [
-                    {
-                      taskId: task.taskId,
-                      flowId: flow.flowId,
-                      kind: "result",
-                      result: { ok: true, flow: committedFlow },
-                    },
-                  ]
-                : [],
-            });
+            return consume(
+              {
+                ...taskRestoreResult(store.loadSnapshot()),
+                flowSyncs: settled
+                  ? [
+                      {
+                        taskId: task.taskId,
+                        flowId: flow.flowId,
+                        kind: "result",
+                        result: { ok: true, flow: committedFlow },
+                      },
+                    ]
+                  : [],
+              },
+              () => reconcileTaskFlowRestoreForTests(context, settled ? [flow.flowId] : []),
+            );
           },
         },
         observers: {
@@ -645,7 +691,7 @@ describe("asynchronous registry restoration", () => {
             started.resolve();
             await release.promise;
           }
-          return consume(taskRestoreResult(snapshot));
+          return consume(taskRestoreResult(snapshot), async () => {});
         },
       },
     });
@@ -674,7 +720,7 @@ describe("asynchronous registry restoration", () => {
           if (fail) {
             throw new Error("synthetic storage failure");
           }
-          return consume(taskRestoreResult(store.loadSnapshot()));
+          return consume(taskRestoreResult(store.loadSnapshot()), async () => {});
         },
       },
     });

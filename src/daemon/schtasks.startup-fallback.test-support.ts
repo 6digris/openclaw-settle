@@ -5,7 +5,6 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
 import type { GatewayServiceRuntime } from "./service-runtime.js";
@@ -149,42 +148,6 @@ function createSpawnChild(error?: Error): ChildProcess {
   return child;
 }
 
-function resolveStartupEntryPath(env: Record<string, string>, extension = "cmd") {
-  const taskName = env.OPENCLAW_WINDOWS_TASK_NAME ?? "OpenClaw Gateway";
-  return path.join(
-    expectDefined(env.APPDATA, "env.APPDATA test invariant"),
-    "Microsoft",
-    "Windows",
-    "Start Menu",
-    "Programs",
-    "Startup",
-    `${taskName}.${extension}`,
-  );
-}
-
-async function writeStartupFallbackEntry(env: Record<string, string>, extension = "cmd") {
-  const startupEntryPath = resolveStartupEntryPath(env, extension);
-  await fs.mkdir(path.dirname(startupEntryPath), { recursive: true });
-  await fs.writeFile(startupEntryPath, "@echo off\r\n", "utf8");
-  return startupEntryPath;
-}
-
-async function writeNodeScript(env: Record<string, string>, port = "18789") {
-  const scriptPath = resolveTaskScriptPath(env);
-  await fs.mkdir(path.dirname(scriptPath), { recursive: true });
-  await fs.writeFile(
-    scriptPath,
-    [
-      "@echo off",
-      `set "OPENCLAW_SERVICE_KIND=node"`,
-      `set "OPENCLAW_GATEWAY_PORT=${port}"`,
-      `"C:\\bin\\openclaw.cmd" node run --host 127.0.0.1 --port ${port}`,
-      "",
-    ].join("\r\n"),
-    "utf8",
-  );
-}
-
 const NODE_PROCESS_QUERY =
   "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress";
 
@@ -314,7 +277,15 @@ function expectNoGatewayTermination() {
 }
 
 function addMissingTaskInstallResponses(responses: NativeResponse[]): void {
-  queueNativeResponses({ code: 1, stdout: "", stderr: "not found" }, ...responses);
+  taskProbe.mockReturnValueOnce({ status: 1, stdout: "-2147024894" });
+  queueNativeResponses(
+    { code: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified." },
+    ...responses.flatMap((response, index) =>
+      index === 0 && "code" in response && response.code === 0
+        ? [response, { code: 0, stdout: "", stderr: "" }]
+        : [response],
+    ),
+  );
 }
 
 function addStartupFallbackMissingResponses(extraResponses: NativeResponse[] = []) {
@@ -485,9 +456,6 @@ export {
   readServiceStatusSummary,
   getStatusOverviewRowValue,
   createSpawnChild,
-  resolveStartupEntryPath,
-  writeStartupFallbackEntry,
-  writeNodeScript,
   NODE_PROCESS_QUERY,
   writeRunningGatewayScript,
   makeNodeServiceEnv,

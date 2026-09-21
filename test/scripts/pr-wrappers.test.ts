@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  constants as fsConstants,
   cpSync,
   existsSync,
   mkdirSync,
@@ -14,7 +15,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { delimiter, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { isGraphqlQuotaExhausted } from "../../scripts/pr-lib/gh-api-preflight.mjs";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import {
   REVIEWED_HEAD,
@@ -25,6 +27,8 @@ import {
 import { copyPrWrapperSources, linkPrWrapperDependencies } from "./pr-wrapper.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const templateDirs = useAutoCleanupTempDirTracker(afterAll);
+const fixtureTemplates = new Map<string, ReturnType<typeof createMismatchedWrapperTemplate>>();
 
 function readScript(path: string): string {
   return readFileSync(path, "utf8");
@@ -33,6 +37,87 @@ function readScript(path: string): string {
 const anchorSubstitutionNotice = (repo: string) =>
   `scripts/pr wrapper in this worktree differs from origin/main; running the canonical checkout's wrapper (matches the origin/main trust anchor): ${repo}`;
 const itPosix = process.platform === "win32" ? it.skip : it;
+
+describe("GraphQL primary quota fallback", () => {
+  const message = "API rate limit already exceeded for user ID 123.";
+  const errorBody = (type = "RATE_LIMITED", detail = message) =>
+    JSON.stringify({ errors: [{ type, message: detail }] });
+  const response = (body: string, headers = "", status = 200) =>
+    `HTTP/2.0 ${status} Response\r\nX-RateLimit-Resource: graphql\r\nX-RateLimit-Remaining: 0\r\n${headers}\r\n${body}`;
+
+  it.each(["RATE_LIMIT", "RATE_LIMITED"])(
+    "recognizes the original %s response with and without headers",
+    (type) => {
+      const body = errorBody(type);
+      for (const stdout of [body, response(body), Buffer.from(response(body))]) {
+        expect(isGraphqlQuotaExhausted({ status: 1, stdout })).toBe(true);
+      }
+    },
+  );
+  it.each([
+    { stdout: response(JSON.stringify({ message }), "", 403) },
+    { stderr: `gh: ${message}\n` },
+    { stderr: Buffer.from("gh: API rate limit exceeded for fixture-user (HTTP 403)\n") },
+  ])("recognizes native gh primary exhaustion: %j", (failure) => {
+    expect(isGraphqlQuotaExhausted({ status: 1, ...failure })).toBe(true);
+  });
+  it.each([
+    {
+      name: "secondary throttle",
+      stdout: errorBody("RATE_LIMITED", "You have exceeded a secondary rate limit."),
+    },
+    { name: "abuse detection", stderr: "gh: You have triggered an abuse detection mechanism." },
+    { name: "retry-after", stdout: response(errorBody(), "Retry-After: 60\r\n") },
+    { name: "malformed retry-after", stdout: response(errorBody(), "Retry-After: unknown\r\n") },
+    {
+      name: "remaining primary budget",
+      stdout: response(errorBody()).replace("Remaining: 0", "Remaining: 50"),
+    },
+    {
+      name: "core exhaustion",
+      stdout: response(errorBody()).replace("Resource: graphql", "Resource: core"),
+    },
+    ...[401, 407, 429, 500, 503].map((status) => ({
+      name: `HTTP ${status}`,
+      stdout: response(errorBody(), "", status),
+    })),
+    { name: "generic forbidden", stderr: "gh: Resource not accessible by integration (HTTP 403)" },
+    { name: "plain 429", stderr: `gh: ${message} (HTTP 429)` },
+    {
+      name: "plain proxy failure",
+      stderr: 'Post "https://api.github.com/graphql": Proxy Authentication Required',
+    },
+    { name: "transport failure", code: "ETIMEDOUT", stderr: `gh: ${message}` },
+    { name: "interrupted response", signal: "SIGTERM", stdout: errorBody() },
+    { name: "successful final unit", status: 0, stdout: response(errorBody()) },
+    { name: "malformed response", stdout: "{", stderr: `gh: ${message}` },
+    { name: "malformed framed response", stdout: response("{"), stderr: `gh: ${message}` },
+    {
+      name: "ambiguous typed error",
+      stdout: JSON.stringify({ errors: [{ type: "RATE_LIMITED" }] }),
+    },
+    {
+      name: "mixed GraphQL errors",
+      stdout: JSON.stringify({
+        errors: [
+          { type: "RATE_LIMITED", message },
+          { type: "FORBIDDEN", message: "Access denied" },
+        ],
+      }),
+    },
+    {
+      name: "data named after quota",
+      stdout: JSON.stringify({ data: { message, type: "RATE_LIMITED" } }),
+    },
+    {
+      name: "supplemental quota",
+      message: "Supplemental quota probe: graphql 0/5000",
+      stdout: JSON.stringify({ resources: { graphql: { remaining: 0 } } }),
+    },
+  ])("does not authorize fallback for $name", ({ name: _name, ...failure }) => {
+    expect(isGraphqlQuotaExhausted({ status: 1, ...failure })).toBe(false);
+  });
+});
 
 function isolatedWrapperEnv(root: string) {
   const home = join(root, "home");
@@ -53,15 +138,35 @@ function isolatedWrapperEnv(root: string) {
   };
 }
 
-function makeMismatchedWrapperRepo({
-  realModules = false,
-  dispatchBody = 'echo "canonical wrapper executed";',
-  toolingOnly = false,
-} = {}) {
-  const root = tempDirs.make("openclaw-pr-dev-wrapper-");
+function createWrapperGit(fixtureEnv: ReturnType<typeof isolatedWrapperEnv>) {
+  return (cwd: string, args: string[]) => {
+    const result = spawnSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...fixtureEnv,
+        // Template copies must not race detached object-store maintenance.
+        GIT_CONFIG_PARAMETERS: "'maintenance.auto=false' 'gc.auto=0'",
+      },
+      stdio: "pipe",
+    });
+    expect(result.status, `git ${args.join(" ")}\n${result.stderr}`).toBe(0);
+    return result;
+  };
+}
+
+function createMismatchedWrapperTemplate({
+  realModules,
+  dispatchBody,
+  toolingOnly,
+}: {
+  realModules: boolean;
+  dispatchBody: string;
+  toolingOnly: boolean;
+}) {
+  const root = templateDirs.make("openclaw-pr-dev-wrapper-template-");
   const bin = join(root, "bin");
   const canonicalPath = join(root, "canonical");
-  const linkedPath = join(root, "linked");
   const originPath = join(root, "origin.git");
   mkdirSync(bin, { recursive: true });
   // This fixture exercises wrapper trust routing, not the host command inventory.
@@ -80,16 +185,7 @@ function makeMismatchedWrapperRepo({
   chmodSync(ghStub, 0o755);
 
   const fixtureEnv = isolatedWrapperEnv(root);
-  const git = (cwd: string, args: string[]) => {
-    const result = spawnSync("git", args, {
-      cwd,
-      encoding: "utf8",
-      env: fixtureEnv,
-      stdio: "pipe",
-    });
-    expect(result.status, `git ${args.join(" ")}\n${result.stderr}`).toBe(0);
-    return result;
-  };
+  const git = createWrapperGit(fixtureEnv);
 
   git(root, ["init", "--bare", "-b", "main", originPath]);
   git(root, ["init", "-b", "main", canonicalPath]);
@@ -131,6 +227,38 @@ function makeMismatchedWrapperRepo({
   git(canonical, ["add", "."]);
   git(canonical, ["commit", "-m", "test: canonical wrapper"]);
   git(canonical, ["push", "-u", "origin", "main"]);
+  // Pack once so private fixture copies do not repeat thousands of loose files.
+  git(canonical, ["repack", "-ad"]);
+  git(origin, ["repack", "-ad"]);
+  return { canonical, origin, bin };
+}
+
+function makeMismatchedWrapperRepo({
+  realModules = false,
+  dispatchBody = 'echo "canonical wrapper executed";',
+  toolingOnly = false,
+} = {}) {
+  const options = { realModules, dispatchBody, toolingOnly };
+  const key = JSON.stringify(options);
+  let template = fixtureTemplates.get(key);
+  if (!template) {
+    template = createMismatchedWrapperTemplate(options);
+    fixtureTemplates.set(key, template);
+  }
+  const root = tempDirs.make("openclaw-pr-dev-wrapper-");
+  const bin = join(root, "bin");
+  const canonical = join(root, "canonical");
+  const origin = join(root, "origin.git");
+  const linkedPath = join(root, "linked");
+  const fixtureEnv = isolatedWrapperEnv(root);
+  const git = createWrapperGit(fixtureEnv);
+  // Copy private object stores before creating worktrees, whose absolute
+  // back-links must refer to this fixture. No refs or mutable files are shared.
+  const copyOptions = { recursive: true, mode: fsConstants.COPYFILE_FICLONE };
+  cpSync(template.bin, bin, copyOptions);
+  cpSync(template.canonical, canonical, copyOptions);
+  cpSync(template.origin, origin, copyOptions);
+  git(canonical, ["remote", "set-url", "origin", origin]);
   git(canonical, ["worktree", "add", "-b", "feature", linkedPath, "main"]);
 
   const linked = realpathSync(linkedPath);

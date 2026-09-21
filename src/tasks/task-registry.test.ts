@@ -1,7 +1,6 @@
 // Covers task registry lifecycle, delivery, notification, and query behavior.
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AcpSessionStoreEntry } from "../acp/runtime/session-meta.js";
 import { startAcpSpawnParentStreamRelay } from "../agents/subagents/spawn/acp-spawn-parent-stream.js";
 import { resetCronActiveJobs } from "../cron/active-jobs.js";
 import { emitAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
@@ -71,7 +70,6 @@ import {
   findTaskByRunId,
   getTaskById,
   isParentFlowLinkError,
-  listTasksForAgentId,
   listTasksForOwnerKey,
   listTasksForRelatedSessionKey,
   listTaskRecords,
@@ -83,6 +81,7 @@ import {
   resolveTaskForLookupToken,
   updateTaskNotifyPolicyById,
 } from "./task-registry.js";
+import { registerTaskRegistryScheduledMaintenanceTests } from "./task-registry.maintenance-scheduling.test-utils.js";
 import {
   configureTaskRegistryMaintenance,
   getInspectableTaskAuditFindings,
@@ -93,7 +92,6 @@ import {
   resetTaskRegistryMaintenanceRuntimeForTests,
   reconcileInspectableTasks,
   runTaskRegistryMaintenance,
-  setTaskRegistryMaintenanceRuntimeForTests,
   startTaskRegistryMaintenance,
   stopTaskRegistryMaintenance,
   sweepTaskRegistry,
@@ -109,6 +107,7 @@ import {
   createAcpTaskRecord,
   createTaskFixture,
   createTerminalSubagentKillResult,
+  flushAsyncWork,
   withTaskRegistryTempDir,
 } from "./task-registry.test-support.js";
 import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
@@ -222,12 +221,6 @@ function createSessionBindingRecord(
 
 function waitForAssertion(assertion: () => void, timeoutMs = 2_000, stepMs = 5) {
   return waitForFast(assertion, { timeout: timeoutMs, interval: stepMs });
-}
-
-async function flushAsyncWork(times = 4) {
-  for (let index = 0; index < times; index += 1) {
-    await Promise.resolve();
-  }
 }
 
 function expectRecordFields(record: unknown, expected: Record<string, unknown>) {
@@ -440,8 +433,6 @@ describe("task-registry", () => {
   it("sweeps one expired plugin-state batch per maintenance pass after restart", async () => {
     await withTaskRegistryTempDir(async () => {
       try {
-        vi.useFakeTimers();
-        vi.setSystemTime(1_000);
         const store = createPluginStateKeyedStore<{ value: string }>("fixture-plugin", {
           namespace: "maintenance-restart",
           maxEntries: 10,
@@ -459,27 +450,27 @@ describe("task-registry", () => {
               .where("entry_key", "=", "expired"),
           ),
         ).toEqual({ ttlMs: 100 });
-        // The worker owns registration time; seed expiry for the maintenance clock separately.
+        // Seed expired rows without waiting for the worker's registration TTL.
+        const expiresAt = Date.now() - 100;
         seedPluginStateEntriesForTests([
           {
             pluginId: "fixture-plugin",
             namespace: "maintenance-restart",
             key: "expired",
             value: { value: "stale" },
-            expiresAt: 1_100,
+            expiresAt,
           },
           ...Array.from({ length: 2_049 }, (_, index) => ({
             pluginId: "fixture-plugin",
             namespace: "maintenance-restart",
             key: `expired-${index}`,
             value: { index },
-            expiresAt: 1_100,
+            expiresAt,
           })),
         ]);
 
         // Close plugin-state's process-local handle while preserving the shared SQLite file.
         resetPluginStateStoreForTests();
-        vi.setSystemTime(1_200);
         const countExpiredRows = () => {
           const database = openOpenClawStateDatabase();
           const row = executeSqliteQueryTakeFirstSync(
@@ -499,8 +490,8 @@ describe("task-registry", () => {
         await runTaskRegistryMaintenance();
         expect(countExpiredRows()).toBe(2);
 
-        expect(sweepExpiredPluginStateEntries()).toBe(2);
-        expect(sweepExpiredPluginStateEntries()).toBe(0);
+        expect(await sweepExpiredPluginStateEntries()).toBe(2);
+        expect(await sweepExpiredPluginStateEntries()).toBe(0);
       } finally {
         resetPluginStateStoreForTests();
       }
@@ -2961,40 +2952,6 @@ describe("task-registry", () => {
     });
   });
 
-  it("infers agent ids for session-scoped tasks", async () => {
-    await withTaskRegistryTempDir(async () => {
-      const created = createTaskFixture("cli", {
-        ownerKey: undefined,
-        scopeKind: undefined,
-        taskKind: "video_generation",
-        sourceId: "video_generate:openai",
-        requesterSessionKey: "agent:main:discord:direct:123",
-        childSessionKey: "agent:main:discord:direct:123",
-        runId: "tool:video_generate:agent-index",
-        task: "Generate a lobster video",
-        notifyPolicy: "silent",
-      });
-
-      expect(created.agentId).toBe("main");
-      expect(listTasksForAgentId("main").map((task) => task.taskId)).toEqual([created.taskId]);
-    });
-  });
-
-  it("uses the child session agent for cross-agent background task attribution", async () => {
-    await withTaskRegistryTempDir(async () => {
-      const created = createTaskFixture("subagent", {
-        childSessionKey: "agent:worker:subagent:child",
-        runId: "run-worker-subagent",
-        task: "Inspect worker state",
-        deliveryStatus: "pending",
-      });
-
-      expect(created.agentId).toBe("worker");
-      expect(listTasksForAgentId("worker").map((task) => task.taskId)).toEqual([created.taskId]);
-      expect(listTasksForAgentId("main")).toEqual([]);
-    });
-  });
-
   it("retains removed background exec tasks until the process exits", async () => {
     const [
       { isBackgroundExecSessionActive },
@@ -3602,112 +3559,7 @@ describe("task-registry", () => {
     });
   });
 
-  it("prunes expired ended TaskFlows during scheduled maintenance", async () => {
-    await withTaskRegistryTempDir(
-      async () => {
-        vi.useFakeTimers();
-        const endedAt = Date.now() - 8 * 24 * 60 * 60_000;
-        const flow = createManagedTaskFlow({
-          ownerKey: "agent:main:main",
-          controllerId: "tests/scheduled-task-flow-maintenance",
-          goal: "Completed without a usable result",
-          status: "blocked",
-          createdAt: endedAt,
-          updatedAt: endedAt,
-          endedAt,
-        });
-        resetTaskRegistryForTests({ persist: false });
-        resetTaskFlowRegistryForTests({ persist: false });
-
-        try {
-          startTaskRegistryMaintenance();
-          await vi.advanceTimersByTimeAsync(5_000);
-          await waitForFast(() => expect(getTaskFlowById(flow.flowId)).toBeUndefined());
-        } finally {
-          stopTaskRegistryMaintenance();
-        }
-      },
-      { durableStore: true },
-    );
-  });
-
-  it("keeps scheduled maintenance root-admitted until session cleanup inspection settles", async () => {
-    await withTaskRegistryTempDir(async () => {
-      vi.useFakeTimers();
-      let releaseInspection = (_entries: AcpSessionStoreEntry[]) => {};
-      const inspection = new Promise<AcpSessionStoreEntry[]>((resolve) => {
-        releaseInspection = resolve;
-      });
-      configureTaskRegistryMaintenanceRuntimeForTest({
-        currentTasks: new Map(),
-        snapshotTasks: [],
-        listAcpSessionEntries: async () => await inspection,
-      });
-
-      startTaskRegistryMaintenance();
-      await vi.advanceTimersByTimeAsync(5_000);
-      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(1));
-
-      releaseInspection([]);
-      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
-      stopTaskRegistryMaintenance();
-    });
-  });
-
-  it("does not leak unhandled rejections when the scheduled maintenance sweep fails", async () => {
-    await withTaskRegistryTempDir(async () => {
-      vi.useFakeTimers();
-
-      const unhandled: unknown[] = [];
-      const onUnhandledRejection = (reason: unknown) => {
-        unhandled.push(reason);
-      };
-      process.on("unhandledRejection", onUnhandledRejection);
-
-      setTaskRegistryMaintenanceRuntimeForTests({
-        listAcpSessionEntries: async () => [],
-        readAcpSessionEntry: () => ({
-          cfg: {} as never,
-          storePath: "",
-          sessionKey: "",
-          storeSessionKey: "",
-          entry: undefined,
-          storeReadFailed: false,
-        }),
-        listSessionEntries: () => [],
-        resolveStorePath: () => "",
-        parseAgentSessionKey: () => null,
-        isCronJobActive: () => false,
-        getAgentRunContext: () => undefined,
-        hasActiveAcpTurn: () => false,
-        hasActiveTaskForChildSessionKey: () => false,
-        deleteTaskRecordById: () => false,
-        ensureTaskRegistryReady: () => {},
-        getTaskById: () => undefined,
-        getTaskRegistryMaintenanceTask: () => undefined,
-        getTaskRegistryMaintenanceSnapshot: () => {
-          throw new Error("maintenance boom");
-        },
-        listTaskRecords: () => [],
-        markTaskLostById: () => null,
-        markTaskTerminalById: () => null,
-        maybeDeliverTaskTerminalUpdate: async () => null,
-        resolveTaskForLookupToken: () => undefined,
-        setTaskCleanupAfterById: () => null,
-        isRuntimeAuthoritative: () => true,
-        listTaskRegistryRecordsByRuntimeSourceIdFromSqlite: () => [],
-      });
-
-      try {
-        startTaskRegistryMaintenance();
-        await vi.advanceTimersByTimeAsync(5_000);
-        await flushAsyncWork();
-        expect(unhandled).toStrictEqual([]);
-      } finally {
-        process.off("unhandledRejection", onUnhandledRejection);
-      }
-    });
-  });
+  registerTaskRegistryScheduledMaintenanceTests();
 
   it.each(["closing", "retained"] as const)(
     "keeps sweep membership fixed when %s retention changes during awaited cleanup",

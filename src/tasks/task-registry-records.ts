@@ -202,10 +202,6 @@ export function isEquivalentTaskRecord(current: TaskRecord, next: TaskRecord): b
   return isDeepStrictEqual(fields(current), fields(next));
 }
 
-export function snapshotTaskRecords(source: ReadonlyMap<string, TaskRecord>): TaskRecord[] {
-  return [...source.values()].map((record) => cloneTaskRecord(record));
-}
-
 /** Observer notifications need detached metadata, never runtime-owned detail. */
 export function cloneTaskRecordForObserver(record: TaskRecord): Omit<TaskRecord, "detail"> {
   const { detail: _detail, executionOwner: _executionOwner, ...snapshot } = record;
@@ -366,6 +362,8 @@ export function buildTaskRecordForCreate(
     scopeKind,
   });
   const lastEventAt = params.lastEventAt ?? params.startedAt ?? now;
+  const runId = normalizeOptionalString(params.runId);
+  const childSessionKey = normalizeOptionalString(params.childSessionKey);
   const record: TaskRecord = normalizeTaskTimestamps({
     taskId,
     ...(params.executionOwner ? { executionOwner: { ...params.executionOwner } } : {}),
@@ -375,12 +373,12 @@ export function buildTaskRecordForCreate(
     requesterSessionKey,
     ownerKey,
     scopeKind,
-    childSessionKey: params.childSessionKey,
+    ...(childSessionKey ? { childSessionKey } : {}),
     parentFlowId: normalizeOptionalString(params.parentFlowId),
     parentTaskId: normalizeOptionalString(params.parentTaskId),
     agentId,
     requesterAgentId,
-    runId: normalizeOptionalString(params.runId),
+    ...(runId ? { runId } : {}),
     label: normalizeOptionalString(params.label),
     task: params.task,
     status,
@@ -422,17 +420,36 @@ export function applyTaskRecordPatch(
     ...(patch.executionOwner ? { executionOwner: { ...patch.executionOwner } } : {}),
     ...(patch.detail !== undefined ? { detail: structuredClone(patch.detail) } : {}),
   };
+  if (Object.hasOwn(patch, "runId")) {
+    updated.runId = normalizeOptionalString(patch.runId);
+  }
+  if (Object.hasOwn(patch, "childSessionKey")) {
+    updated.childSessionKey = normalizeOptionalString(patch.childSessionKey);
+  }
   const becomesTerminal =
     !isTerminalTaskStatus(current.status) && isTerminalTaskStatus(updated.status);
   if (becomesTerminal && patch.endedAt === undefined) {
     updated.endedAt = patch.lastEventAt ?? now ?? Date.now();
   }
+  // Terminal freshness cannot regress behind an active snapshot; execution end
+  // and nonterminal backdating retain their original meanings.
+  if (
+    isTerminalTaskStatus(updated.status) &&
+    typeof current.lastEventAt === "number" &&
+    typeof updated.lastEventAt === "number" &&
+    updated.lastEventAt < current.lastEventAt
+  ) {
+    updated.lastEventAt = current.lastEventAt;
+  }
   const next = normalizeTaskTimestamps(updated);
   if (Object.hasOwn(patch, "error") && patch.error === undefined) {
     delete next.error;
   }
-  if (Object.hasOwn(patch, "childSessionKey") && patch.childSessionKey === undefined) {
+  if (Object.hasOwn(patch, "childSessionKey") && updated.childSessionKey === undefined) {
     delete next.childSessionKey;
+  }
+  if (Object.hasOwn(patch, "runId") && updated.runId === undefined) {
+    delete next.runId;
   }
   if (isTerminalTaskStatus(next.status) && typeof next.cleanupAfter !== "number") {
     const createdAt = next.createdAt ?? now ?? Date.now();

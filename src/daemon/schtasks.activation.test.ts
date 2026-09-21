@@ -10,7 +10,6 @@ import {
   taskProbe,
   installScheduledTask,
   resolveTaskScriptPath,
-  writeNodeScript,
   NODE_PROCESS_QUERY,
   makeNodeServiceEnv,
   makeSpawnSyncResult,
@@ -30,6 +29,7 @@ import {
   schtasksCalls,
   withWindowsEnv,
   writeGatewayScript,
+  writeNodeScript,
 } from "./test-helpers/schtasks-fixtures.js";
 
 const { getWindowsPowerShellExePath } = await import("../infra/windows-install-roots.js");

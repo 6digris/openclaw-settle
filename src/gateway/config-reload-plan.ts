@@ -149,7 +149,7 @@ const AGENT_ROSTER_RELOAD_ACTIONS: readonly ReloadAction[] = [
 const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
   { prefixes: ["gateway.remote", "gateway.reload"], kind: "none" },
   {
-    prefixes: [...AUTH_CREDENTIAL_PATHS, "mcp.apps", "secrets.egressProxy"],
+    prefixes: [...AUTH_CREDENTIAL_PATHS, "mcp.apps", "secrets.egressProxy", "gateway.portals"],
     kind: "restart",
   },
   {
@@ -168,6 +168,7 @@ const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
       "gateway.controlUi.embedSandbox",
       "gateway.controlUi.allowExternalEmbedUrls",
       "gateway.controlUi.automaticallyFetchFavicons",
+      "gateway.controlUi.experimental.customPlugins",
       "gateway.controlUi.allowedOrigins",
       "gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback",
       "gateway.nodes.browser",
@@ -182,6 +183,8 @@ const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
       "discovery.mdns.mode",
       "mcp.apps.sandboxOrigin",
       "agents.defaults",
+      "desktop.host.enabled",
+      "cloudWorkers.desktop",
     ],
     kind: "hot",
   },

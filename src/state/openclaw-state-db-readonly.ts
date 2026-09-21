@@ -7,6 +7,7 @@ import { SqliteCoordinatorError, throwSqliteLifecycleErrors } from "../infra/sql
 import {
   retainSnapshotTempDirectory,
   retainSnapshotWork,
+  SqliteSnapshotCleanupError,
 } from "../infra/sqlite-readonly-location-cleanup.js";
 import { prepareSqliteReadOnlyLocationFromOwnedDatabase } from "../infra/sqlite-readonly-location.js";
 import type {
@@ -51,6 +52,11 @@ import {
   resolveOpenClawStateSqlitePath,
 } from "./openclaw-state-db.paths.js";
 import {
+  mapOpenClawStateReadError,
+  observeReadOutcome,
+  type OpenClawStateReadReceipt,
+} from "./openclaw-state-read-error.js";
+import {
   assertRetainedReadScopeAdmission,
   bindRetainedReadScope,
   createRetainedReadScope,
@@ -59,6 +65,7 @@ import {
 import { createOpenClawStateReadTransport } from "./openclaw-state-read-worker.js";
 import type {
   OpenClawStateReadAuthority,
+  OpenClawStateReadOptions,
   OpenClawStateReadCommand,
   OpenClawStateReadReply,
   OpenClawStateReadOnlyDatabase,
@@ -86,9 +93,8 @@ const stateSnapshotReads = resolveGlobalSingleton(
 export function getActiveOpenClawStateDatabaseReadSnapshot(
   options: OpenClawStateDatabaseOptions = {},
 ): object | undefined {
-  const pathname = resolveReadOnlyPath(options);
   const current = stateSnapshotReads.getStore();
-  return current?.path === pathname ? current : undefined;
+  return current?.path === resolveReadOnlyPath(options) ? current : undefined;
 }
 
 /** Resolve a composite read from one online snapshot without redirecting live writers. */
@@ -127,11 +133,18 @@ export async function withOpenClawStateDatabaseReadSnapshot<T>(
     const snapshot = Object.assign(
       createRetainedReadScope(pathname, admission.identity, async () => {
         releaseSource();
-        if (!(await prepared.cleanupAsync())) {
-          throw new Error(
-            `Shared-state discovery snapshot cleanup failed: ${prepared.cleanupRoot ?? pathname}`,
-          );
+        let cause: unknown;
+        try {
+          if (await prepared.cleanupAsync()) {
+            return;
+          }
+        } catch (error) {
+          cause = error;
         }
+        throw new SqliteSnapshotCleanupError(
+          `Shared-state discovery snapshot cleanup failed: ${prepared.cleanupRoot ?? pathname}`,
+          { cause },
+        );
       }),
       { location: prepared.location, env },
     );
@@ -321,37 +334,6 @@ function withFreshOpenClawStateDatabaseReadOnly<T>(
   return withOpenClawStateReadOnlyLocation(operation, pathname, prepared ?? pathname);
 }
 
-/** Keep streamed rows on one private reader while callers yield or close the shared writer. */
-export async function* iterateOpenClawStateDatabaseReadOnly<Row, Result>(
-  source: OpenClawStateDatabase,
-  operation: (database: OpenClawStateReadOnlyDatabase) => Generator<Row, Result>,
-  env: NodeJS.ProcessEnv = process.env,
-): AsyncGenerator<Row, Result> {
-  const pathname = source.db.location();
-  if (!pathname) {
-    throw new Error("Streaming shared-state reads require a filesystem-backed database.");
-  }
-  openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
-  const opened = openOpenClawStateReadOnlyLocation(pathname, pathname);
-  try {
-    // sqlite-allow-raw -- Keep composite streamed reads in one native read-only snapshot.
-    opened.database.db.exec("BEGIN");
-    return yield* operation(opened.database);
-  } catch (error) {
-    openClawStateDatabaseCache.evictOpenClawStateDatabaseAfterCorruption(source, error);
-    throw error;
-  } finally {
-    try {
-      // Bun can retain statements after close; end the snapshot before releasing handle custody.
-      if (opened.database.db.isTransaction) {
-        opened.database.db.exec("ROLLBACK"); // sqlite-allow-raw -- End this owner's read-only snapshot.
-      }
-    } finally {
-      opened.close();
-    }
-  }
-}
-
 /** Read shared state without joining writers; admission inherits artifact preservation. */
 export function withOpenClawStateDatabaseReadOnly<T>(
   operation: (database: OpenClawStateReadOnlyDatabase) => T,
@@ -421,6 +403,17 @@ export function withExistingOpenClawStateDatabaseReadOnly<T>(
 export function executeExistingOpenClawStateRead(
   options: OpenClawStateDatabaseOptions,
   command: OpenClawStateReadCommand,
+  readOptions: OpenClawStateReadOptions = {},
+): Promise<OpenClawStateReadReply | undefined> {
+  return mapOpenClawStateReadError(readOptions.mapError, (receipt) =>
+    executeRetainedOpenClawStateRead(options, command, receipt),
+  );
+}
+
+function executeRetainedOpenClawStateRead(
+  options: OpenClawStateDatabaseOptions,
+  command: OpenClawStateReadCommand,
+  receipt: OpenClawStateReadReceipt,
 ): Promise<OpenClawStateReadReply | undefined> {
   const pathname = resolveReadOnlyPath(options);
   const current = stateSnapshotReads.getStore();
@@ -598,6 +591,7 @@ export function executeExistingOpenClawStateRead(
         );
       }
       authority.assertCurrent();
+      receipt.phase = "unobserved";
       const outcome = await transport.read(
         {
           context,
@@ -608,6 +602,7 @@ export function executeExistingOpenClawStateRead(
         },
         authority,
       );
+      observeReadOutcome(receipt, outcome);
       const sourceAdmitted =
         "error" in outcome
           ? outcome.sourceAdmitted

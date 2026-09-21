@@ -20,6 +20,8 @@ const repositoryScriptEntries = [
   // apps/linux/README.md invokes this live Windows native-browser proof driver by path.
   "apps/linux/scripts/test-inline-browser.mjs!",
   "scripts/render-proof-video.mts!",
+  // tsdown builds this private macOS app worker protocol entry by path.
+  "src/node-host/mac-worker-entry.ts!",
   // CI imports this selector from its trusted harness inside an inline Node script.
   ".github/actions/git-owner/test-prerequisites.mjs!",
   // mobile-release-authority invokes this helper from composite-action YAML.
@@ -177,6 +179,8 @@ const repositoryScriptEntries = [
   "scripts/pr-lib/merge-body.mjs!",
   // merge.sh executes legacy capture qualification as a standalone Node CLI.
   "scripts/pr-lib/merge-legacy-refusal.mjs!",
+  // merge-outcome.sh launches the REST adapter as a standalone Node CLI.
+  "scripts/pr-lib/merge-rest.mjs!",
   "scripts/pr-lib/review-artifacts.mjs!",
   // worktree.sh invokes this journal-state validator by path before native replay.
   "scripts/pr-lib/review-transition-state.mjs!",
@@ -884,8 +888,9 @@ const config = {
     ]),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/microsoft`]: bundledPluginWorkspace(),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/memory-core`]: bundledPluginWorkspace([
-      // The subprocess boundary tests spawn this fixture by computed URL.
+      // The subprocess boundary tests spawn these fixtures by computed URL.
       "src/memory/fixtures/manager-search-knn-child.fixture.mjs!",
+      "src/memory/fixtures/manager-search-knn-parent.fixture.mjs!",
     ]),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/memory-lancedb`]: {
       ...bundledPluginWorkspace(),

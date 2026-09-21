@@ -2,10 +2,12 @@
 export const gatewayPluginTestFiles = [
   "test/plugins/codex-model-catalog.gateway.test.ts",
   "test/plugins/crabbox-allocation-authority.gateway.test.ts",
+  "test/plugins/team-reports-http.gateway.test.ts",
 ];
 
 // Native database consumers retain lifecycle cleanup within each forked process.
 export const gatewayDatabaseWorkerTestFiles = [
+  "src/gateway/agent-turn/agent-run-dispatch.execution-binding.test.ts",
   "src/gateway/agent-turn/agent-run-dispatch.sqlite.test.ts",
   "src/gateway/board-http.test.ts",
   "src/gateway/board-store.test.ts",
@@ -28,6 +30,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/github-publication-boundaries.test.ts",
   "src/gateway/github-publication-history.test.ts",
   "src/gateway/github-publication-legacy-options.test.ts",
+  "src/gateway/github-publication-personal-pending.test.ts",
   "src/gateway/github-publication.test.ts",
   "src/gateway/github-repository-publication-restart.test.ts",
   "src/gateway/github-repository-publication.test.ts",
@@ -75,10 +78,12 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/server-methods.test.ts",
   "src/gateway/server-methods/session-catalog.performance.test.ts",
   "src/gateway/server-methods/session-creator-preparation.test.ts",
+  "src/gateway/server-methods/sessions-create-category.test.ts",
   "src/gateway/server-methods/sessions-create-thinking-claim.test.ts",
   "src/gateway/server-methods/sessions-create-worktree-base.test.ts",
   "src/gateway/server-methods/sessions-describe-worker.test.ts",
   "src/gateway/server-methods/sessions-list-persisted-worker.test.ts",
+  "src/gateway/server-methods/sessions-mutations.sticky-model.test.ts",
   "src/gateway/server-methods/sessions-read-active.test.ts",
   "src/gateway/server-methods/sessions-read-async.test.ts",
   "src/gateway/server-methods/sessions-read-cache.test.ts",
@@ -94,6 +99,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server/skill-library-read.test.ts",
   "src/gateway/server/ws-connection/connect-device-pairing.test.ts",
   "src/gateway/session-delivery-clock-jump.integration.test.ts",
+  "src/gateway/session-groups.test.ts",
   "src/gateway/session-message-events.test.ts",
   "src/gateway/session-repository-materialization.test.ts",
   "src/gateway/session-repository-publication-handoff.test.ts",
@@ -109,11 +115,19 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/startup-local-cli-pairing.test.ts",
   "src/gateway/test-helpers.acquisition.test.ts",
   "src/gateway/tool-resolution.cron-capture.test.ts",
+  "src/gateway/tui-session-description-wire.test.ts",
   "src/gateway/worker-environments/local-workspace-projection.test.ts",
   "src/gateway/worker-environments/prepared-pool-local-project.test.ts",
   "src/gateway/worker-environments/provider-crabbox-runtime-preflight.test.ts",
   "src/gateway/worker-environments/workspace-result-ref-mutation.test.ts",
   "src/gateway/worker-environments/workspace-result-repository.test.ts",
+];
+
+// Native Vitest subprocesses cold-import the real Gateway; keep their collection
+// outside concurrent files instead of expanding their process-lifecycle deadlines.
+export const gatewayServerSerialTestFiles = [
+  "src/gateway/server.sessions.fixture-lifecycle.test.ts",
+  "src/gateway/server.startup-fixture-lifetime.test.ts",
 ];
 
 // Canonical file ownership for the non-isolated Gateway server Vitest project.
@@ -162,6 +176,7 @@ export const gatewayServerIsolatedTestFiles = [
   "src/gateway/server.cli-watchdog.test.ts",
   "src/gateway/server.codex-failure-recovery.test.ts",
   "src/gateway/server.incomplete-stream.test.ts",
+  "src/gateway/server.labs-hot-reload.test.ts",
   "src/gateway/server.encrypted-tool-continuation.test.ts",
   "src/gateway/server.message-buffer-caption.test.ts",
   "src/gateway/server.placement-abandonment.lifecycle.test.ts",
