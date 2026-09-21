@@ -304,6 +304,7 @@ function runReleaseInputCapture(params: {
         RELEASE_RUN_MATURITY_SCORECARD_INPUT: "false",
         RELEASE_RUN_RELEASE_SOAK_INPUT: "false",
         RELEASE_SKIP_PACKAGE_TELEGRAM_E2E_INPUT: "false",
+        RELEASE_UPGRADE_SURVIVOR_BASELINE_INPUT: "openclaw@latest",
         TELEGRAM_WAIVER: "",
       },
     });

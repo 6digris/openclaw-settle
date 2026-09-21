@@ -179,6 +179,7 @@ jobs:
       package_required: ${{ steps.inputs.outputs.package_required }}
       docker_required: ${{ steps.inputs.outputs.docker_required }}
       install_smoke_scheduled: ${{ steps.inputs.outputs.install_smoke_scheduled }}
+      upgrade_survivor_baseline_version: ${{ steps.inputs.outputs.upgrade_survivor_baseline_version }}
       fail_fast: ${{ steps.inputs.outputs.fail_fast }}
       run_maturity_scorecard: ${{ steps.inputs.outputs.run_maturity_scorecard }}
       allow_unreleased_changelog: ${{ steps.inputs.outputs.allow_unreleased_changelog }}
@@ -471,6 +472,7 @@ jobs:
           RELEASE_PACKAGE_SPEC_INPUT: ${{ inputs.release_package_spec }}
           RELEASE_PACKAGE_ACCEPTANCE_PACKAGE_SPEC_INPUT: ${{ inputs.package_acceptance_package_spec }}
           RELEASE_CODEX_PLUGIN_SPEC_INPUT: ${{ inputs.codex_plugin_spec }}
+          RELEASE_UPGRADE_SURVIVOR_BASELINE_INPUT: ${{ inputs.published_upgrade_survivor_baseline }}
           CANDIDATE_ARTIFACT_JSON_INPUT: ${{ inputs.candidate_artifact_json }}
           RELEASE_FILTER_VALIDATOR: workflow/scripts/github/validate-release-suite-filters.sh
         run: |
@@ -483,6 +485,15 @@ jobs:
               exit 1
               ;;
           esac
+          upgrade_survivor_baseline="$RELEASE_UPGRADE_SURVIVOR_BASELINE_INPUT"
+          if [[ ! "$upgrade_survivor_baseline" =~ ^openclaw@([^[:space:]]+)$ ]]; then
+            echo "published_upgrade_survivor_baseline must be an openclaw package spec." >&2
+            exit 1
+          fi
+          upgrade_survivor_baseline_version="${BASH_REMATCH[1]}"
+          if [[ "$upgrade_survivor_baseline_version" == "latest" ]]; then
+            upgrade_survivor_baseline_version=""
+          fi
           candidate_artifact_json=""
           release_package_spec=""
           package_acceptance_package_spec=""
@@ -790,6 +801,7 @@ jobs:
             printf 'package_required=%s\n' "$package_required"
             printf 'docker_required=%s\n' "$docker_required"
             printf 'install_smoke_scheduled=%s\n' "$install_smoke_scheduled"
+            printf 'upgrade_survivor_baseline_version=%s\n' "$upgrade_survivor_baseline_version"
             printf 'fail_fast=%s\n' "$fail_fast"
             printf 'run_maturity_scorecard=%s\n' "$run_maturity_scorecard"
             printf 'allow_unreleased_changelog=%s\n' "$allow_unreleased_changelog"
@@ -1244,6 +1256,7 @@ jobs:
       advisory: ${{ startsWith(github.ref, 'refs/heads/tideclaw/alpha/') }}
       ref: ${{ needs.resolve_target.outputs.revision }}
       target_context_ref: ${{ inputs.target_context_ref }}
+      previous_version: ${{ needs.resolve_target.outputs.upgrade_survivor_baseline_version }}
       provider: ${{ needs.resolve_target.outputs.provider }}
       mode: ${{ needs.resolve_target.outputs.mode }}
       suite_filter: ${{ needs.resolve_target.outputs.cross_os_suite_filter }}
@@ -1382,6 +1395,8 @@ jobs:
       prepublish_plugin_registry_artifact_run_attempt: ${{ fromJSON(needs.prepare_release_package.outputs.prepublish_plugin_registry_json || '{}').prepublishPluginRegistryArtifactRunAttempt || '' }}
       prepublish_plugin_registry_manifest_sha256: ${{ fromJSON(needs.prepare_release_package.outputs.prepublish_plugin_registry_json || '{}').prepublishPluginRegistryManifestSha256 || '' }}
       codex_plugin_spec: ${{ needs.resolve_target.outputs.codex_plugin_spec }}
+      published_upgrade_survivor_baseline: ${{ inputs.published_upgrade_survivor_baseline }}
+      published_upgrade_survivor_baselines: ${{ inputs.published_upgrade_survivor_baselines }}
       shared_image_artifact_namespace: release-docker
       shared_image_artifact_name: ${{ fromJSON(needs.resolve_target.outputs.candidate_artifact_json || '{}').imageArtifactName || '' }}
       shared_image_artifact_id: ${{ fromJSON(needs.resolve_target.outputs.candidate_artifact_json || '{}').imageArtifactId || '' }}
