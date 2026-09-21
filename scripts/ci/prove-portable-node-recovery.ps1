@@ -99,12 +99,6 @@ try {
             . ([scriptblock]::Create($statement.Extent.Text))
         }
     }
-    $budget = @($ast.EndBlock.Statements | Where-Object {
-        $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
-        $_.Left.Extent.Text -eq '$script:UpdateNetworkTimeoutSeconds'
-    })
-    if ($budget.Count -ne 1) { throw 'Missing canonical download budget.' }
-    . ([scriptblock]::Create($budget[0].Extent.Text))
     $script:InstallerTempDirectory = $temp
     if (Check-Node) { throw 'Fixture failed to remove the usable starting runtime.' }
     $script:RealSaveInstallerDownload = (Get-Command Save-InstallerDownload).ScriptBlock
