@@ -1229,6 +1229,9 @@ importers:
 
   extensions/geolocation:
     dependencies:
+      '@openclaw/fs-safe':
+        specifier: 0.17.0
+        version: 0.17.0
       maxmind:
         specifier: 5.0.7
         version: 5.0.7

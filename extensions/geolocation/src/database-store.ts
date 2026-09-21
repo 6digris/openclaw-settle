@@ -7,8 +7,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { gunzip } from "node:zlib";
+import { tempFile } from "@openclaw/fs-safe/advanced";
 import { type CityResponse, Reader } from "maxmind";
-import { root } from "openclaw/plugin-sdk/file-access-runtime";
 import { readByteStreamWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import { expandDatabaseUrls, type GeolocationSettings } from "./config.js";
 
@@ -83,11 +83,16 @@ async function downloadDatabase(deps: StoreDeps, target: string): Promise<Reader
       const reader = new Reader<CityResponse>(body);
       try {
         await fs.mkdir(path.dirname(target), { recursive: true });
-        const cacheRoot = await root(path.dirname(target));
-        await cacheRoot.write(path.basename(target), body, {
-          mode: 0o666 & ~process.umask(),
-          durable: false,
+        const directory = await fs.realpath(path.dirname(target));
+        await using staged = await tempFile({
+          rootDir: directory,
+          prefix: "ip-city",
+          onCleanupError: (error) => {
+            throw error;
+          },
         });
+        await fs.writeFile(staged.path, body, { flag: "wx" });
+        await fs.rename(staged.path, path.join(directory, path.basename(target)));
       } catch (err) {
         deps.logger?.warn(
           `geolocation: could not cache the downloaded database, serving it from memory: ${err instanceof Error ? err.message : String(err)}`,
