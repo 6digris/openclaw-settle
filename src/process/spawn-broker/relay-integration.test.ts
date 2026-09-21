@@ -21,8 +21,8 @@ it("settles a streamless native spawn failure and releases its execution scope",
   });
   const starting = Promise.allSettled([
     supervisor.spawn({
-      mode: "child",
-      argv: ["synthetic-command"],
+      mode: "anchored-shell",
+      command: "synthetic-command",
       scopeKey: "failed-native-relay",
     }),
   ]);
