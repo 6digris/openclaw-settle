@@ -37,13 +37,15 @@ jobs:
       CANDIDATE_SHA: e3d74c9d0dbcb844bb8817e10c82630adcd9eb65
       CANDIDATE_TREE: e1dcf25444bc0cfa58a6a4915434cc8b53d3df44
       COMMON_OWNER_SHA: c83e6d94156e6528d91dce2d62792ca3ba5283bc
+      PREVIOUS_CARRIER_SHA: 106e66bcae5778c81743cb3867576b62d7ec61c1
+      PREVIOUS_CARRIER_TREE: 434a811f4b585f46b0399b6e8e896599f721b06f
       CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
       WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 4
+          fetch-depth: 5
           persist-credentials: false
       - name: Bind the carrier, product pair and exact reviewed repair
         run: |
@@ -51,7 +53,9 @@ jobs:
           [[ "$CARRIER_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
-          test "$(git show -s --format=%P HEAD)" = "$CANDIDATE_SHA"
+          test "$(git show -s --format=%P HEAD)" = "$PREVIOUS_CARRIER_SHA"
+          test "$(git rev-parse "$PREVIOUS_CARRIER_SHA^{tree}")" = "$PREVIOUS_CARRIER_TREE"
+          test "$(git show -s --format=%P "$PREVIOUS_CARRIER_SHA")" = "$CANDIDATE_SHA"
           test "$(git show -s --format=%P "$CANDIDATE_SHA")" = "$BASELINE_SHA"
           test "$(git rev-parse "$BASELINE_SHA^{tree}")" = "$BASELINE_TREE"
           test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
@@ -67,9 +71,10 @@ jobs:
           from pathlib import Path
           def git(*args): return subprocess.check_output(['git', *args])
           a, b = os.environ['BASELINE_SHA'], os.environ['CANDIDATE_SHA']
-          patch = git('diff', '--no-renames', '--binary', a, b)
-          assert len(patch) == 49281
-          assert hashlib.sha256(patch).hexdigest() == 'a01b60a825e119fd16e96c5bc75015a549917eb14c4d0068151025a61629f1f6'
+          patch = git('diff', '--full-index', '--no-renames', '--binary', a, b)
+          print(json.dumps(dict(patchBytes=len(patch), patchSha256=hashlib.sha256(patch).hexdigest())), flush=True)
+          assert len(patch) == 49977
+          assert hashlib.sha256(patch).hexdigest() == 'abe8d526e98e15224363e28c8178e059abcf7e752fbeb280b2a502779b5085d9'
           paths = git('diff', '--name-only', a, b).decode().splitlines()
           assert len(paths) == 12
           receipt = dict(baseline=a, baselineTree=os.environ['BASELINE_TREE'], candidate=b,
