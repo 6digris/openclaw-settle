@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import type { SubsystemLogger } from "../logging/subsystem.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
+import { registerChatAbortController, type ChatAbortControllerEntry } from "./chat-abort.js";
 import {
   createChatRunState,
   createSessionEventSubscriberRegistry,
@@ -46,6 +46,24 @@ export function createSubscriptionTestFixture() {
       };
     },
   };
+}
+
+export function registerSubscriptionChatRun(
+  params: Parameters<typeof startGatewayEventSubscriptions>[0],
+  input: Omit<
+    Parameters<typeof registerChatAbortController>[0],
+    "chatAbortControllers" | "timeoutMs"
+  >,
+) {
+  const registration = registerChatAbortController({
+    ...input,
+    chatAbortControllers: params.chatAbortControllers,
+    timeoutMs: 60_000,
+  });
+  if (!registration.entry) {
+    throw new Error("expected registered chat abort controller");
+  }
+  return { ...registration, entry: registration.entry };
 }
 
 export function readLifecycleState(entry: ChatAbortControllerEntry) {

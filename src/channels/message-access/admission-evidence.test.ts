@@ -19,7 +19,7 @@ import {
   readChannelContextGatewayContextResolver,
   type ChannelAdmissionEvidence,
 } from "./admission-evidence.js";
-import { createHostChannelIngressRuntime, resolveStableChannelMessageIngress } from "./runtime.js";
+import { createHostChannelIngressRuntime, resolveStableChannelIngressPolicy } from "./runtime.js";
 
 async function buildAdmittedContext(
   audit: ChannelAdmissionAudit,
@@ -247,7 +247,7 @@ describe("channel admission evidence", () => {
   );
 
   it("rejects an event whose symbol descriptor becomes unreadable without throwing", async () => {
-    const result = await resolveStableChannelMessageIngress({
+    const result = await resolveStableChannelIngressPolicy({
       channelId: "test",
       accountId: "default",
       subject: { stableId: "person-1" },
@@ -413,7 +413,7 @@ describe("channel admission evidence", () => {
         channelIngress: "unsupported",
       });
       const omitted = buildHostChannelInboundEventContext(base);
-      const exact = await resolveStableChannelMessageIngress({
+      const exact = await resolveStableChannelIngressPolicy({
         channelId: "legacy",
         accountId: "default",
         subject: { stableId: "person-1" },

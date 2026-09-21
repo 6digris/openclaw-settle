@@ -215,8 +215,8 @@ function createChannelIngressResolverForOwner(
   };
 }
 
-/** Public helpers evaluate policy without admitting a host participant. */
-export function createChannelIngressResolver(
+/** Evaluate policy without admitting a host participant. */
+export function createChannelIngressPolicyResolver(
   base: CreateChannelIngressResolverParams,
 ): ChannelIngressResolver {
   return createChannelIngressResolverForOwner(base);
@@ -240,10 +240,10 @@ export function createHostChannelIngressRuntime(owner: ChannelIngressHostOwner) 
 /**
  * Resolve one inbound event using a simple stable subject identity descriptor.
  */
-export async function resolveStableChannelMessageIngress(
+export async function resolveStableChannelIngressPolicy(
   params: ResolveStableChannelMessageIngressParams,
 ): Promise<ResolvedChannelMessageIngress> {
-  return await createChannelIngressResolver({
+  return await createChannelIngressPolicyResolver({
     ...params,
     identity: defineStableChannelIngressIdentity(params.identity),
   }).message(params);
@@ -369,7 +369,7 @@ function appendAccessGroupMatchedEntry(params: {
  * Resolve sender, route, command, event, and activation gates for one inbound
  * channel event.
  */
-export async function resolveChannelMessageIngress(
+export async function resolveChannelIngressPolicy(
   params: ResolveChannelMessageIngressParams,
 ): Promise<ResolvedChannelMessageIngress> {
   return resolveChannelMessageIngressForOwner(params);

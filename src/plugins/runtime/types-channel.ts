@@ -153,9 +153,9 @@ export type PluginRuntimeChannel = {
   inbound: {
     /** Ingress policy and identity handoff bound to this channel's host instance. */
     ingress: {
-      createResolver: typeof import("../../channels/message-access/runtime.js").createChannelIngressResolver;
-      resolve: typeof import("../../channels/message-access/runtime.js").resolveChannelMessageIngress;
-      resolveStable: typeof import("../../channels/message-access/runtime.js").resolveStableChannelMessageIngress;
+      createResolver: typeof import("../../channels/message-access/runtime.js").createChannelIngressPolicyResolver;
+      resolve: typeof import("../../channels/message-access/runtime.js").resolveChannelIngressPolicy;
+      resolveStable: typeof import("../../channels/message-access/runtime.js").resolveStableChannelIngressPolicy;
     };
     buildContext: typeof import("../../channels/inbound-event/context.js").buildChannelInboundEventContext;
     run: typeof import("../../channels/turn/run-channel-turn.js").runChannelTurn;

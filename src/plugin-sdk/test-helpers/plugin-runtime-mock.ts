@@ -10,9 +10,9 @@ import {
   shouldAckReaction,
 } from "../../channels/ack-reactions.js";
 import {
-  createChannelIngressResolver,
-  resolveChannelMessageIngress,
-  resolveStableChannelMessageIngress,
+  createChannelIngressPolicyResolver,
+  resolveChannelIngressPolicy,
+  resolveStableChannelIngressPolicy,
 } from "../../channels/message-access/runtime.js";
 import { createChannelReplyPipeline } from "../../channels/message/reply-pipeline.js";
 import { resolveSessionEntryResetFreshness } from "../../config/sessions/entry-freshness.js";
@@ -465,9 +465,9 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
   };
   const inboundRuntime = {
     ingress: {
-      createResolver: createChannelIngressResolver,
-      resolve: resolveChannelMessageIngress,
-      resolveStable: resolveStableChannelMessageIngress,
+      createResolver: createChannelIngressPolicyResolver,
+      resolve: resolveChannelIngressPolicy,
+      resolveStable: resolveStableChannelIngressPolicy,
     },
     run: runChannelTurnMock,
     dispatch: dispatchChannelTurnPlanMock,

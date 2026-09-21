@@ -6,9 +6,9 @@ import type {
   ResolvedChannelMessageIngress,
 } from "../channels/message-access/runtime-types.js";
 import {
-  createChannelIngressResolver as createPolicyResolver,
-  resolveChannelMessageIngress as resolvePolicyIngress,
-  resolveStableChannelMessageIngress as resolveStablePolicyIngress,
+  createChannelIngressPolicyResolver,
+  resolveChannelIngressPolicy,
+  resolveStableChannelIngressPolicy,
 } from "../channels/message-access/runtime.js";
 /**
  * High-level runtime resolver for inbound channel access decisions.
@@ -107,7 +107,7 @@ export function createChannelIngressResolver(
   // Registration may precede channel publication. Retain the creating instance,
   // never whichever plugin happens to invoke this resolver later.
   const instance = currentIngressInstance();
-  const policy = createPolicyResolver(base);
+  const policy = createChannelIngressPolicyResolver(base);
   const resolve = () => registeredIngress(instance, base.channelId)?.createResolver(base) ?? policy;
   return {
     message: (params) => resolve().message(params),
@@ -121,7 +121,7 @@ export async function resolveChannelMessageIngress(
   params: ResolveChannelMessageIngressParams,
 ): Promise<ResolvedChannelMessageIngress> {
   const ingress = registeredIngress(currentIngressInstance(), params.channelId);
-  return await (ingress ? ingress.resolve(params) : resolvePolicyIngress(params));
+  return await (ingress ? ingress.resolve(params) : resolveChannelIngressPolicy(params));
 }
 
 /** Preserve the released stable-identity helper through the same ingress owner. */
@@ -129,7 +129,9 @@ export async function resolveStableChannelMessageIngress(
   params: ResolveStableChannelMessageIngressParams,
 ): Promise<ResolvedChannelMessageIngress> {
   const ingress = registeredIngress(currentIngressInstance(), params.channelId);
-  return await (ingress ? ingress.resolveStable(params) : resolveStablePolicyIngress(params));
+  return await (ingress
+    ? ingress.resolveStable(params)
+    : resolveStableChannelIngressPolicy(params));
 }
 
 type ChannelIngressLifecycle = Omit<ChannelIngressMonitorLifecycle, "admission">;
