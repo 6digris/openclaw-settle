@@ -277,6 +277,7 @@ suite.define(() => {
         await waitForControlUiRoute(page, { pathname: "/plugins", routeId: "plugins" });
         await page.getByRole("searchbox", { name: "Search plugins", exact: true }).waitFor();
         const pluginsHeader = await headerGeometry(page);
+        await captureScreenshot(page, `${label}-01-installed-plugins.png`);
         expect(pluginsHeader.title).toBe("Plugins");
         await expectHeaderCopy(page, "plugins");
         expect(await page.locator(".plugins-hub-tabs").getByRole("tab").count()).toBe(3);
@@ -295,7 +296,6 @@ suite.define(() => {
         expect(pluginTabBox?.height ?? 0).toBeLessThanOrEqual(36);
         await expectActivePanelLabel(page, "plugins-tab-plugins");
         const pluginInstallPresentation = await installButtonPresentation(page);
-        await captureScreenshot(page, `${label}-01-installed-plugins.png`);
 
         await page
           .locator(".plugins-hub-tabs")
