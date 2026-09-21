@@ -65,7 +65,7 @@ function fixture(name: string, state: "active" | "failed" | "local" | "reclaimed
   const barriers = createGatewayWorkerPlacementReclaimBarriers({
     placements: { get: () => ({ ...placement }) as never, waitForTurnClaimRelease: async () => {} },
     loadSessionRuntime: async () => ({
-      managedWorktrees: { findLiveByOwner: () => undefined },
+      managedWorktrees: { findLiveById: () => undefined },
       resolveGatewaySessionStoreTargetWithStore: () => target,
       resolveCanonicalSessionEntryFromStoreKeys: () => entry,
     }),
@@ -291,7 +291,7 @@ async function cancellationLoadFixture(
   };
   const runtime = {
     managedWorktrees: {
-      findLiveByOwner: () => ({
+      findLiveById: () => ({
         id: "task-worktree",
         name: "test",
         repoFingerprint: "test",

@@ -327,9 +327,14 @@ async function listObservedProjects(
   const rawCandidates: RawProjectCandidate[] = [];
   const visibilityFilter = createSessionListEntryFilter({ client, cfg });
   const canSeeAll = !visibilityFilter;
+  const visibleSessionWorktreeIds = new Set<string>();
   for (const [sessionKey, entry] of Object.entries(store)) {
     if (visibilityFilter && !visibilityFilter(sessionKey, entry)) {
       continue;
+    }
+    const worktreeId = entry.worktree?.id?.trim();
+    if (worktreeId) {
+      visibleSessionWorktreeIds.add(worktreeId);
     }
     const checkoutPath = entry.execCwd?.trim();
     if (checkoutPath && !entry.execNode?.trim()) {
@@ -345,11 +350,15 @@ async function listObservedProjects(
       continue;
     }
     if (!canSeeAll) {
-      // Session-owned worktrees use their canonical session key as ownerId, so the same
-      // visibility policy that admitted the session also owns its managed checkout.
+      // Legacy session worktrees can still carry their creator as ownerId. Shared
+      // worktrees are visible through any session row admitted by the same policy.
       const ownerId = worktree.ownerKind === "session" ? worktree.ownerId?.trim() : undefined;
       const ownerEntry = ownerId ? store[ownerId] : undefined;
-      if (!ownerId || !ownerEntry || !visibilityFilter?.(ownerId, ownerEntry)) {
+      const visibleThroughOwner = ownerId && ownerEntry && visibilityFilter?.(ownerId, ownerEntry);
+      if (
+        worktree.ownerKind !== "session" ||
+        (!visibleSessionWorktreeIds.has(worktree.id) && !visibleThroughOwner)
+      ) {
         continue;
       }
     }

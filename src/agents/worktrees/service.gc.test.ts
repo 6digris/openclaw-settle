@@ -639,6 +639,25 @@ describe("ManagedWorktreeService garbage collection", () => {
     expect(getRegistryWorktree(env, activeOldest.id)?.removedAt).toBeUndefined();
   });
 
+  it("leaves shared session worktrees to idle cleanup instead of pressure eviction", async () => {
+    const shared = await materializeRunOwnedFixture("limit-shared", "session");
+    now += 1;
+    const exclusive = await materializeRunOwnedFixture(
+      "limit-exclusive",
+      "session",
+      "agent:main:exclusive",
+    );
+
+    const limited = await service.gc({ limits: { maxCount: 1 } });
+
+    expect(limited.removed).toEqual([exclusive.id]);
+    expect(getRegistryWorktree(env, shared.id)?.removedAt).toBeUndefined();
+
+    now += IDLE_GC_MS + 1;
+    const idle = await service.gc();
+    expect(idle.removed).toEqual([shared.id]);
+  });
+
   it.each([
     { limit: "count", limits: { maxCount: 1 } },
     { limit: "size", limits: { maxTotalSizeBytes: 60_000 } },
@@ -730,12 +749,20 @@ describe("ManagedWorktreeService garbage collection", () => {
   });
 
   it("reports unknown size compliance for worktrees created during enforcement", async () => {
-    const oversized = await materializeRunOwnedFixture("size-race-oldest", "session");
+    const oversized = await materializeRunOwnedFixture(
+      "size-race-oldest",
+      "session",
+      "agent:main:size-race-oldest",
+    );
     await fs.writeFile(path.join(oversized.path, "blob.bin"), Buffer.alloc(10_000));
     let concurrentId = "";
     const realRemove = service.remove.bind(service);
     vi.spyOn(service, "remove").mockImplementationOnce(async (params) => {
-      const concurrent = await materializeRunOwnedFixture("size-race-created", "session");
+      const concurrent = await materializeRunOwnedFixture(
+        "size-race-created",
+        "session",
+        "agent:main:size-race-created",
+      );
       concurrentId = concurrent.id;
       return await realRemove(params);
     });
@@ -857,9 +884,17 @@ describe("ManagedWorktreeService garbage collection", () => {
     for (let index = 0; index < 99; index += 1) {
       await materializeDownstreamFixture(`manual-${index}`);
     }
-    const oldest = await materializeRunOwnedFixture("default-oldest", "session");
+    const oldest = await materializeRunOwnedFixture(
+      "default-oldest",
+      "session",
+      "agent:main:default-oldest",
+    );
     now += 1;
-    const newest = await materializeRunOwnedFixture("default-newest", "session");
+    const newest = await materializeRunOwnedFixture(
+      "default-newest",
+      "session",
+      "agent:main:default-newest",
+    );
     expect((await service.gc()).removed).toEqual([oldest.id]);
     expect(
       (await service.listRegistryRecords()).filter((record) => record.removedAt === undefined),

@@ -1560,6 +1560,15 @@ export async function performGatewaySessionReset(params: {
             postCommitActions.push(async () => {
               // Finalize the old checkout before the fence opens to same-key successors.
               try {
+                const detached = managedWorktrees.findLiveById(detachedWorktreeId);
+                const resetSessionKey = target.canonicalKey ?? params.key;
+                if (
+                  !detached ||
+                  detached.ownerKind !== "session" ||
+                  detached.ownerId !== resetSessionKey
+                ) {
+                  return;
+                }
                 if (!(await managedWorktrees.removeIfLossless(detachedWorktreeId))) {
                   const retained = managedWorktrees.findLiveById(detachedWorktreeId);
                   if (retained) {

@@ -4,7 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { removeSessionWorktree } from "../../sessions/session-worktree-lifecycle.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { getRegistryWorktree } from "./registry.js";
 import { ManagedWorktreeService } from "./service.js";
 
 const execFileAsync = promisify(execFile);
@@ -17,6 +19,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 describe("ManagedWorktreeService naming", () => {
   let root: string;
   let repo: string;
+  let env: NodeJS.ProcessEnv;
   let service: ManagedWorktreeService;
 
   beforeEach(async () => {
@@ -31,9 +34,8 @@ describe("ManagedWorktreeService naming", () => {
     await git(repo, "add", "README.md");
     await git(repo, "commit", "-m", "initial");
     repo = await fs.realpath(repo);
-    service = new ManagedWorktreeService({
-      env: { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") },
-    });
+    env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
+    service = new ManagedWorktreeService({ env });
   });
 
   afterEach(async () => {
@@ -99,6 +101,63 @@ describe("ManagedWorktreeService naming", () => {
     expect(
       (await service.list()).filter((record) => record.ownerId === owner.ownerId),
     ).toHaveLength(1);
+  });
+
+  it("shares an explicitly named session worktree without assigning it to either session", async () => {
+    const first = await service.create({
+      repoRoot: repo,
+      baseRef: "HEAD",
+      name: "shared-task",
+      ownerKind: "session",
+      ownerId: "agent:main:session-1",
+    });
+    const second = await service.create({
+      repoRoot: repo,
+      baseRef: "HEAD",
+      name: "shared-task",
+      ownerKind: "session",
+      ownerId: "agent:main:session-2",
+    });
+
+    expect(second).toMatchObject({ id: first.id, path: first.path });
+    const shared = getRegistryWorktree(env, first.id);
+    expect(shared).toMatchObject({
+      id: first.id,
+      ownerKind: "session",
+    });
+    expect(shared?.ownerId).toBeUndefined();
+
+    await expect(
+      removeSessionWorktree({
+        id: first.id,
+        sessionKey: "agent:main:session-1",
+        reason: "session-delete",
+        env,
+      }),
+    ).resolves.toBeUndefined();
+    expect(getRegistryWorktree(env, first.id)?.removedAt).toBeUndefined();
+    await expect(fs.access(first.path)).resolves.toBeUndefined();
+  });
+
+  it("does not let shared-name reuse change the checkout base", async () => {
+    await git(repo, "branch", "other");
+    await service.create({
+      repoRoot: repo,
+      baseRef: "main",
+      name: "shared-task",
+      ownerKind: "session",
+      ownerId: "agent:main:session-1",
+    });
+
+    await expect(
+      service.create({
+        repoRoot: repo,
+        baseRef: "other",
+        name: "shared-task",
+        ownerKind: "session",
+        ownerId: "agent:main:session-2",
+      }),
+    ).rejects.toThrow("already uses base ref main; requested other");
   });
 
   it("numbers a generated name colliding with the owner's removed record", async () => {

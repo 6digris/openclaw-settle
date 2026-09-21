@@ -97,11 +97,12 @@ async function scenario(
     loadSessionRuntime: async () =>
       ({
         managedWorktrees: {
-          findLiveByOwner: () =>
+          findLiveById: () =>
             failedRetry
               ? undefined
               : {
                   id: "task-worktree",
+                  ownerKind: "session",
                   ownerId: REQUEST.sessionKey,
                   path: worktreePath,
                 },
@@ -189,8 +190,9 @@ async function scenario(
           async () =>
             ({
               managedWorktrees: {
-                findLiveByOwner: () => ({
+                findLiveById: () => ({
                   id: "task-worktree",
+                  ownerKind: "session",
                   ownerId: REQUEST.sessionKey,
                   path: worktreePath,
                 }),
@@ -549,7 +551,7 @@ it("an idempotent failed-cleanup result does not cancel work already on the loca
     placements: { get: () => local as never, waitForTurnClaimRelease: vi.fn() },
     loadSessionRuntime: async () =>
       ({
-        managedWorktrees: { findLiveByOwner: () => undefined },
+        managedWorktrees: { findLiveById: () => undefined },
         resolveGatewaySessionStoreTargetWithStore: () => target,
         resolveCanonicalSessionEntryFromStoreKeys: () => entry,
       }) as never,
@@ -622,7 +624,7 @@ it.each(["missing", "local"] as const)(
       );
     }
     const sessionRuntime = {
-      managedWorktrees: { findLiveByOwner: () => undefined },
+      managedWorktrees: { findLiveById: () => undefined },
       resolveGatewaySessionStoreTargetWithStore: () => target,
       resolveCanonicalSessionEntryFromStoreKeys: () => entry,
     };

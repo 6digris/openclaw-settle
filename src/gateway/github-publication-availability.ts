@@ -112,17 +112,18 @@ function readPublicationWorktreeOwner(
   expected?: ExpectedWorktree,
 ) {
   const entry = loaded.entry;
-  const worktree = managedWorktrees.findLiveByOwner("session", loaded.canonicalKey);
+  const worktree = entry.worktree?.id
+    ? managedWorktrees.findLiveById(entry.worktree.id)
+    : undefined;
   if (
     !entry.worktree?.id ||
     !worktree ||
     worktree.id !== entry.worktree.id ||
     worktree.ownerKind !== "session" ||
-    worktree.ownerId !== loaded.canonicalKey ||
     worktree.branch !== entry.worktree.branch ||
     worktree.repoRoot !== entry.worktree.repoRoot
   ) {
-    throw new Error("GitHub publication session worktree owner changed.");
+    throw new Error("GitHub publication session worktree binding changed.");
   }
   if (
     expected &&

@@ -10,6 +10,7 @@ const moveDestinationMocks = vi.hoisted(() => ({
   getRuntimeConfig: vi.fn(() => ({})),
   findManagedWorktree: vi.fn(() => ({
     id: "worktree-recovery",
+    ownerKind: "session",
     ownerId: "agent:main:move-source",
     path: "/gateway/workspace",
   })),
@@ -43,7 +44,11 @@ const moveDestinationMocks = vi.hoisted(() => ({
         storeKeys: ["agent:main:move-source"],
         storePath: "/tmp/openclaw-worker-placement-session.sqlite",
       },
-      worktree: { id: "worktree-recovery", path: "/gateway/workspace" },
+      worktree: {
+        id: "worktree-recovery",
+        ownerKind: "session",
+        path: "/gateway/workspace",
+      },
       workspace: { kind: "local", path: "/gateway/workspace" },
     }),
   ),
@@ -87,7 +92,7 @@ vi.mock("../agents/worktrees/service.js", async (importOriginal) => {
   return {
     ...actual,
     managedWorktrees: {
-      findLiveByOwner: moveDestinationMocks.findManagedWorktree,
+      findLiveById: moveDestinationMocks.findManagedWorktree,
     },
   };
 });

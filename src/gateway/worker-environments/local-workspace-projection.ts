@@ -85,7 +85,7 @@ export async function withSettledLocalWorkspace<T>(
       if (
         !current ||
         current.ownerKind !== "session" ||
-        current.ownerId !== row.session_key ||
+        (current.ownerId !== undefined && current.ownerId !== row.session_key) ||
         current.path !== worktree.path ||
         current.repoRoot !== worktree.repoRoot
       ) {
@@ -140,10 +140,11 @@ function assertBinding(row: LocalWorkspaceProjection, owner: LocalWorkspaceOwner
   owner.assertCurrent();
   if (
     row.worktree_id !== owner.worktree.id ||
-    row.agent_id !== owner.agentId ||
-    row.session_key !== owner.sessionKey ||
-    row.session_id !== owner.sessionId ||
-    row.lifecycle_revision !== owner.lifecycleRevision
+    (owner.worktree.ownerId !== undefined &&
+      (row.agent_id !== owner.agentId ||
+        row.session_key !== owner.sessionKey ||
+        row.session_id !== owner.sessionId ||
+        row.lifecycle_revision !== owner.lifecycleRevision))
   ) {
     throw new Error(
       "Local sandbox workspace belongs to a different session incarnation; pending edits were preserved",
@@ -642,7 +643,10 @@ export async function expireLocalWorkspaceProjection(params: {
     assertCurrent: () => {
       params.assertCurrent();
       const record = getRegistryWorktree(params.env, params.worktree.id);
-      if (record?.removedAt !== params.worktree.removedAt || record?.ownerId !== row.session_key) {
+      if (
+        record?.removedAt !== params.worktree.removedAt ||
+        (record?.ownerId !== undefined && record.ownerId !== row.session_key)
+      ) {
         throw new Error("Workspace retention owner changed");
       }
     },
@@ -678,7 +682,7 @@ export function resolveLocalWorkspaceOwner(params: {
     !worktree ||
     worktree.removedAt !== undefined ||
     worktree.ownerKind !== "session" ||
-    worktree.ownerId !== params.sessionKey ||
+    (worktree.ownerId !== undefined && worktree.ownerId !== params.sessionKey) ||
     worktree.repoRoot !== entry.worktree.repoRoot ||
     worktree.branch !== entry.worktree.branch ||
     (params.workspaceDir && !isPathInside(worktree.path, params.workspaceDir))
@@ -695,7 +699,7 @@ export function resolveLocalWorkspaceOwner(params: {
       now?.archivedAt !== undefined ||
       now?.worktree?.id !== worktree.id ||
       current?.removedAt !== undefined ||
-      current?.ownerId !== params.sessionKey ||
+      (current?.ownerId !== undefined && current.ownerId !== params.sessionKey) ||
       current?.path !== worktree.path ||
       current?.repoRoot !== worktree.repoRoot
     ) {

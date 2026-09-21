@@ -157,10 +157,11 @@ async function resolveSpawnParentWorktreeSource(
       },
     };
   }
-  const worktree = managedWorktrees.findLiveByOwner("session", parent.canonicalKey);
+  const worktree = managedWorktrees.findLiveById(parent.entry.worktree.id);
   if (
     !worktree ||
     worktree.id !== parent.entry.worktree.id ||
+    worktree.ownerKind !== "session" ||
     parent.entry.archivedAt !== undefined
   ) {
     throw new SessionWorktreeSourceChangedError(
@@ -172,12 +173,13 @@ async function resolveSpawnParentWorktreeSource(
   // persisted workspace intent belongs to the child and uses its admitted run.
   const assertCurrent = () => {
     const current = loadGatewaySessionEntryReadOnly(parent.canonicalKey, { agentId });
-    const currentWorktree = managedWorktrees.findLiveByOwner("session", parent.canonicalKey);
+    const currentWorktree = managedWorktrees.findLiveById(worktree.id);
     if (
       current.entry?.sessionId !== parentSessionId ||
       current.entry.archivedAt !== undefined ||
       current.entry.worktree?.id !== worktree.id ||
       currentWorktree?.id !== worktree.id ||
+      currentWorktree.ownerKind !== "session" ||
       currentWorktree.repoRoot !== worktree.repoRoot ||
       currentWorktree.path !== worktree.path
     ) {
@@ -339,7 +341,11 @@ export async function prepareSessionWorktree(params: {
     await checkSource();
     const boundId = normalizeOptionalString(target.entry?.worktree?.id);
     let existing = boundId ? managedWorktrees.findLiveById(boundId) : undefined;
-    if (existing && (existing.ownerKind !== "session" || existing.ownerId !== target.key)) {
+    if (
+      existing &&
+      (existing.ownerKind !== "session" ||
+        (existing.ownerId !== undefined && existing.ownerId !== target.key))
+    ) {
       return err(
         errorShape(ErrorCodes.UNAVAILABLE, "session worktree binding has a different owner"),
       );

@@ -815,4 +815,26 @@ describe("local sandbox workspace reconciliation", () => {
       "revoked",
     );
   });
+
+  it("lets sessions use the same projection when the worktree is shared", async () => {
+    const sharedOwner = {
+      ...owner,
+      worktree: { ...owner.worktree, ownerId: undefined },
+    };
+    const projection = await withLocalWorkspaceProjection(sharedOwner, (state) => state.prepare());
+    await fs.writeFile(path.join(projection, "source.txt"), "shared edit\n");
+    const peer = {
+      ...sharedOwner,
+      sessionKey: `agent:main:dashboard:peer-${randomUUID()}`,
+      sessionId: randomUUID(),
+      lifecycleRevision: randomUUID(),
+    };
+
+    await expect(withLocalWorkspaceProjection(peer, (state) => state.prepare())).resolves.toBe(
+      projection,
+    );
+    expect(await fs.readFile(path.join(owner.worktree.path, "source.txt"), "utf8")).toBe(
+      "shared edit\n",
+    );
+  });
 });

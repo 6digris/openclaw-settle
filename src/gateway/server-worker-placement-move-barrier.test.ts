@@ -113,7 +113,7 @@ describe("worker placement move destination", () => {
       const barrier = createGatewayWorkerPlacementMoveBarrier({
         placements: { waitForTurnClaimRelease: vi.fn() },
         loadSessionRuntime: async () => ({
-          managedWorktrees: { findLiveByOwner: () => undefined },
+          managedWorktrees: { findLiveById: () => undefined },
           resolveCanonicalSessionEntryFromStoreKeys,
           resolveGatewaySessionStoreTargetWithStore,
         }),

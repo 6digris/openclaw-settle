@@ -73,10 +73,9 @@ export function readSharedGitHubPublicationWorkspace(
         query
           .selectFrom("worktrees")
           .select(["id", "branch", "repo_root", "repo_fingerprint"])
+          .where("id", "=", entry.worktree.id)
           .where("owner_kind", "=", "session")
-          .where("owner_id", "=", session.sessionKey)
           .where("removed_at", "is", null)
-          .orderBy("created_at", "desc")
           .limit(1),
       )
     : undefined;
@@ -86,7 +85,7 @@ export function readSharedGitHubPublicationWorkspace(
     worktree.branch !== entry.worktree.branch ||
     worktree.repo_root !== entry.worktree.repoRoot
   ) {
-    throw new Error("GitHub publication session worktree owner is unavailable.");
+    throw new Error("GitHub publication session worktree binding is unavailable.");
   }
   return {
     kind: "worktree" as const,

@@ -306,23 +306,23 @@ describe("shared worktree receipt observation", () => {
     expect(await fs.readdir(path.dirname(databasePath))).toEqual(files);
   });
 
-  it("does not qualify an unavailable workspace until this session has a shared receipt", () => {
+  it("does not use legacy creator metadata to qualify a workspace", () => {
     const coordinator = sharedPublicationCoordinator();
     const db = openOpenClawStateDatabase().db;
     db.prepare("UPDATE worktrees SET owner_id = ? WHERE id = ?").run("other-session", "worktree-1");
     expect(coordinator.latestShared(session)).toBeNull();
     expect(coordinator.latestShared(session, "absent")).toBeNull();
     insertSharedWorktreeReceipt("accepted");
-    expect(() => coordinator.latestShared(session)).toThrow(/owner.*unavailable/);
+    expect(coordinator.latestShared(session)?.result.requestId).toBe("accepted");
   });
 
-  it("surfaces an unavailable current workspace rather than claiming no attempt", () => {
+  it("keeps the current workspace available when legacy creator metadata differs", () => {
     const coordinator = sharedPublicationCoordinator();
     insertSharedWorktreeReceipt("current");
     openOpenClawStateDatabase()
       .db.prepare("UPDATE worktrees SET owner_id = ? WHERE id = ?")
       .run("other-session", "worktree-1");
-    expect(() => coordinator.latestShared(session)).toThrow(/owner.*unavailable/);
+    expect(coordinator.latestShared(session)?.result.requestId).toBe("current");
   });
   it("searches past a full page of valid stale receipts without choosing one as current", () => {
     const coordinator = sharedPublicationCoordinator();

@@ -209,12 +209,18 @@ describe("projects.list observed projects", () => {
         updatedAt: 200,
         visibility: "shared",
         createdActor: { type: "human", source: "profile", id: "owner@example.com" },
+        worktree: { id: "shared", branch: "openclaw/shared", repoRoot: "/repos/shared" },
       },
       "agent:main:private": {
         sessionId: "private",
         updatedAt: 300,
         visibility: "draft",
         createdActor: { type: "human", source: "profile", id: "owner@example.com" },
+        worktree: {
+          id: "private-shared",
+          branch: "openclaw/private-shared",
+          repoRoot: "/repos/private-shared",
+        },
       },
     };
     const worktree = (name: string, ownerId: string, lastActiveAt: number) => ({
@@ -232,7 +238,9 @@ describe("projects.list observed projects", () => {
     });
     const worktrees = [
       worktree("visible", "agent:main:visible", 500),
+      { ...worktree("shared", "ignored", 510), ownerId: undefined },
       worktree("private", "agent:main:private", 490),
+      { ...worktree("private-shared", "ignored", 495), ownerId: undefined },
       worktree("orphan", "agent:main:missing", 480),
       {
         ...worktree("manual", "ignored", 470),
@@ -252,14 +260,16 @@ describe("projects.list observed projects", () => {
       service,
       client: authenticatedClient("viewer@example.com"),
     })) as Array<{ name: string }>;
-    expect(viewer.map((project) => project.name)).toEqual(["visible"]);
+    expect(viewer.map((project) => project.name)).toEqual(["shared", "visible"]);
 
     const admin = (await listObservedProjects({
       service,
       client: authenticatedClient("admin@example.com", ["operator.admin"]),
     })) as Array<{ name: string }>;
     expect(admin.map((project) => project.name)).toEqual([
+      "shared",
       "visible",
+      "private-shared",
       "private",
       "orphan",
       "manual",

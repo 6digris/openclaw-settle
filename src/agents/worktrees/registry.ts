@@ -364,7 +364,10 @@ export function updateRegistryWorktree(
   env: NodeJS.ProcessEnv,
   id: string,
   patch: Partial<
-    Pick<ManagedWorktreeRecord, "lastActiveAt" | "removedAt" | "runEndCleanup" | "snapshotRef">
+    Pick<
+      ManagedWorktreeRecord,
+      "lastActiveAt" | "ownerId" | "removedAt" | "runEndCleanup" | "snapshotRef"
+    >
   > & {
     repositoryIdentity?: Pick<ManagedWorktreeRecord, "repoRoot" | "repoFingerprint">;
     provisionedPaths?: readonly string[];
@@ -375,6 +378,9 @@ export function updateRegistryWorktree(
   const values: Partial<WorktreeRow> = {};
   if (patch.lastActiveAt !== undefined) {
     values.last_active_at = patch.lastActiveAt;
+  }
+  if ("ownerId" in patch) {
+    values.owner_id = patch.ownerId ?? null;
   }
   if ("removedAt" in patch) {
     values.removed_at = patch.removedAt ?? null;

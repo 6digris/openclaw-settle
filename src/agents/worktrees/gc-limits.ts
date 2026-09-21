@@ -81,7 +81,11 @@ export async function enforceWorktreeCleanupLimits(
   }
   const removed: string[] = [];
   const candidates = live
-    .filter((record) => record.ownerKind === "workboard" || record.ownerKind === "session")
+    .filter(
+      (record) =>
+        record.ownerKind === "workboard" ||
+        (record.ownerKind === "session" && record.ownerId !== undefined),
+    )
     .toSorted((a, b) => a.lastActiveAt - b.lastActiveAt);
   for (const record of candidates) {
     const { liveIds } = refreshTotals();

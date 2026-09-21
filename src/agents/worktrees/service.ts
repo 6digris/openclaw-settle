@@ -402,18 +402,43 @@ export class ManagedWorktreeService {
     if (existing && params.profiles?.length) {
       throw new Error("Source profiles require a new worktree; choose an unused --name.");
     }
-    // Name reuse only ever adopts the caller's own record. Without this guard a
-    // caller-chosen name could bind a new owner to another session's or a
-    // manual checkout and run inside it.
-    if (existing && !existing.removedAt && !worktreeOwnerMatches(existing, params)) {
+    const sharesSessionWorktree =
+      existing?.ownerKind === "session" && params.ownerKind === "session";
+    // Manual and Workboard worktrees remain exclusive. Session worktrees are
+    // shared resources: session rows reference their stable id, while ownerId is
+    // only legacy creator metadata and is cleared when another session joins.
+    if (
+      existing &&
+      !existing.removedAt &&
+      !worktreeOwnerMatches(existing, params) &&
+      !sharesSessionWorktree
+    ) {
       throw new Error(
         `worktree name is already in use by ${existing.ownerKind}${existing.ownerId ? ` ${existing.ownerId}` : ""}: ${suppliedName}`,
       );
     }
+    if (existing && params.baseRef && existing.baseRef !== params.baseRef) {
+      throw new Error(
+        `worktree ${suppliedName} already uses base ref ${existing.baseRef}; requested ${params.baseRef}`,
+      );
+    }
+    const releaseSessionOwner = (record: ManagedWorktreeRecord) => {
+      if (
+        !sharesSessionWorktree ||
+        record.ownerId === undefined ||
+        record.ownerId === params.ownerId
+      ) {
+        return record;
+      }
+      updateRegistryWorktree(this.env, record.id, { ownerId: undefined });
+      const shared = { ...record };
+      delete shared.ownerId;
+      return shared;
+    };
     if (existing && existing.removedAt === undefined) {
       if (await worktreePathExists(existing.path)) {
         return await withWorktreeSource(params, async (current) => ({
-          record: await this.rebindLiveRepository(existing, current),
+          record: releaseSessionOwner(await this.rebindLiveRepository(existing, current)),
           materialized: false,
         }));
       }
@@ -422,18 +447,20 @@ export class ManagedWorktreeService {
       );
     }
     if (existing && existing.removedAt !== undefined && existing.snapshotRef) {
-      if (!worktreeOwnerMatches(existing, params)) {
+      if (!worktreeOwnerMatches(existing, params) && !sharesSessionWorktree) {
         throw new Error(
           `worktree name is already in use by ${existing.ownerKind}${existing.ownerId ? ` ${existing.ownerId}` : ""}: ${suppliedName}`,
         );
       }
       return await withWorktreeSource(params, async (current) => {
-        const record = await this.restoreWithAllocation({
-          id: existing.id,
-          signal: current.signal,
-          commitGuard: current.commitGuard,
-          rollbackGuard: current.rollbackGuard,
-        });
+        const record = releaseSessionOwner(
+          await this.restoreWithAllocation({
+            id: existing.id,
+            signal: current.signal,
+            commitGuard: current.commitGuard,
+            rollbackGuard: current.rollbackGuard,
+          }),
+        );
         publication.record = { ...record };
         return { record, materialized: true };
       });

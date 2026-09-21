@@ -330,7 +330,10 @@ export function installGitHubPublicationTestHarness(): void {
       ownerKind: "session",
       ownerId,
     }));
-    mocks.findWorktreeById.mockReset().mockReturnValue(undefined);
+    mocks.findWorktreeById.mockReset().mockImplementation((id: string) => {
+      const worktree = mocks.findWorktree("session", SESSION_KEY);
+      return worktree?.id === id ? worktree : undefined;
+    });
     mocks.resolveRepository.mockReset().mockResolvedValue({
       checkoutRoot: "/repo/worktree",
       repoRoot: "/repo",

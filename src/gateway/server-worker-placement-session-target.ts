@@ -100,12 +100,12 @@ type SessionTargetShape<Store> = {
   storeKeys: string[];
 };
 
-/** Keep canonical session identity and its durable workspace owner in one lifecycle fence. */
+/** Keep canonical session identity and its durable workspace binding in one lifecycle fence. */
 export function resolveWorkerPlacementSessionTarget<
   Entry extends SessionEntryShape,
   Store extends Record<string, Entry>,
   Target extends SessionTargetShape<Store>,
-  Worktree extends { id: string; ownerId?: string; path: string },
+  Worktree extends { id: string; ownerKind: string; path: string },
 >(params: {
   sessionRuntime: {
     resolveGatewaySessionStoreTargetWithStore: (input: {
@@ -120,7 +120,7 @@ export function resolveWorkerPlacementSessionTarget<
       storeKeys: string[],
     ) => Entry | undefined;
     managedWorktrees: {
-      findLiveByOwner: (ownerKind: "session", ownerId: string) => Worktree | undefined;
+      findLiveById: (id: string) => Worktree | undefined;
     };
   };
   config: OpenClawConfig;
@@ -175,15 +175,14 @@ export function resolveWorkerPlacementSessionTarget<
       workspace: { kind: "repository", repository } satisfies WorkerSessionWorkspace,
     };
   }
-  const worktree = params.sessionRuntime.managedWorktrees.findLiveByOwner(
-    "session",
-    target.canonicalKey,
-  );
+  const worktree = entry.worktree?.id
+    ? params.sessionRuntime.managedWorktrees.findLiveById(entry.worktree.id)
+    : undefined;
   if (
     !entry.worktree?.id ||
     !worktree ||
     worktree.id !== entry.worktree.id ||
-    worktree.ownerId !== target.canonicalKey
+    worktree.ownerKind !== "session"
   ) {
     throw targetChangedError();
   }

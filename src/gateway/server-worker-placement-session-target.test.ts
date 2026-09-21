@@ -49,10 +49,10 @@ test("resolves consecutive placement workspaces without decoding unrelated sessi
             resolveGatewaySessionStoreTargetWithStore,
             resolveCanonicalSessionEntryFromStoreKeys,
             managedWorktrees: {
-              findLiveByOwner: (_kind, ownerId) => ({
-                id: ownerId,
-                ownerId,
-                path: `/synthetic/${ownerId}`,
+              findLiveById: (id) => ({
+                id,
+                ownerKind: "session",
+                path: `/synthetic/${id}`,
               }),
             },
           },

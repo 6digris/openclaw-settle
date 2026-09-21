@@ -32,7 +32,10 @@ function serviceFor(env?: NodeJS.ProcessEnv) {
 }
 
 function belongsToSession(record: ManagedWorktreeRecord, sessionKey: string) {
-  return record.ownerKind === "session" && record.ownerId === sessionKey;
+  return (
+    record.ownerKind === "session" &&
+    (record.ownerId === undefined || record.ownerId === sessionKey)
+  );
 }
 
 /** The session lifecycle fence remains held until this exact bound checkout finishes cleanup. */
@@ -49,6 +52,12 @@ export async function removeSessionWorktree(params: {
   const env = params.env ?? process.env;
   const record = getRegistryWorktree(env, params.id);
   if (!record || record.removedAt !== undefined) {
+    return undefined;
+  }
+  // An ownerless session worktree is a shared resource. Session lifecycle
+  // changes only detach the session row; idle GC owns eventual checkout cleanup.
+  if (record.ownerKind === "session" && record.ownerId === undefined) {
+    params.commitGuard?.();
     return undefined;
   }
   const preserved = (

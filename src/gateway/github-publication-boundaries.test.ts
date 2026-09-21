@@ -544,6 +544,10 @@ describe("Gateway GitHub publication boundaries", () => {
     mocks.findWorktree.mockImplementation((kind: string, key: string) =>
       key === otherSession ? otherWorktree : findWorktree(kind, key),
     );
+    const findWorktreeById = mocks.findWorktreeById.getMockImplementation()!;
+    mocks.findWorktreeById.mockImplementation((id: string) =>
+      id === otherWorktree.id ? otherWorktree : findWorktreeById(id),
+    );
     mocks.updateIndex.mockImplementationOnce(async () => {
       const { GitHubPublicationRecoveryPendingError } = await vi.importActual<
         typeof import("./github-publication-git-index.js")
@@ -619,7 +623,7 @@ describe("Gateway GitHub publication boundaries", () => {
     expect(commands).toEqual([]);
   });
 
-  it("validates the live session owner before recovery can touch Git state", async () => {
+  it("validates the live session worktree binding before recovery can touch Git state", async () => {
     const database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
     const coordinator = createTestGitHubPublicationCoordinator({
       placements: createWorkerSessionPlacementStore({ database }),
@@ -634,18 +638,7 @@ describe("Gateway GitHub publication boundaries", () => {
       path: "/repo/worktree",
       branch: BRANCH,
       baseRef: "origin/main",
-      ownerKind: "session",
-      ownerId: SESSION_KEY,
-    });
-    mocks.findWorktree.mockReturnValue({
-      id: "worktree-1",
-      repoRoot: "/repo",
-      repoFingerprint: "fingerprint-1",
-      path: "/repo/worktree",
-      branch: BRANCH,
-      baseRef: "origin/main",
-      ownerKind: "session",
-      ownerId: "agent:main:dashboard:replacement",
+      ownerKind: "manual",
     });
 
     await coordinator.resumeSessionRequests();

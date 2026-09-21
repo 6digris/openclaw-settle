@@ -113,12 +113,14 @@ function resolveSessionWorkspace(params: {
     respondInvalidWorkerSession(params.respond, "The session repository workspace owner changed.");
     return undefined;
   }
-  const worktree = managedWorktrees.findLiveByOwner("session", params.sessionKey);
+  const worktree = params.entry.worktree?.id
+    ? managedWorktrees.findLiveById(params.entry.worktree.id)
+    : undefined;
   if (
     params.entry.worktree?.id &&
     worktree &&
     worktree.id === params.entry.worktree.id &&
-    worktree.ownerId === params.sessionKey
+    worktree.ownerKind === "session"
   ) {
     return { kind: "local", path: worktree.path };
   }
