@@ -45,11 +45,17 @@ unchanged.
 
 Migration creates an empty mapping and marks existing index state
 `needs_rebuild = 1`, with `fts_row_count = NULL`. It does not scan or backfill FTS
-content. On the next reconcile, unknown or incomplete ownership takes the legacy
-session-filtered delete during that first rebuild and publishes exact mappings
-with their count. Worker rebuilds retain bounded delete chunks, so a legacy
-projection may need a fallback scan per chunk until that first rebuild finishes.
-Subsequent deletes use exact rowids. Synchronous and worker reconciliation,
+content inside the schema transaction. Doctor then prepares unknown dirty-session
+mappings under its exclusive agent maintenance lease, traversing FTS rowids once
+in bounded transactions. This also repairs already-version-22 stores whose
+earlier migration left ownership unknown. Preparation preserves raw transcripts,
+FTS contents, dirty flags and projection claims. Counts become known only after
+complete traversal; they certify mapping coverage, not transcript freshness.
+Interrupted preparation can resume without duplicating rows. Conflicting
+session ownership refuses rather than granting deletion authority to the wrong
+session. The next reconcile uses exact rowids and retains its existing claim,
+source-generation and finalization checks. Incomplete ownership outside this
+maintenance path still uses the legacy fallback. Synchronous and worker reconciliation,
 suffix replacement, deletion and cold restoration maintain the same ownership.
 There is no foreign-key cascade on the mapping: deletion needs those rowids even
 after the session window has been removed; the projection owner removes them

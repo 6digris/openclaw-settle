@@ -4,6 +4,8 @@ import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
+import { prepareDoctorSessionTranscriptFts } from "../commands/doctor-session-transcript-fts.js";
+import { withDoctorSqliteMaintenanceLock } from "../commands/doctor-sqlite-maintenance-lock.js";
 import * as sqlite from "../infra/node-sqlite.js";
 import { resolveRuntimeProcessEntrypointUrl } from "../infra/runtime-process-url.js";
 import * as integrityWorker from "../infra/sqlite-integrity-worker.js";
@@ -129,7 +131,341 @@ function withAbortableMaintenance<T>(
   );
 }
 
+function legacyFtsFixture(rowCount = 600) {
+  const f = fixture();
+  const database = sqlite.openNodeSqliteDatabase(f.options.pathname);
+  database.exec("BEGIN");
+  for (const session of ["legacy", "complete"]) {
+    database
+      .prepare(
+        "INSERT INTO session_nodes (session_key,current_session_id,entry_json,updated_at) VALUES (?,?,'{}',1)",
+      )
+      .run(session, session);
+    database
+      .prepare(
+        "INSERT INTO session_windows (session_id,session_key,created_at,updated_at) VALUES (?,?,1,1)",
+      )
+      .run(session, session);
+    database
+      .prepare(
+        "INSERT INTO session_transcript_index_state (session_id,indexed_seq,needs_rebuild,fts_row_count,updated_at) VALUES (?,600,?,?,?)",
+      )
+      .run(session, session === "legacy" ? 1 : 0, session === "legacy" ? null : 1, -17);
+  }
+  for (let seq = 0; seq < rowCount; seq++) {
+    const event = JSON.stringify({
+      type: "message",
+      id: `m${seq}`,
+      parentId: seq ? `m${seq - 1}` : null,
+      message: { role: "user", content: "retained needle" },
+    });
+    database.prepare("INSERT INTO transcript_events VALUES (?,?,?,1)").run("legacy", seq, event);
+    database
+      .prepare(
+        "INSERT INTO session_transcript_fts (rowid,session_id,message_id,text) VALUES (?,?,?,?)",
+      )
+      .run(seq - 3, "legacy", `m${seq}`, "retained needle");
+  }
+  database.exec(
+    "INSERT INTO session_transcript_fts (session_id,message_id,text) VALUES ('complete','sibling','untouched'); INSERT INTO session_transcript_fts_rows SELECT session_id,rowid FROM session_transcript_fts WHERE session_id='complete'; COMMIT",
+  );
+  const before = {
+    events: database.prepare("SELECT * FROM transcript_events ORDER BY seq").all(),
+    fts: database.prepare("SELECT rowid,* FROM session_transcript_fts ORDER BY rowid").all(),
+    state: database
+      .prepare(
+        "SELECT session_id,indexed_seq,needs_rebuild,updated_at FROM session_transcript_index_state ORDER BY session_id",
+      )
+      .all(),
+  };
+  database.close();
+  return { ...f, before };
+}
+
 describe("asynchronous agent database maintenance admission", () => {
+  it("prepares legacy FTS ownership without publishing transcript freshness", async () => {
+    const f = legacyFtsFixture();
+    const { before } = f;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const prepared = await withDoctorSqliteMaintenanceLock({
+        env: f.env,
+        operation: "synthetic transcript preparation",
+        protectedPaths: [f.options.pathname],
+        run: (authority) =>
+          prepareDoctorSessionTranscriptFts({
+            env: f.env,
+            authority,
+            targets: [
+              { agentId: "worker", storePath: f.options.pathname, sqlitePath: f.options.pathname },
+            ],
+          }),
+      });
+      expect(prepared).toBe(attempt ? 0 : 1);
+      const after = sqlite.openNodeSqliteDatabase(f.options.pathname, { readOnly: true });
+      try {
+        expect(
+          after
+            .prepare(
+              "SELECT session_id,fts_row_count FROM session_transcript_index_state ORDER BY session_id",
+            )
+            .all(),
+        ).toEqual([
+          { session_id: "complete", fts_row_count: 1 },
+          { session_id: "legacy", fts_row_count: 600 },
+        ]);
+        expect(after.prepare("SELECT count(*) n FROM session_transcript_fts_rows").get()).toEqual({
+          n: 601,
+        });
+        expect(after.prepare("SELECT * FROM transcript_events ORDER BY seq").all()).toEqual(
+          before.events,
+        );
+        expect(
+          after.prepare("SELECT rowid,* FROM session_transcript_fts ORDER BY rowid").all(),
+        ).toEqual(before.fts);
+        expect(
+          after
+            .prepare(
+              "SELECT session_id,indexed_seq,needs_rebuild,updated_at FROM session_transcript_index_state ORDER BY session_id",
+            )
+            .all(),
+        ).toEqual(before.state);
+      } finally {
+        after.close();
+      }
+    }
+  });
+
+  it.each(["into-complete", "from-complete"])(
+    "refuses conflicting FTS ownership %s without certifying a dirty projection",
+    async (direction) => {
+      const f = legacyFtsFixture();
+      const database = sqlite.openNodeSqliteDatabase(f.options.pathname);
+      if (direction === "into-complete") {
+        database.exec("UPDATE session_transcript_fts_rows SET session_id='legacy'");
+      } else {
+        database.exec(
+          "INSERT INTO session_transcript_fts_rows SELECT 'complete',min(rowid) FROM session_transcript_fts WHERE session_id='legacy'",
+        );
+      }
+      database.close();
+      await expect(
+        withAgentDatabaseMaintenanceLease({ env: f.env }, (maintenance) =>
+          migrateOpenClawAgentDatabaseForMaintenance(f.options, maintenance),
+        ),
+      ).rejects.toThrow("conflicting session ownership");
+      const after = sqlite.openNodeSqliteDatabase(f.options.pathname, { readOnly: true });
+      try {
+        expect(
+          after
+            .prepare(
+              "SELECT fts_row_count,needs_rebuild,updated_at FROM session_transcript_index_state WHERE session_id='legacy'",
+            )
+            .get(),
+        ).toEqual({ fts_row_count: null, needs_rebuild: 1, updated_at: -17 });
+        expect(
+          after.prepare("SELECT rowid,* FROM session_transcript_fts ORDER BY rowid").all(),
+        ).toEqual(f.before.fts);
+        expect(after.prepare("SELECT * FROM transcript_events ORDER BY seq").all()).toEqual(
+          f.before.events,
+        );
+      } finally {
+        after.close();
+      }
+    },
+  );
+
+  it.each(["mappings", "counts"])(
+    "retains resumable FTS %s batches when the maintenance owner is aborted",
+    async (phase) => {
+      const f = legacyFtsFixture();
+      if (phase === "counts") {
+        const database = sqlite.openNodeSqliteDatabase(f.options.pathname);
+        database.exec("BEGIN");
+        for (let index = 0; index < 600; index++) {
+          const id = `empty-${index}`;
+          database
+            .prepare(
+              "INSERT INTO session_nodes (session_key,current_session_id,entry_json,updated_at) VALUES (?,?,'{}',1)",
+            )
+            .run(id, id);
+          database
+            .prepare(
+              "INSERT INTO session_windows (session_id,session_key,created_at,updated_at) VALUES (?,?,1,1)",
+            )
+            .run(id, id);
+          database
+            .prepare(
+              "INSERT INTO session_transcript_index_state (session_id,indexed_seq,needs_rebuild,fts_row_count,updated_at) VALUES (?,-1,1,NULL,-17)",
+            )
+            .run(id);
+        }
+        database.exec("COMMIT");
+        database.close();
+      }
+      const abort = new AbortController();
+      let observation: { n: number } | undefined;
+      let tick: NodeJS.Immediate | undefined;
+      let stopped = false;
+      const observe = () => {
+        if (stopped) return;
+        const database = sqlite.openNodeSqliteDatabase(f.options.pathname, { readOnly: true });
+        try {
+          const row = database
+            .prepare(
+              phase === "mappings"
+                ? "SELECT count(*) n FROM session_transcript_fts_rows WHERE session_id='legacy'"
+                : "SELECT count(*) n FROM session_transcript_index_state WHERE session_id LIKE 'empty-%' AND fts_row_count IS NOT NULL",
+            )
+            .get() as { n: number };
+          if (row.n > 0 && row.n < 600) {
+            observation = row;
+            abort.abort(new Error("synthetic FTS preparation abort"));
+            return;
+          }
+        } finally {
+          database.close();
+        }
+        tick = setImmediate(observe);
+      };
+      tick = setImmediate(observe);
+      try {
+        await expect(
+          withAbortableMaintenance(f, abort.signal, (maintenance) =>
+            migrateOpenClawAgentDatabaseForMaintenance(f.options, maintenance),
+          ),
+        ).rejects.toThrow(/abort/);
+        expect(observation).toBeDefined();
+      } finally {
+        stopped = true;
+        if (tick) clearImmediate(tick);
+      }
+      const interrupted = sqlite.openNodeSqliteDatabase(f.options.pathname, { readOnly: true });
+      try {
+        expect(
+          interrupted
+            .prepare(
+              "SELECT fts_row_count,needs_rebuild,updated_at FROM session_transcript_index_state WHERE session_id='legacy'",
+            )
+            .get(),
+        ).toEqual({ fts_row_count: null, needs_rebuild: 1, updated_at: -17 });
+      } finally {
+        interrupted.close();
+      }
+      await withAgentDatabaseMaintenanceLease({ env: f.env }, (maintenance) =>
+        migrateOpenClawAgentDatabaseForMaintenance(f.options, maintenance),
+      );
+      const resumed = sqlite.openNodeSqliteDatabase(f.options.pathname, { readOnly: true });
+      try {
+        expect(
+          resumed
+            .prepare("SELECT count(*) n FROM session_transcript_fts_rows WHERE session_id='legacy'")
+            .get(),
+        ).toEqual({ n: 600 });
+        expect(
+          resumed
+            .prepare(
+              "SELECT fts_row_count,needs_rebuild,updated_at FROM session_transcript_index_state WHERE session_id='legacy'",
+            )
+            .get(),
+        ).toEqual({ fts_row_count: 600, needs_rebuild: 1, updated_at: -17 });
+        expect(resumed.prepare("SELECT * FROM transcript_events ORDER BY seq").all()).toEqual(
+          f.before.events,
+        );
+        expect(
+          resumed.prepare("SELECT rowid,* FROM session_transcript_fts ORDER BY rowid").all(),
+        ).toEqual(f.before.fts);
+        if (phase === "counts") {
+          expect(
+            resumed
+              .prepare(
+                "SELECT count(*) n FROM session_transcript_index_state WHERE session_id LIKE 'empty-%' AND fts_row_count=0 AND needs_rebuild=1 AND updated_at=-17",
+              )
+              .get(),
+          ).toEqual({ n: 600 });
+        }
+      } finally {
+        resumed.close();
+      }
+    },
+  );
+
+  it("cancels a large session count before certifying partial ownership", async () => {
+    const rowCount = 4096;
+    const f = legacyFtsFixture(rowCount);
+    const abort = new AbortController();
+    let tick: NodeJS.Immediate | undefined;
+    let stopped = false;
+    const observe = () => {
+      if (stopped) return;
+      const database = sqlite.openNodeSqliteDatabase(f.options.pathname, { readOnly: true });
+      let mapped: number;
+      try {
+        mapped = (
+          database
+            .prepare("SELECT count(*) n FROM session_transcript_fts_rows WHERE session_id='legacy'")
+            .get() as { n: number }
+        ).n;
+      } finally {
+        database.close();
+      }
+      // Let preparation enter its count work after mapping coverage completes,
+      // then cancel through the real lease signal before it can certify the count.
+      tick = setImmediate(
+        mapped === rowCount
+          ? () => {
+              tick = setImmediate(() =>
+                abort.abort(new Error("synthetic count preparation abort")),
+              );
+            }
+          : observe,
+      );
+    };
+    tick = setImmediate(observe);
+    try {
+      await expect(
+        withAbortableMaintenance(f, abort.signal, (maintenance) =>
+          migrateOpenClawAgentDatabaseForMaintenance(f.options, maintenance),
+        ),
+      ).rejects.toThrow(/abort/);
+    } finally {
+      stopped = true;
+      if (tick) clearImmediate(tick);
+    }
+    const interrupted = sqlite.openNodeSqliteDatabase(f.options.pathname, { readOnly: true });
+    try {
+      expect(
+        interrupted
+          .prepare(
+            "SELECT fts_row_count,needs_rebuild,updated_at FROM session_transcript_index_state WHERE session_id='legacy'",
+          )
+          .get(),
+      ).toEqual({ fts_row_count: null, needs_rebuild: 1, updated_at: -17 });
+    } finally {
+      interrupted.close();
+    }
+    await withAgentDatabaseMaintenanceLease({ env: f.env }, (maintenance) =>
+      migrateOpenClawAgentDatabaseForMaintenance(f.options, maintenance),
+    );
+    const resumed = sqlite.openNodeSqliteDatabase(f.options.pathname, { readOnly: true });
+    try {
+      expect(
+        resumed
+          .prepare(
+            "SELECT fts_row_count,needs_rebuild,updated_at FROM session_transcript_index_state WHERE session_id='legacy'",
+          )
+          .get(),
+      ).toEqual({ fts_row_count: rowCount, needs_rebuild: 1, updated_at: -17 });
+      expect(resumed.prepare("SELECT * FROM transcript_events ORDER BY seq").all()).toEqual(
+        f.before.events,
+      );
+      expect(
+        resumed.prepare("SELECT rowid,* FROM session_transcript_fts ORDER BY rowid").all(),
+      ).toEqual(f.before.fts);
+    } finally {
+      resumed.close();
+    }
+  });
+
   it("reuses one integrity process across agent maintenance while checking each file afresh", async () => {
     const f = fixture();
     const createTarget = (agentId: string) => {

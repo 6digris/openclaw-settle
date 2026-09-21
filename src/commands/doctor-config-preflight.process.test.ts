@@ -22,6 +22,7 @@ import {
   runBuiltRuntime,
   runIsolatedModuleScript,
   runSourceRuntime,
+  seedLegacyTranscriptFtsDatabase,
   seedV17AdditiveRepairDatabase,
 } from "./doctor-config-preflight.process.test-support.js";
 import { doctorConfigRuntimeEntrypoints } from "./doctor-config-runtime.test-support.js";
@@ -91,6 +92,92 @@ function seedPluginStateConflict(stateDir: string): void {
 }
 
 describe("doctor invalid config process exit", () => {
+  it.each([21, 22] as const)(
+    "prepares legacy schema %s FTS through packaged Doctor before Gateway reconciliation",
+    async (version) => {
+      const root = fs.realpathSync(tempDirs.createTempDir("doctor-fts-preparation-"));
+      const runtimeRoot = createBuiltRuntime(root);
+      const instance = await createOpenClawTestInstance({
+        name: `doctor-fts-${version}`,
+        cwd: runtimeRoot,
+        entrypoint: [path.join(runtimeRoot, "dist", "entry.js")],
+        env: { OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1", OPENCLAW_SERVICE_REPAIR_POLICY: "external" },
+        config: { gateway: { mode: "local" }, agents: { entries: { main: {} } } },
+      });
+      try {
+        const pathname = seedLegacyTranscriptFtsDatabase(instance.stateDir, version);
+        const before = new DatabaseSync(pathname, { readOnly: true });
+        const originalEvents = before
+          .prepare(
+            "SELECT session_id,seq,event_json,created_at FROM transcript_events ORDER BY session_id,seq",
+          )
+          .all();
+        before.close();
+        const doctor = await instance.cli(
+          ["doctor", "--fix", "--non-interactive", "--no-workspace-suggestions"],
+          { timeoutMs: DOCTOR_CHILD_TIMEOUT_MS },
+        );
+        expect(doctor.code, `${doctor.stdout}\n${doctor.stderr}`).toBe(0);
+        const prepared = new DatabaseSync(pathname, { readOnly: true });
+        try {
+          expect(prepared.prepare("PRAGMA user_version").get()?.user_version).toBe(22);
+          expect(
+            prepared
+              .prepare(
+                "SELECT count(*) n FROM session_transcript_index_state WHERE fts_row_count IS NULL",
+              )
+              .get(),
+          ).toMatchObject({ n: 0 });
+          expect(
+            prepared.prepare("SELECT count(*) n FROM session_transcript_fts_rows").get(),
+          ).toMatchObject({ n: 1024 });
+          expect(
+            prepared
+              .prepare(
+                "SELECT session_id,seq,event_json,created_at FROM transcript_events ORDER BY session_id,seq",
+              )
+              .all(),
+          ).toEqual(originalEvents);
+        } finally {
+          prepared.close();
+        }
+        await instance.startGateway();
+        const response = await fetch(`${instance.url}/readyz`);
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toMatchObject({ ready: true });
+        const reconciled = new DatabaseSync(pathname, { readOnly: true });
+        try {
+          expect(
+            reconciled
+              .prepare(
+                "SELECT count(*) n FROM session_transcript_index_state WHERE needs_rebuild!=0 OR fts_row_count IS NULL",
+              )
+              .get(),
+          ).toMatchObject({ n: 0 });
+          expect(
+            reconciled
+              .prepare(
+                "SELECT count(*) n FROM session_transcript_fts WHERE session_transcript_fts MATCH 'needle'",
+              )
+              .get(),
+          ).toMatchObject({ n: 1024 });
+          expect(
+            reconciled
+              .prepare(
+                "SELECT session_id,seq,event_json,created_at FROM transcript_events ORDER BY session_id,seq",
+              )
+              .all(),
+          ).toEqual(originalEvents);
+        } finally {
+          reconciled.close();
+        }
+      } finally {
+        await instance.cleanup();
+      }
+    },
+    getCliProcessTestTimeout(DOCTOR_CHILD_TIMEOUT_MS, 60_000),
+  );
+
   it(
     "repairs the v17 additive schema through doctor --fix",
     async () => {

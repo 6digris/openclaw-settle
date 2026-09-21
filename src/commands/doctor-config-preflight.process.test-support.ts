@@ -204,3 +204,67 @@ export function seedV17AdditiveRepairDatabase(
   }
   return databasePath;
 }
+
+/** Migrated FTS content with enough independent sessions to expose repeated global scans. */
+export function seedLegacyTranscriptFtsDatabase(stateDir: string, version: 21 | 22): string {
+  const pathname = path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
+  fs.mkdirSync(path.dirname(pathname), { recursive: true });
+  const db = new DatabaseSync(pathname);
+  try {
+    ensureOpenClawAgentDatabaseSchema(db, {
+      agentId: "main",
+      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+      path: pathname,
+      register: false,
+    });
+    const now = Date.now();
+    db.exec("BEGIN");
+    for (let index = 0; index < 128; index++) {
+      const sessionId = `fts-session-${index}`;
+      const key = `agent:main:fts-proof-${index}`;
+      db.prepare(
+        "INSERT INTO session_nodes(session_key,current_session_id,entry_json,updated_at) VALUES(?,?,?,?)",
+      ).run(
+        key,
+        sessionId,
+        JSON.stringify({ sessionId, updatedAt: now, displayName: `Synthetic ${index}` }),
+        now,
+      );
+      db.prepare(
+        "INSERT INTO session_windows(session_id,session_key,created_at,updated_at) VALUES(?,?,?,?)",
+      ).run(sessionId, key, now, now);
+      db.prepare(
+        "INSERT INTO session_transcript_index_state(session_id,indexed_seq,needs_rebuild,fts_row_count,updated_at) VALUES(?,7,1,NULL,-17)",
+      ).run(sessionId);
+      for (let seq = 0; seq < 8; seq++) {
+        const id = `message-${seq}`;
+        const text = `Synthetic retained needle ${index} ${seq}`;
+        const event = JSON.stringify({
+          type: "message",
+          id,
+          parentId: seq ? `message-${seq - 1}` : null,
+          timestamp: new Date(now).toISOString(),
+          message: { role: "user", content: text },
+        });
+        db.prepare("INSERT INTO transcript_events VALUES(?,?,?,?)").run(sessionId, seq, event, now);
+        db.prepare(
+          "INSERT INTO session_transcript_fts(session_id,message_id,role,text,timestamp) VALUES(?,?,'user',?,?)",
+        ).run(sessionId, id, text, now);
+      }
+    }
+    if (version === 21) {
+      db.exec(
+        "DROP TABLE session_transcript_fts_rows; ALTER TABLE session_transcript_index_state DROP COLUMN fts_row_count; PRAGMA user_version=21; UPDATE schema_meta SET schema_version=21;",
+      );
+    } else {
+      // A previous stopped-writer preparation committed one prefix before interruption.
+      db.exec(
+        "INSERT INTO session_transcript_fts_rows SELECT session_id,rowid FROM session_transcript_fts ORDER BY rowid LIMIT 100;",
+      );
+    }
+    db.exec("COMMIT");
+  } finally {
+    db.close();
+  }
+  return pathname;
+}

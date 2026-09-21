@@ -46,6 +46,7 @@ import {
   repairLegacySessionTitles,
   type SessionTitleRepairReport,
 } from "./doctor-session-title-repair.js";
+import { prepareDoctorSessionTranscriptFts } from "./doctor-session-transcript-fts.js";
 import { repairLegacySessionWorktreeWorkspaces } from "./doctor-session-worktree-workspace.js";
 import {
   DoctorSqliteMaintenanceLockUnavailableError,
@@ -281,6 +282,18 @@ async function noteSessionSqliteMigrationHealth(params: {
     return postSessionPluginReceipt;
   };
   const runSessionSqlite = async (maintenanceAuthority?: DoctorSqliteMaintenanceAuthority) => {
+    if (params.shouldRepair) {
+      const prepared = await prepareDoctorSessionTranscriptFts({
+        env: params.env,
+        targets: listExistingAgentDatabaseTargets(params.cfg ?? {}, params.env),
+        authority: maintenanceAuthority,
+      });
+      if (prepared)
+        note(
+          `Prepared legacy transcript search ownership in ${prepared} agent store(s).`,
+          "Session search",
+        );
+    }
     const report = await runDoctorSessionSqlite({
       allAgents: true,
       ...(params.cfg ? { cfg: params.cfg } : {}),
