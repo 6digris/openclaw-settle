@@ -699,7 +699,6 @@ describe("session sharing policy", () => {
       for (const [method, requestParams] of [
         ["sessions.abort", { runId: "run-1" }],
         ["exec.approval.resolve", { id: "approval-1" }],
-        ["progressCard.get", { sessionKey: "global", agentId: "work" }],
         ["progressCard.put", { sessionKey: "global", agentId: "work" }],
       ] as const) {
         expect(
@@ -707,6 +706,14 @@ describe("session sharing policy", () => {
             .error,
         ).toMatchObject({ details: { code: "SESSION_PARTICIPATION_REQUIRED" } });
       }
+      expect(
+        resolveSessionMutationAuthorization({
+          client: outsider,
+          method: "progressCard.get",
+          requestParams: { sessionKey: "global", agentId: "work" },
+          context,
+        }).error,
+      ).toBeNull();
       for (const method of ["progressCard.get", "progressCard.put"]) {
         expect(
           resolveSessionMutationAuthorization({

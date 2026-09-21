@@ -8,6 +8,11 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { ensureProfileForEmail, linkEmail, setAvatar } from "../../state/user-profiles.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { prepareGatewayRecipientProfile } from "../expected-profile.js";
+import { createGatewayBroadcaster } from "../server-broadcast.js";
+import { GatewayClientRegistry } from "../server/client-registry.js";
+import { createGatewayWsTestSocket } from "../server/ws-connection.test-helpers.js";
+import { createOperatorWsClient } from "../server/ws-connection/authenticated-request-dispatch.test-support.js";
 import type { GatewayClient } from "./types.js";
 import { usersHandlers } from "./users.js";
 
@@ -113,21 +118,36 @@ test("users.prefs.set notifies only connections belonging to the same merged pro
     }
     linkEmail("retired@example.test", owner.id);
 
-    const connectedClients = [
-      { connId: "owner", authenticatedUserProfile: { profileId: owner.id } },
-      { connId: "merged", authenticatedUserProfile: { profileId: retired.id } },
-      { connId: "other", authenticatedUserProfile: { profileId: other.id } },
-      { connId: "unbound" },
-    ];
-    const broadcastToConnIds = vi.fn();
+    const peers = [
+      ["owner", owner.id, ["operator.sessions.read"]],
+      ["merged", retired.id, ["operator.sessions.write"]],
+      ["staff", owner.id, ["operator.write"]],
+      ["other", other.id, ["operator.sessions.read"]],
+      ["unbound", undefined, ["operator.sessions.read"]],
+    ] as const;
+    const connected = peers.map(([connId, profileId, scopes]) => {
+      const frames: string[] = [];
+      const socket = createGatewayWsTestSocket({ onSend: (data) => frames.push(data) });
+      const client = createOperatorWsClient({ connId, socket, scopes: [...scopes] });
+      if (profileId) {
+        client.authenticatedUserProfile = {
+          profileId,
+          displayName: null,
+          avatarRevision: "",
+          hasAvatar: true,
+          updatedAt: 1,
+        };
+      }
+      prepareGatewayRecipientProfile(client);
+      return { client, frames };
+    });
+    const clients = new GatewayClientRegistry(connected.map(({ client }) => client));
+    const broadcaster = createGatewayBroadcaster({ clients });
+    const broadcastToConnIds = vi.fn(broadcaster.broadcastToConnIds);
     const context = {
       broadcastToConnIds,
       getClientConnIds: (filter: (client: GatewayClient) => boolean) =>
-        new Set(
-          connectedClients
-            .filter((client) => filter(client as GatewayClient))
-            .map((client) => client.connId),
-        ),
+        new Set([...clients].filter(filter).map((client) => client.connId)),
     };
 
     // Measure recipient selection on this handle; the preference worker has its own connection.
@@ -149,8 +169,20 @@ test("users.prefs.set notifies only connections belonging to the same merged pro
       expect(broadcastToConnIds).toHaveBeenCalledExactlyOnceWith(
         "users.prefs.changed",
         { profileId: owner.id, keys: ["ui.accent", "ui.theme"] },
-        new Set(["owner", "merged"]),
+        new Set(["owner", "merged", "staff"]),
       );
+      for (const peer of connected) {
+        if (["owner", "merged", "staff"].includes(peer.client.connId)) {
+          expect(peer.frames).toHaveLength(1);
+          expect(JSON.parse(peer.frames[0]!)).toMatchObject({
+            type: "event",
+            event: "users.prefs.changed",
+            payload: { profileId: owner.id, keys: ["ui.accent", "ui.theme"] },
+          });
+        } else {
+          expect(peer.frames).toEqual([]);
+        }
+      }
       expect(reads.rowCounts.profiles).toBeGreaterThan(0);
       expect.soft(reads.blobBytes.profiles).toBe(0);
     } finally {

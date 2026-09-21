@@ -29,16 +29,18 @@ require the `node` role.
 
 ## Scope levels
 
-| Scope                   | Meaning                                                                                                                                                       |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `operator.read`         | Read-only status, lists, catalog, logs, session reads, retained audit and execution-identity diagnostics, and other non-mutating calls.                       |
-| `operator.write`        | Mutating operator actions: sending messages, invoking tools, updating talk/voice settings, node command relay. Also satisfies `operator.read`.                |
-| `operator.admin`        | Administrative access. Satisfies every `operator.*` scope. Required for config mutation, updates, native hooks, reserved namespaces, and high-risk approvals. |
-| `operator.pairing`      | Device and node pairing management: list, approve, reject, remove, rotate, revoke.                                                                            |
-| `operator.approvals`    | Exec and plugin approval APIs.                                                                                                                                |
-| `operator.questions`    | Listing, reading, answering, and resolving interactive questions.                                                                                             |
-| `operator.talk`         | Creating, steering, and closing Talk sessions without general Gateway write access. `operator.write` also satisfies this scope.                               |
-| `operator.talk.secrets` | Reading Talk configuration with secrets included.                                                                                                             |
+| Scope                     | Meaning                                                                                                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `operator.read`           | Read-only status, lists, catalog, logs, session reads, retained audit and execution-identity diagnostics, and other non-mutating calls.                       |
+| `operator.sessions.read`  | Read visible sessions, history, and session metadata without general Gateway read access.                                                                     |
+| `operator.sessions.write` | Read visible sessions and rename, pin, archive, or restore the authenticated person's existing sessions.                                                      |
+| `operator.write`          | Mutating operator actions: sending messages, invoking tools, updating talk/voice settings, node command relay. Also satisfies `operator.read`.                |
+| `operator.admin`          | Administrative access. Satisfies every `operator.*` scope. Required for config mutation, updates, native hooks, reserved namespaces, and high-risk approvals. |
+| `operator.pairing`        | Device and node pairing management: list, approve, reject, remove, rotate, revoke.                                                                            |
+| `operator.approvals`      | Exec and plugin approval APIs.                                                                                                                                |
+| `operator.questions`      | Listing, reading, answering, and resolving interactive questions.                                                                                             |
+| `operator.talk`           | Creating, steering, and closing Talk sessions without general Gateway write access. `operator.write` also satisfies this scope.                               |
+| `operator.talk.secrets`   | Reading Talk configuration with secrets included.                                                                                                             |
 
 Personal GitHub connection management is a narrowly self-scoped exception to
 read-only behavior: `users.github.*` requires `operator.read` plus the exact
@@ -51,6 +53,18 @@ and per-agent GitHub changes remain `operator.admin`. Publication remains
 
 Unknown future `operator.*` scopes require an exact match unless the caller
 already holds `operator.admin`.
+
+`operator.sessions.write` includes `operator.sessions.read`. Broad
+`operator.read` also includes session reads, and `operator.write` includes both
+session scopes. The session scopes do not grant general diagnostics, configuration,
+tool invocation, or agent execution.
+
+Session-only writers can organize their own existing sessions. Other people's
+visible sessions remain read-only, including when they are shared. Creation,
+message sending, recovery, forks, model and runtime changes, deletion, visibility
+changes, and publication retain their broader scope requirements. Archiving a
+session does not grant permission to delete it. The Control UI presents the same
+boundary in the sidebar, session list, and conversation controls.
 
 RPCs, events, and background tools use the same scope rules. A continuation with
 `operator.write` can read its GitHub identity and session state without another
@@ -302,20 +316,21 @@ dispatch so authorization failures have one canonical structured response:
   `operator.talk.secrets`.
 - `talk.client.*`, `talk.session.*`, `talk.speak`, and `talk.mode` need
   `operator.talk` (or the compatible broader `operator.write`).
-- `sessions.patch` needs `operator.write` for session organization fields and
-  the per-session `model` override. Other runtime overrides, including
-  thinking, fast, verbose, trace, and reasoning levels, need `operator.admin`.
-  Persisting a selected model as the configured agent default is also
-  admin-only.
+- `sessions.patch` and `sessions.patchMany` accept `operator.sessions.write`
+  for `label`, `pinned`, and `archived` changes to owned sessions. Other
+  organization fields, `model`, `agentRuntime`, thinking level, fast mode, and
+  guarded permission mode need `operator.write`. Full permission mode, sandbox
+  changes, and other runtime overrides need `operator.admin`. Persisting a
+  selected model as the configured agent default is also admin-only.
 
 Project RPCs use these scopes:
 
-| Method                                 | Required scope and additional gate                                                            |
-| -------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `projects.list`                        | `operator.read`; only callers satisfying `operator.write` receive `repoRoot` and `originUrl`. |
-| `projects.add`                         | `operator.write` and the `controlPlaneWrite` method flag.                                     |
-| `projects.register`, `projects.remove` | `operator.admin`.                                                                             |
-| `projects.searchRemote`                | `operator.read`.                                                                              |
+| Method                                 | Required scope and additional gate                                                                     |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `projects.list`                        | `operator.sessions.read`; only callers satisfying `operator.write` receive `repoRoot` and `originUrl`. |
+| `projects.add`                         | `operator.write` and the `controlPlaneWrite` method flag.                                              |
+| `projects.register`, `projects.remove` | `operator.admin`.                                                                                      |
+| `projects.searchRemote`                | `operator.read`.                                                                                       |
 
 Some handlers then apply stricter checks based on the concrete thing being
 approved or mutated:
@@ -350,7 +365,7 @@ An already-paired device does not get broader access silently: a reconnect
 that asks for a broader role or broader scopes creates a new pending upgrade
 request.
 
-A connected limited Control UI can file that same pending request through
+A connected limited Control UI with broad read access can file that same pending request through
 **Inbox > System > Limited access > Request admin** without attempting a broader
 reconnect. The request is bound to the signed device identity on the live connection. Approval still
 comes from `device.pair.approve` and therefore requires `operator.pairing` plus
@@ -384,7 +399,7 @@ Approving a device request:
   `operator.admin`, even though `device.pair.approve` itself only needs
   `operator.pairing`.
 - A request for `operator.read`, `operator.write`, `operator.approvals`,
-  `operator.questions`, `operator.pairing`, `operator.talk`, or
+  `operator.sessions.read`, `operator.sessions.write`, `operator.questions`, `operator.pairing`, `operator.talk`, or
   `operator.talk.secrets` requires
   the caller to already hold that scope, or `operator.admin`.
 - A request for `operator.admin` requires `operator.admin`.

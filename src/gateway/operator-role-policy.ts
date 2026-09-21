@@ -9,9 +9,15 @@ import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { notifyListeners, registerListener } from "../shared/listeners.js";
-import { roleScopesAllow } from "../shared/operator-scope-compat.js";
+import { intersectOperatorScopes, roleScopesAllow } from "../shared/operator-scope-compat.js";
 import { getUserProfileRole } from "../state/user-profiles.js";
 import { bumpGatewayAccessRevision } from "./gateway-access-revision.js";
+import {
+  READ_SCOPE,
+  SESSION_READ_SCOPE,
+  SESSION_WRITE_SCOPE,
+  WRITE_SCOPE,
+} from "./operator-scopes.js";
 import {
   resolveOperatorSessionCreation,
   type TrustedSessionCreation,
@@ -174,6 +180,10 @@ export function resolveOperatorRolePolicy(
   if (actor?.kind === "system") {
     return undefined;
   }
+  const prepared = client?.preparedSessionProfile;
+  if (actor?.kind === "operator" && prepared?.aliases.has(actor.profileId)) {
+    return resolveOperatorRolePolicyForAssignment(prepared.profileId, prepared.role, cfg);
+  }
   return resolveOperatorRolePolicyForProfile(actor?.profileId, cfg);
 }
 
@@ -204,7 +214,52 @@ export function operatorSessionCap(client: GatewayClient | null, cfg: OpenClawCo
 }
 
 export function hasOperatorBoundary(client: GatewayClient | null, cfg: OpenClawConfig): boolean {
-  return operatorSessionCap(client, cfg) !== undefined;
+  if (operatorSessionCap(client, cfg) !== undefined) {
+    return true;
+  }
+  if (resolveGatewayOperatorRoleActor(client)?.kind === "system") {
+    return false;
+  }
+  const scopes = client?.connect?.scopes ?? [];
+  return (
+    roleScopesAllow({
+      role: "operator",
+      requestedScopes: [SESSION_READ_SCOPE],
+      allowedScopes: scopes,
+    }) &&
+    !roleScopesAllow({ role: "operator", requestedScopes: [READ_SCOPE], allowedScopes: scopes })
+  );
+}
+
+/** Reapply the current role without granting more than the connection received. */
+export function resolveCurrentOperatorScopes(
+  client: GatewayClient | null,
+  cfg: OpenClawConfig,
+  preparedPolicy?: { value: GatewayOperatorRoleDefinition | undefined },
+): readonly string[] {
+  const scopes = client?.connect?.scopes ?? [];
+  const policy = preparedPolicy ? preparedPolicy.value : resolveOperatorRolePolicy(client, cfg);
+  return policy ? intersectOperatorScopes(scopes, policy.scopes) : scopes;
+}
+
+/** Session organization never acquires foreign write access through membership. */
+export function hasSessionOnlyWriteAuthority(
+  client: GatewayClient | null,
+  cfg: OpenClawConfig,
+  preparedPolicy?: { value: GatewayOperatorRoleDefinition | undefined },
+): boolean {
+  if (resolveGatewayOperatorRoleActor(client)?.kind === "system") {
+    return false;
+  }
+  const scopes = resolveCurrentOperatorScopes(client, cfg, preparedPolicy);
+  return (
+    roleScopesAllow({
+      role: "operator",
+      requestedScopes: [SESSION_WRITE_SCOPE],
+      allowedScopes: scopes,
+    }) &&
+    !roleScopesAllow({ role: "operator", requestedScopes: [WRITE_SCOPE], allowedScopes: scopes })
+  );
 }
 
 /** Enforces the owning agent ceiling for session creation and run-start targets. */

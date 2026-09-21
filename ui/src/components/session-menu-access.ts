@@ -1,13 +1,18 @@
+import type { GatewaySessionRow } from "../api/types.ts";
 import type { ApplicationGatewaySnapshot } from "../app/gateway.ts";
 import { t } from "../i18n/index.ts";
-import { readSessionMethodAccess } from "../lib/session-method-access.ts";
+import {
+  readSessionMethodAccess,
+  sessionAccessRowForBatch,
+  type SessionMethodAccessRequest,
+} from "../lib/session-method-access.ts";
 import type { CloudWorkerStopAction } from "./cloud-worker-stop.ts";
 import type { SessionMenuActionKind } from "./session-menu.ts";
 
-type SessionMenuAccessRow = {
-  key: string;
-  sessionId?: string;
-  archived?: boolean;
+type SessionMenuAccessRow = Pick<
+  GatewaySessionRow,
+  "key" | "sessionId" | "archived" | "sharingRole"
+> & {
   pinnable?: boolean;
 };
 
@@ -18,28 +23,28 @@ export function sessionMenuReasons(params: {
   cloudWorkerStopAction?: CloudWorkerStopAction | null;
 }): Partial<Record<SessionMenuActionKind, string>> {
   const { snapshot, session, batchRows = null, cloudWorkerStopAction } = params;
-  const reason = (request: {
-    method: string;
-    params?: unknown;
-    requiredScope?: "operator.read" | "operator.write" | "operator.admin";
-  }) => {
-    const access = readSessionMethodAccess(snapshot, request);
+  const reason = (request: SessionMethodAccessRequest) => {
+    const access = readSessionMethodAccess(snapshot, { session, ...request });
     return access.allowed ? undefined : access.reason;
   };
   const involvementReason = reason({
     method: "sessions.setInvolvement",
     requiredScope: "operator.read",
   });
-  const patchReason = reason({
-    method: "sessions.patch",
-    params: { key: session.key, label: null },
-  });
+  const patchReason = (patch: Record<string, unknown>) =>
+    reason({ method: "sessions.patch", params: { key: session.key, ...patch } });
+  const renameReason = patchReason({ label: null });
+  const pinReason = patchReason({ pinned: true });
+  const iconReason = patchReason({ icon: null });
+  const colorReason = patchReason({ color: null });
+  const batchSession = batchRows ? sessionAccessRowForBatch(batchRows) : session;
   const batchPatchReason = (patch: Record<string, unknown>) => {
     if (!batchRows) {
-      return patchReason;
+      return patchReason(patch);
     }
     const access = readSessionMethodAccess(snapshot, {
       method: "sessions.patchMany",
+      session: batchSession,
       params: {
         targets: batchRows.map((row) => ({
           key: row.key,
@@ -80,14 +85,10 @@ export function sessionMenuReasons(params: {
       });
   const cloudWorkerStopReason = cloudWorkerStopAction ? reason(cloudWorkerStopAction) : undefined;
   return {
-    ...(patchReason
-      ? {
-          "toggle-pin": patchReason,
-          rename: patchReason,
-          "set-icon": patchReason,
-          "set-color": patchReason,
-        }
-      : {}),
+    ...(pinReason ? { "toggle-pin": pinReason } : {}),
+    ...(renameReason ? { rename: renameReason } : {}),
+    ...(iconReason ? { "set-icon": iconReason } : {}),
+    ...(colorReason ? { "set-color": colorReason } : {}),
     ...(session.pinnable === false ? { "toggle-pin": t("sessionsView.pinRootSessionsOnly") } : {}),
     ...(unreadReason ? { "toggle-unread": unreadReason } : {}),
     ...(involvementReason ? { "toggle-involving-me": involvementReason } : {}),

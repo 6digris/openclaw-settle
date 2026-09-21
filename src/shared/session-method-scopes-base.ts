@@ -2,13 +2,44 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { SESSION_READ_SCOPE } from "../gateway/operator-scopes.js";
 import { isIncognitoSessionKey } from "./incognito-session-key.js";
 
-export type SessionMutationOperatorScope = "operator.write" | "operator.admin";
+export type SessionMutationOperatorScope =
+  | "operator.sessions.write"
+  | "operator.write"
+  | "operator.admin";
+
+const SESSIONS_PATCH_ORGANIZATION_FIELDS: ReadonlySet<string> = new Set([
+  "label",
+  "pinned",
+  "archived",
+]);
 
 /** Shared static read floors consumed by Gateway descriptors and browser admission. */
 export const SESSION_READ_METHOD_SCOPES = {
   "models.list": SESSION_READ_SCOPE,
   "chat.startup": SESSION_READ_SCOPE,
   "chat.metadata": SESSION_READ_SCOPE,
+  "agent.identity.get": SESSION_READ_SCOPE,
+  "agents.list": SESSION_READ_SCOPE,
+  "chat.history": SESSION_READ_SCOPE,
+  "chat.message.get": SESSION_READ_SCOPE,
+  "progressCard.get": SESSION_READ_SCOPE,
+  "projects.list": SESSION_READ_SCOPE,
+  "session.suggestions.list": SESSION_READ_SCOPE,
+  "sessions.describe": SESSION_READ_SCOPE,
+  "sessions.get": SESSION_READ_SCOPE,
+  "sessions.groups.list": SESSION_READ_SCOPE,
+  "sessions.list": SESSION_READ_SCOPE,
+  "sessions.messages.subscribe": SESSION_READ_SCOPE,
+  "sessions.messages.unsubscribe": SESSION_READ_SCOPE,
+  "sessions.preview": SESSION_READ_SCOPE,
+  "sessions.resolve": SESSION_READ_SCOPE,
+  "sessions.search": SESSION_READ_SCOPE,
+  "sessions.subscribe": SESSION_READ_SCOPE,
+  "sessions.viewers.set": SESSION_READ_SCOPE,
+  "themes.get": SESSION_READ_SCOPE,
+  "themes.list": SESSION_READ_SCOPE,
+  "users.prefs.get": SESSION_READ_SCOPE,
+  "users.self": SESSION_READ_SCOPE,
 } as const satisfies Record<string, typeof SESSION_READ_SCOPE>;
 
 export function resolveBaseSessionReadRequiredScope(method: string) {
@@ -57,11 +88,16 @@ function resolveSessionsPatchRequiredScope(params: unknown): SessionMutationOper
   if (params.permissionMode === "full" || Object.hasOwn(params, "sandboxMode")) {
     return "operator.admin";
   }
-  return Object.keys(params).every(
-    (key) =>
-      SESSIONS_PATCH_WRITE_SCOPE_ENVELOPE_FIELDS.has(key) ||
-      SESSIONS_PATCH_WRITE_SCOPE_MUTATIONS.has(key),
-  )
+  const mutations = Object.keys(params).filter(
+    (key) => !SESSIONS_PATCH_WRITE_SCOPE_ENVELOPE_FIELDS.has(key),
+  );
+  if (
+    mutations.length > 0 &&
+    mutations.every((key) => SESSIONS_PATCH_ORGANIZATION_FIELDS.has(key))
+  ) {
+    return "operator.sessions.write";
+  }
+  return mutations.every((key) => SESSIONS_PATCH_WRITE_SCOPE_MUTATIONS.has(key))
     ? "operator.write"
     : "operator.admin";
 }
@@ -73,7 +109,14 @@ function resolveSessionsPatchManyRequiredScope(params: unknown): SessionMutation
   if (params.patch.permissionMode === "full" || Object.hasOwn(params.patch, "sandboxMode")) {
     return "operator.admin";
   }
-  return Object.keys(params.patch).every((key) => SESSIONS_PATCH_WRITE_SCOPE_MUTATIONS.has(key))
+  const mutations = Object.keys(params.patch);
+  if (
+    mutations.length > 0 &&
+    mutations.every((key) => SESSIONS_PATCH_ORGANIZATION_FIELDS.has(key))
+  ) {
+    return "operator.sessions.write";
+  }
+  return mutations.every((key) => SESSIONS_PATCH_WRITE_SCOPE_MUTATIONS.has(key))
     ? "operator.write"
     : "operator.admin";
 }

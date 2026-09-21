@@ -1,6 +1,7 @@
+import { roleScopesAllow } from "../../../src/shared/operator-scope-compat.js";
 import { isGatewayMethodAdvertised } from "../lib/gateway-methods.ts";
 import type { ApplicationGatewaySnapshot } from "./gateway.ts";
-import { hasOperatorAdminAccess } from "./operator-access.ts";
+import { hasOperatorAdminAccess, hasOperatorReadAccess } from "./operator-access.ts";
 
 export type ScopeUpgradeState =
   | { phase: "hidden" }
@@ -18,7 +19,13 @@ export function readScopeUpgradeAvailability(
   if (
     snapshot.phase !== "connected" ||
     auth?.scopes === undefined ||
-    hasOperatorAdminAccess(auth)
+    hasOperatorAdminAccess(auth) ||
+    (!hasOperatorReadAccess(auth) &&
+      roleScopesAllow({
+        role: auth.role,
+        requestedScopes: ["operator.sessions.read"],
+        allowedScopes: auth.scopes,
+      }))
   ) {
     return { phase: "hidden" };
   }

@@ -16,7 +16,8 @@ type OperatorScope =
   | "operator.write"
   | "operator.admin"
   | "operator.pairing"
-  | "operator.approvals";
+  | "operator.approvals"
+  | "operator.talk";
 
 function hasOperatorScope(
   auth: OperatorAuth,
@@ -53,6 +54,10 @@ export function readGatewayOperatorAccess(
 
 export function hasOperatorWriteAccess(auth: OperatorAuth): boolean {
   return hasOperatorScope(auth, "operator.write", true);
+}
+
+export function hasOperatorTalkAccess(auth: OperatorAuth): boolean {
+  return hasOperatorScope(auth, "operator.talk", true);
 }
 
 export function hasOperatorReadAccess(auth: OperatorAuth): boolean {

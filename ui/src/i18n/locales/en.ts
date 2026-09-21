@@ -942,6 +942,9 @@ export const en: TranslationMap & {
     actionUnavailable: "This Gateway does not support this session action.",
     actionRequiresRead: "This action requires operator.read access.",
     actionRequiresWrite: "This action requires operator.write access.",
+    actionRequiresSessionRead: "This action requires session read access.",
+    actionRequiresSessionWrite: "This action requires session write access.",
+    actionRequiresOwnership: "Only the session owner can make this change.",
     actionRequiresAdmin: "This action requires operator.admin access.",
     deletePreservedReasons: {
       "owner-mismatch": "owned elsewhere",
@@ -3485,6 +3488,7 @@ export const en: TranslationMap & {
       selected: "Member",
       noPeople: "No paired people found.",
       readOnlyNotice: "Only the session owner and members can act in this session.",
+      scopeReadOnlyNotice: "Sending messages is unavailable with your current access.",
       publicAccess: "Public access",
       publicIndicator: "Public",
       worldReadable: "Public — anyone can read without signing in.",

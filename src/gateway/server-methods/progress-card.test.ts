@@ -138,7 +138,9 @@ describe("progress card gateway methods", () => {
   );
 
   it("registers read and write scopes", () => {
-    expect(resolveCoreOperatorGatewayMethodScope("progressCard.get")).toBe("operator.read");
+    expect(resolveCoreOperatorGatewayMethodScope("progressCard.get")).toBe(
+      "operator.sessions.read",
+    );
     expect(resolveCoreOperatorGatewayMethodScope("progressCard.put")).toBe("operator.write");
   });
 

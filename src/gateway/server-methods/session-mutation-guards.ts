@@ -1,13 +1,20 @@
+import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { getRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
+import { operatorScopeSatisfied } from "../../shared/operator-scope-compat.js";
 import { isGatewayAuthPolicyCurrent } from "../auth-policy.js";
 import { readGatewayDeviceRevocationGuard } from "../device-revocation.js";
 import type { ExpectedProfileBinding } from "../expected-profile.js";
+import {
+  authorizeCurrentOperatorRoleScopes,
+  resolveGatewayOperatorRoleActor,
+} from "../operator-role-policy.js";
 import {
   getRequiredSharedGatewaySessionGeneration,
   getSharedGatewaySessionGenerationReaderState,
 } from "../server-shared-auth-generation.js";
 import type { GatewayWsClient } from "../server/ws-types.js";
+import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import type {
   GatewayRequestHandlerOptions,
   GatewayRequestOptions,
@@ -157,6 +164,46 @@ export function bindGatewayRequestHandlerMutationAuthority<T extends GatewayRequ
       : { family: "native-compatibility", assertCurrent, expectedProfileBinding };
   requestMutationAuthorities.set(handler, authority);
   return handler;
+}
+
+/** Retain the admitted person and request source through handler preparation and commits. */
+export function captureGatewayRequestOperatorGuard(options: GatewayRequestOptions): () => void {
+  const { client, context, signal, hasCurrentClientAuthority } = options;
+  const source = readGatewayRequestMutationAuthority(options);
+  const actor = resolveGatewayOperatorRoleActor(client);
+  const role = client?.connect?.role ?? "operator";
+  const scopes = [...(client?.connect?.scopes ?? [])];
+  const profileId = client?.authenticatedUserProfile?.profileId;
+  const userId = client?.authenticatedUserId;
+  const canonicalProfileId = client?.preparedSessionProfile?.profileId;
+  return () => {
+    signal?.throwIfAborted();
+    const currentActor = resolveGatewayOperatorRoleActor(client);
+    if (
+      client?.invalidated ||
+      hasCurrentClientAuthority?.() === false ||
+      (client?.connect?.role ?? "operator") !== role ||
+      scopes.some((scope) => !operatorScopeSatisfied(scope, client?.connect?.scopes ?? [])) ||
+      client?.authenticatedUserProfile?.profileId !== profileId ||
+      client?.authenticatedUserId !== userId ||
+      (canonicalProfileId !== undefined &&
+        client?.preparedSessionProfile?.profileId !== canonicalProfileId) ||
+      currentActor?.kind !== actor?.kind ||
+      (actor?.kind === "operator" &&
+        (currentActor?.kind !== "operator" || currentActor.profileId !== actor.profileId))
+    ) {
+      throw new SessionMutationAuthorizationChangedError(
+        errorShape(ErrorCodes.FORBIDDEN, "Gateway requester authority changed"),
+      );
+    }
+    if (actor?.kind === "operator") {
+      const error = authorizeCurrentOperatorRoleScopes(client, context.getRuntimeConfig());
+      if (error) {
+        throw new SessionMutationAuthorizationChangedError(error);
+      }
+    }
+    source.assertCurrent();
+  };
 }
 
 /** Keep the host lifetime and operator target policy on the same commit boundary. */

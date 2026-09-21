@@ -1,7 +1,11 @@
 import type { ProgressCard } from "@openclaw/gateway-protocol";
 import { html, nothing } from "lit";
 import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
-import { hasOperatorAdminAccess, hasOperatorWriteAccess } from "../../app/operator-access.ts";
+import {
+  hasOperatorAdminAccess,
+  hasOperatorTalkAccess,
+  hasOperatorWriteAccess,
+} from "../../app/operator-access.ts";
 import { patchSettings } from "../../app/settings.ts";
 import { readPresenceEntries, resolveCurrentSelfUser } from "../../app/user-profile.ts";
 import {
@@ -89,6 +93,7 @@ export class ChatPane extends ChatPaneLayoutRender {
     const mutationAccess = readChatPaneMutationAccess(
       this.context.gateway.snapshot,
       state.sessionKey,
+      selectedSession,
     );
     const observerDigest = pickFreshestObserverDigest(
       state.observerDigest,
@@ -156,21 +161,22 @@ export class ChatPane extends ChatPaneLayoutRender {
     const placementStartup = this.context.placementStartup.get(state.sessionKey);
     const sendHoldReason = chatSendHoldReason(state, state.sessionKey, placementStartup !== null);
     const runActive = hasDirectSessionRun(state);
+    const gatewaySnapshot = this.context.gateway.snapshot;
     const sessionParticipationBlocked = this.sessionParticipationTracker.resolve({
       catalog: catalogKey !== null,
       listLoading: state.sessionsLoading,
       sessionKey: `${currentAgentId ?? ""}\0${state.sessionKey}`,
       session: selectedSession,
     });
-    const gatewaySnapshot = this.context.gateway.snapshot;
+    const operatorAuth = gatewaySnapshot.hello?.auth ?? state.hello?.auth ?? null;
+    const hasWriteScope = hasOperatorWriteAccess(operatorAuth);
+    const hasTalkScope = hasOperatorTalkAccess(operatorAuth);
+    const chatExecutionBlocked = sessionParticipationBlocked || !hasWriteScope;
     const placementComposer = this.placementComposerPresentation(
       selectedSession,
       placementStartup !== null,
     );
-    const canDismissProgressCard =
-      state.connected &&
-      !sessionParticipationBlocked &&
-      hasOperatorWriteAccess(gatewaySnapshot.hello?.auth ?? null);
+    const canDismissProgressCard = state.connected && !sessionParticipationBlocked && hasWriteScope;
     const onDismissProgressCard = canDismissProgressCard
       ? (card: ProgressCard) =>
           void this.progressCard
@@ -182,16 +188,18 @@ export class ChatPane extends ChatPaneLayoutRender {
     const suggestionViewer =
       multiIdentity &&
       !selectedSessionArchived &&
-      hasOperatorWriteAccess(gatewaySnapshot.hello?.auth ?? null) &&
+      hasWriteScope &&
       selectedSession?.visibility === "suggest" &&
       selectedSession.sharingRole === "viewer" &&
       isGatewayMethodAdvertised(gatewaySnapshot, "session.suggestions.add") === true &&
       isGatewayMethodAdvertised(gatewaySnapshot, "session.suggestions.list") === true;
     // Placement progress explains this gate; other gates need a reason or sessionDisabledBanner.
     const disabledReason =
-      sessionParticipationBlocked && !suggestionViewer
-        ? t("chat.sessionSharing.readOnlyNotice")
-        : null;
+      !hasWriteScope && !hasTalkScope
+        ? t("chat.sessionSharing.scopeReadOnlyNotice")
+        : sessionParticipationBlocked && !suggestionViewer
+          ? t("chat.sessionSharing.readOnlyNotice")
+          : null;
     const modelRequiredReason =
       catalogKey || suggestionViewer
         ? undefined
@@ -200,7 +208,7 @@ export class ChatPane extends ChatPaneLayoutRender {
           : modelUnavailableBanner?.text;
     const typingEnabled =
       multiIdentity &&
-      hasOperatorWriteAccess(gatewaySnapshot.hello?.auth ?? null) &&
+      hasWriteScope &&
       !catalogKey &&
       isGatewayMethodAdvertised(gatewaySnapshot, "session.typing") === true &&
       hasSessionPresenceViewers(
@@ -305,10 +313,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       }
       const publication = this.githubPublication;
       publication?.sync({
-        canWrite:
-          !selectedSessionArchived &&
-          !sessionParticipationBlocked &&
-          hasOperatorWriteAccess(gatewaySnapshot.hello?.auth ?? null),
+        canWrite: !selectedSessionArchived && !sessionParticipationBlocked && hasWriteScope,
         personalReady:
           !hasAbortableSessionRun(state) &&
           (!isCloudWorkerPlacementState(placement?.state) ||
@@ -338,6 +343,7 @@ export class ChatPane extends ChatPaneLayoutRender {
     const initialHistoryUnavailable = !catalogKey && isInitialChatHistoryUnavailable(state);
     const composerAvailability = {
       canSend:
+        hasWriteScope &&
         sessionDisabledBanner?.kind !== "composer-replacement" &&
         (catalogKey
           ? this.catalogSession?.canContinue === true
@@ -359,7 +365,7 @@ export class ChatPane extends ChatPaneLayoutRender {
           ? null
           : sendHoldReason),
       disabledReasonTone:
-        placementComposer.busyMessage || (sessionParticipationBlocked && !suggestionViewer)
+        placementComposer.busyMessage || (chatExecutionBlocked && !suggestionViewer)
           ? ("info" as const)
           : ("danger" as const),
       disabledReasonBusy: placementComposer.busyMessage !== null,
@@ -409,7 +415,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       onRetrySessionPlacementStartup: placementStartup?.retryable
         ? () => this.context.placementStartup.retry(state.sessionKey)
         : undefined,
-      canAbort: sessionParticipationBlocked ? false : hasAbortableSessionRun(state),
+      canAbort: chatExecutionBlocked ? false : hasAbortableSessionRun(state),
       runActive,
       runStatus: state.chatRunStatus,
       startupStatus: activeChatRunStartupStatus(state.chatRunStartup),
@@ -605,7 +611,10 @@ export class ChatPane extends ChatPaneLayoutRender {
                   submissionAction,
                 ),
       onUseSystemDefaultMicrophone: state.realtimeTalkUseSystemDefault ?? undefined,
-      onToggleRealtimeTalk: () => void state.toggleRealtimeTalk(),
+      onToggleRealtimeTalk:
+        hasTalkScope || state.realtimeTalkActive
+          ? () => void state.toggleRealtimeTalk()
+          : undefined,
       onSelectRealtimeVoice: (voice) => void state.selectRealtimeTalkVoice(voice),
       onToggleRealtimeCamera: () => void state.toggleRealtimeTalkCamera(),
       onSwitchRealtimeCamera: () => void state.switchRealtimeTalkCamera(),
@@ -620,11 +629,11 @@ export class ChatPane extends ChatPaneLayoutRender {
       onAbort: sessionActionCallbacks.onAbort,
       onQueueRemove: state.removeQueuedMessage,
       onQueueRetry: (id) => void state.retryQueuedChatMessage(id),
-      onQueueSteer: sessionParticipationBlocked
+      onQueueSteer: chatExecutionBlocked
         ? undefined
         : (id) => void state.steerQueuedChatMessage(id),
-      onQueueMove: sessionParticipationBlocked ? undefined : state.moveQueuedChatMessage,
-      queuedEdit: createChatPaneQueuedEditProps(state, sessionParticipationBlocked),
+      onQueueMove: chatExecutionBlocked ? undefined : state.moveQueuedChatMessage,
+      queuedEdit: createChatPaneQueuedEditProps(state, chatExecutionBlocked),
       goalRecovery: chatGoalRecovery(state),
       onGoalAction: (goalId, action) => void mutateChatGoal(state, { goalId, action }),
       goalDraftMode: state.chatGoalDraftMode ?? null,

@@ -73,7 +73,11 @@ export async function patchSession(
     return "failed";
   }
   if (
-    !requireSessionMutationAccess(host, scope, { method: "sessions.patch", params: requestParams })
+    !requireSessionMutationAccess(host, scope, {
+      method: "sessions.patch",
+      params: requestParams,
+      session,
+    })
   ) {
     return "failed";
   }

@@ -42,6 +42,18 @@ describe("scope upgrade transport recovery", () => {
       controller.retry();
       await vi.waitFor(() => expect(controller.state.phase).toBe("rejected"));
       expect(request).toHaveBeenCalledTimes(2);
+      for (const scope of ["operator.sessions.read", "operator.sessions.write"]) {
+        controller.sync({
+          ...snapshot,
+          hello: {
+            ...snapshot.hello!,
+            auth: { role: "operator", scopes: [scope] },
+          },
+        });
+        expect(controller.state).toEqual({ phase: "hidden" });
+        controller.request();
+        expect(request).toHaveBeenCalledTimes(2);
+      }
     } finally {
       controller.dispose();
     }

@@ -91,7 +91,11 @@ it("uses fresh prepared caller, alias, role, and membership facts without queryi
     client.authenticatedUserProfile!.profileId = oldOwner.id;
     const fresh = prepareSessionSharing(
       { cfg, client },
-      { aliases: new Set([oldOwner.id]), sessionCap: "none", isMember: () => false },
+      {
+        aliases: new Set([oldOwner.id]),
+        sessionCap: "none",
+        isMember: () => false,
+      },
     );
     expect(fresh.roleForTarget(target)).toBe("owner");
     expect(fresh.entryFilter?.(target.canonicalKey, target.entry)).toBe(true);

@@ -374,6 +374,7 @@ describe("chat pane approval requester identity", () => {
 function createGlobalFeaturePane(
   request: (method: string, params?: unknown) => unknown,
   methods: string[],
+  scopes?: readonly string[],
 ) {
   const client = createGatewayBrowserClientFixture({
     request: (method, params) =>
@@ -391,7 +392,7 @@ function createGlobalFeaturePane(
     ...live,
     config: { ...initial.config, current: { ...initial.config.current, ...live.config.current } },
   };
-  context.gateway.snapshot.hello = gatewayHelloForMethods(methods);
+  context.gateway.snapshot.hello = gatewayHelloForMethods(methods, scopes);
   const pane = createRenderTestChatPane();
   const state = pane.initialize(context);
   Object.defineProperty(pane, "isConnected", { configurable: true, value: true });
@@ -461,13 +462,18 @@ function globalProgressCard(agentId: string, revision = 1): ProgressCard {
 
 describe("global chat pane feature ownership", () => {
   it.each([
-    ["global", "research"],
-    ["main", "research"],
-    ["agent:research:main", undefined],
+    ["global", "research", ["operator.admin"]],
+    ["main", "research", ["operator.admin"]],
+    ["agent:research:main", undefined, ["operator.admin"]],
+    [
+      "agent:research:main",
+      undefined,
+      ["operator.read", "operator.questions", "operator.approvals", "operator.talk"],
+    ],
   ] as const)(
-    "scopes question cards, terminal summaries and inline approvals for %s/%s",
-    async (sessionKey, agentId) => {
-      const { pane, select, context } = createGlobalFeaturePane(() => ({}), []);
+    "scopes question cards, terminal summaries and inline approvals for %s/%s with %j",
+    async (sessionKey, agentId, scopes) => {
+      const { pane, select, context } = createGlobalFeaturePane(() => ({}), [], scopes);
       const now = Date.now();
       const approval = (
         id: string,
@@ -551,6 +557,13 @@ describe("global chat pane feature ownership", () => {
             .querySelector(".chat-inline-approval [data-approval-id]")
             ?.getAttribute("data-approval-id"),
         ).toBe("research-oldest");
+        if (scopes[0] !== "operator.admin") {
+          expect(pane.chatProps?.canSend).toBe(false);
+          expect(pane.chatProps?.onAsyncQuestionSubmit).toBeUndefined();
+          expect(pane.chatProps?.onApprovalDecision).toBeTypeOf("function");
+          expect(pane.chatProps?.onToggleRealtimeTalk).toBeTypeOf("function");
+          expect(pane.chatProps?.disabledReason).toBeNull();
+        }
         await expectStableQuestions();
         const pendingQuestions = pane.chatProps?.gatewayQuestionPrompts;
         pane.receiveQuestionEvent({

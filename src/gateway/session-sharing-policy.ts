@@ -22,7 +22,7 @@ import {
   isGatewayClientProfilePending,
 } from "./server-methods/gateway-client-identity.js";
 import type { GatewayClient } from "./server-methods/types.js";
-import { prepareSessionCreatorProfile } from "./session-creator.js";
+import { isSessionCreatorProfile, prepareSessionCreatorProfile } from "./session-creator.js";
 import {
   prepareGatewaySessionStoreTargetsReadOnly,
   resolveGatewaySessionStoreTargetsReadOnly,
@@ -167,6 +167,10 @@ export type SessionSharingRoleParams = {
   isMember?: boolean;
 };
 
+type PreparedSessionSharingPolicy = {
+  value: ReturnType<typeof operatorSessionCap>;
+};
+
 export function sharingIdentity(
   client: GatewayClient | null,
   actor: ReturnType<typeof resolveGatewayOperatorRoleActor>,
@@ -180,7 +184,7 @@ export function sharingIdentity(
 
 export function resolveSessionSharingRole(
   params: SessionSharingRoleParams,
-  preparedCap?: { value: ReturnType<typeof operatorSessionCap> },
+  preparedCap?: PreparedSessionSharingPolicy,
   isCreator?: ReturnType<typeof prepareSessionCreatorProfile>,
 ): SessionSharingRole {
   if (isGatewayAdmin(params.client)) {
@@ -364,21 +368,28 @@ export function authorizeSessionAgentRun(params: {
 }
 
 export function authorizeSessionSharingTarget(
-  params: SessionSharingRoleParams,
-  prepared?: { value: ReturnType<typeof operatorSessionCap>; role: SessionSharingRole },
+  params: SessionSharingRoleParams & { requireCreator?: boolean },
+  prepared?: PreparedSessionSharingPolicy & { role: SessionSharingRole },
 ): ErrorShape | null {
   const visibility = resolveSessionVisibility(params.target.entry);
   const sessionCap = prepared
     ? prepared.value
     : params.cfg && operatorSessionCap(params.client, params.cfg);
-  const role = prepared?.role ?? resolveSessionSharingRole(params, { value: sessionCap });
+  const creator = params.requireCreator
+    ? prepareSessionCreatorProfile(
+        sharingIdentity(params.client, resolveGatewayOperatorRoleActor(params.client))?.id,
+      )
+    : undefined;
+  const role = prepared?.role ?? resolveSessionSharingRole(params, { value: sessionCap }, creator);
   if (sessionCap === "none" && role !== "owner" && role !== "admin") {
     return hiddenSessionNotFound(params.target.canonicalKey);
   }
   const capped = sessionCap === "view" || sessionCap === "suggest";
-  // Draft membership is inactive, while an explicit role caps even shared visibility.
-  const canMutate =
-    visibility === "draft"
+  // Organization grants require the actual creator, even if raw scopes include admin.
+  // Other participation keeps Draft membership inactive and preserves explicit role caps.
+  const canMutate = creator
+    ? creator(params.target.entry.createdActor)
+    : visibility === "draft"
       ? canManageSessionSharing(role)
       : role !== "viewer" || (visibility === "shared" && !capped);
   return canMutate
@@ -399,4 +410,44 @@ export function authorizeSessionSharing(
   return (
     target && authorizeSessionSharingTarget({ cfg: params.cfg, client: params.client, target })
   );
+}
+
+export function createSessionListEntryFilter(
+  params: Pick<SessionSharingRoleParams, "cfg" | "client">,
+  isCreator?: ReturnType<typeof prepareSessionCreatorProfile>,
+  prepared?: { sessionCap: ReturnType<typeof operatorSessionCap> },
+):
+  | ((
+      sessionKey: string | undefined,
+      entry: Pick<SessionEntry, "createdActor" | "visibility" | "incognito">,
+    ) => boolean)
+  | undefined {
+  const operatorActor = resolveGatewayOperatorRoleActor(params.client);
+  const identity = sharingIdentity(params.client, operatorActor);
+  if (isGatewayAdmin(params.client) || (!identity && operatorActor?.kind === "system")) {
+    return undefined;
+  }
+  if (!identity) {
+    return params.cfg?.gateway?.roles ? () => false : undefined;
+  }
+  const sessionCap = prepared
+    ? prepared.sessionCap
+    : params.cfg && operatorSessionCap(params.client, params.cfg);
+  return createProfileSessionEntryFilter({ profileId: identity.id, sessionCap }, isCreator);
+}
+
+export function createProfileSessionEntryFilter(
+  params: { profileId: string; sessionCap?: ReturnType<typeof operatorSessionCap> },
+  isCreator?: ReturnType<typeof prepareSessionCreatorProfile>,
+) {
+  // Unprepared filters (notably preview) may survive yields and must read current aliases.
+  const creatorMatches = isCreator ?? ((actor) => isSessionCreatorProfile(actor, params.profileId));
+  return (
+    sessionKey: string | undefined,
+    entry: Pick<SessionEntry, "createdActor" | "visibility" | "incognito">,
+  ) =>
+    entry.incognito !== true &&
+    !isIncognitoSessionKey(sessionKey) &&
+    (creatorMatches(entry.createdActor) ||
+      (params.sessionCap !== "none" && resolveSessionVisibility(entry) !== "draft"));
 }

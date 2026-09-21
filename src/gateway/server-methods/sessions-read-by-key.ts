@@ -57,7 +57,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
           const record = read.describe(query);
           if (
             !record ||
-            (presentation.sharing.sessionCap !== undefined &&
+            (hasOperatorBoundary(client, read.state.cfg) &&
               presentation.sharing.entryFilter?.(record.key, record.entry) === false)
           ) {
             respond(true, { session: null });

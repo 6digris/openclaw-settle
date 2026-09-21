@@ -272,18 +272,22 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
     const sharingVisibilityAccess = readSessionMethodAccess(sharingSnapshot, {
       method: "session.visibility.set",
       requiredScope: "operator.write",
+      session: row,
     });
     const publicShareAccess = readSessionMethodAccess(sharingSnapshot, {
       method: "session.publicShare.set",
       requiredScope: "operator.write",
+      session: row,
     });
     const sharingMemberAddAccess = readSessionMethodAccess(sharingSnapshot, {
       method: "session.members.add",
       requiredScope: "operator.write",
+      session: row,
     });
     const sharingMemberRemoveAccess = readSessionMethodAccess(sharingSnapshot, {
       method: "session.members.remove",
       requiredScope: "operator.write",
+      session: row,
     });
     const sharingOpenDisabledReason =
       sharingReadAccess.allowed || sharingVisibilityAccess.allowed
@@ -293,6 +297,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
       ? readSessionMethodAccess(this.context.gateway.snapshot, {
           method: "sessions.patch",
           params: { key: row.key, label: null },
+          session: row,
         })
       : null;
     const renameDisabledReason =
@@ -322,6 +327,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
             owner: { type: "human", id: sharingSnapshot.selfUser?.id ?? "profile" },
           },
           requiredScope: "operator.write",
+          session: row,
         })
       : null;
     const continueInTerminalDisabledReason = row

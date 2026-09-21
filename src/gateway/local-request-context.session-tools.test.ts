@@ -1,5 +1,6 @@
 // Exercises built-in session tools through the real in-process router and SQLite store.
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { GatewayClientRequestError } from "../../packages/gateway-client/src/request-error.js";
 import type { SessionsCreateResult } from "../../packages/gateway-protocol/src/index.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import * as modelRuntimeChoice from "../agents/model-runtime-choice.js";
@@ -621,6 +622,79 @@ describe("built-in session tool role authority", () => {
     });
   });
 
+  it("preserves broad native metadata patches and exact SESSION organization limits", async () => {
+    await withSessionToolsFixture(async (cfg) => {
+      const client = roleClient("write", "native-organization-owner");
+      client.connect.scopes = ["operator.write"];
+      const profile = client.authenticatedUserProfile;
+      if (!profile) {
+        throw new Error("expected operator profile");
+      }
+      const ownedKey = "agent:main:dashboard:session-tools-owned";
+      const ownedSessionId = "session-tools-owned-id";
+      await upsertSessionEntryCore(
+        { agentId: "main", sessionKey: ownedKey },
+        {
+          sessionId: ownedSessionId,
+          updatedAt: 1,
+          visibility: "draft",
+          createdVia: "operator",
+          createdActor: { type: "human", source: "profile", id: profile.profileId },
+        },
+      );
+      await withOperatorToolGatewayAuthority(
+        { authenticatedUserProfile: profile, scopes: client.connect.scopes },
+        async () => {
+          await expect(
+            createSessionsTool({ config: cfg, agentSessionKey: REQUESTER }).execute(
+              "staff-metadata",
+              {
+                action: "patch",
+                sessionKey: TARGET,
+                expectedSessionId: TARGET_ID,
+                label: "Staff metadata",
+              },
+            ),
+          ).resolves.toMatchObject({ details: { status: "updated", sessionKey: TARGET } });
+          const foreign = loadSessionEntry({ agentId: "main", sessionKey: TARGET });
+          expect(foreign).toMatchObject({
+            sessionId: TARGET_ID,
+            label: "Staff metadata",
+            createdActor: { id: "other-person" },
+          });
+          const denied = callAgentToolGatewayRequest({
+            method: "sessions.patch",
+            params: { key: TARGET, expectedSessionId: TARGET_ID, label: "Unpermitted metadata" },
+            scopes: ["operator.sessions.write"],
+          });
+          await expect(denied).rejects.toBeInstanceOf(GatewayClientRequestError);
+          await expect(denied).rejects.toMatchObject({
+            code: "INVALID_REQUEST",
+            details: { code: "SESSION_PARTICIPATION_REQUIRED", sessionKey: TARGET },
+          });
+          expect(loadSessionEntry({ agentId: "main", sessionKey: TARGET })).toEqual(foreign);
+          await expect(
+            callAgentToolGatewayRequest({
+              method: "sessions.patch",
+              params: {
+                key: ownedKey,
+                expectedSessionId: ownedSessionId,
+                label: "Own metadata",
+              },
+              scopes: ["operator.sessions.write"],
+            }),
+          ).resolves.toMatchObject({ key: ownedKey });
+          expect(loadSessionEntry({ agentId: "main", sessionKey: ownedKey })).toMatchObject({
+            sessionId: ownedSessionId,
+            label: "Own metadata",
+            visibility: "draft",
+            createdActor: { id: profile.profileId },
+          });
+        },
+      );
+    });
+  });
+
   it("keeps tool visibility and incognito boundaries under system-backed dispatch", async () => {
     await withSessionToolsFixture(async (cfg) => {
       const options = {
@@ -671,7 +745,7 @@ describe("built-in session tool role authority", () => {
           params: { key: TARGET, expectedSessionId: TARGET_ID, archived: true },
           scopes: ["operator.read"],
         }),
-      ).rejects.toThrow(/missing scope: operator.write/i);
+      ).rejects.toThrow(/missing scope: operator.sessions.write/i);
 
       const scope = getPluginRuntimeGatewayRequestScope();
       if (!scope) {
@@ -695,7 +769,7 @@ describe("built-in session tool role authority", () => {
                 archived: true,
               },
             ),
-          ).rejects.toThrow(/missing scope: operator.write/i);
+          ).rejects.toThrow(/missing scope: operator.sessions.write/i);
         },
       );
       expect(loadSessionEntry({ agentId: "main", sessionKey: TARGET })?.archivedAt).toBeUndefined();

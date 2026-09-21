@@ -87,7 +87,8 @@ export function createProgressCardHandlers(
       sessionMutationAuthorization?.assertCurrent();
       await requestProgressCardRefresh(invocation, session, card, params.idempotencyKey, readCard);
     },
-    "progressCard.get": async ({ params, respond, context, sessionMutationAuthorization }) => {
+    "progressCard.get": async (invocation) => {
+      const { params, respond, context, sessionMutationAuthorization } = invocation;
       if (!assertValidParams(params, validateProgressCardGetParams, "progressCard.get", respond)) {
         return;
       }
@@ -96,9 +97,11 @@ export function createProgressCardHandlers(
         return;
       }
       // Lazy handler preparation can outlive the session authorized by the router.
+      invocation.sessionMutationCommitGuard?.();
       sessionMutationAuthorization?.assertCurrent();
       try {
         const card = await store.get(session.sessionKey, session.agentId);
+        invocation.sessionMutationCommitGuard?.();
         sessionMutationAuthorization?.assertCurrent();
         respond(true, { card: projectProgressCard(card, session.scopeKey) }, undefined);
       } catch (error) {

@@ -2,6 +2,25 @@ import { describe, expect, it } from "vitest";
 import { resolveDynamicSessionMutationRequiredScope } from "./session-method-scopes.js";
 
 describe("resolveDynamicSessionMutationRequiredScope", () => {
+  it.each([{ label: "Renamed" }, { pinned: true }, { archived: false }])(
+    "allows session organization without general write access %#",
+    (patch) => {
+      expect(
+        resolveDynamicSessionMutationRequiredScope("sessions.patch", {
+          key: "agent:main:thread",
+          expectedSessionId: "session-1",
+          expectedLifecycleRevision: "revision-1",
+          ...patch,
+        }),
+      ).toBe("operator.sessions.write");
+      expect(
+        resolveDynamicSessionMutationRequiredScope("sessions.patchMany", {
+          targets: [{ key: "agent:main:thread", expectedSessionId: "session-1" }],
+          patch,
+        }),
+      ).toBe("operator.sessions.write");
+    },
+  );
   it("keeps explicit restart recovery at write scope", () => {
     expect(resolveDynamicSessionMutationRequiredScope("sessions.recover")).toBe("operator.write");
   });

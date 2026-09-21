@@ -29,7 +29,10 @@ import { openEditor } from "../../lib/editor-links.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
 import { openExternalUrlSafe } from "../../lib/open-external-url.ts";
-import { readSessionMethodAccess } from "../../lib/session-method-access.ts";
+import {
+  readSessionMethodAccess,
+  type SessionMethodAccessRequest,
+} from "../../lib/session-method-access.ts";
 import {
   SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD,
   sessionPullRequestsForGateway,
@@ -312,22 +315,14 @@ class SessionsPage extends OpenClawLightDomElement {
     );
   }
 
-  private mutationDisabledReason(request: {
-    method: string;
-    params?: unknown;
-    requiredScope?: "operator.write" | "operator.admin";
-  }): string | undefined {
+  private mutationDisabledReason(request: SessionMethodAccessRequest): string | undefined {
     const access = readSessionMethodAccess(this.context?.gateway.snapshot, request);
     return access.allowed ? undefined : access.reason;
   }
 
   private requireMutationAccess(
     scope: SessionsPageRequestScope,
-    request: {
-      method: string;
-      params?: unknown;
-      requiredScope?: "operator.write" | "operator.admin";
-    },
+    request: SessionMethodAccessRequest,
   ): boolean {
     const access = readSessionMethodAccess(scope.gateway.snapshot, request);
     if (access.allowed) {
@@ -1089,9 +1084,11 @@ class SessionsPage extends OpenClawLightDomElement {
       return "failed";
     }
     const agentId = this.sessionAgentId(key, scope.context);
+    const row = this.result?.sessions.find((entry) => entry.key === key);
     if (
       !this.requireMutationAccess(scope, {
         method: "sessions.patch",
+        session: row,
         params: {
           key,
           ...patch,
@@ -1107,7 +1104,6 @@ class SessionsPage extends OpenClawLightDomElement {
           agentId,
           ...(expectedSessionId ? { expectedSessionId } : {}),
         });
-      const row = this.result?.sessions.find((entry) => entry.key === key);
       const patched =
         patch.archived === true
           ? await withSessionWorkspaceRecovery({
@@ -1475,10 +1471,12 @@ class SessionsPage extends OpenClawLightDomElement {
           selectedKeys: this.selectedKeys,
           sessionMenu: this.sessionMenu,
           expandedSessionKey: this.expandedSessionKey,
-          patchWriteDisabledReason: this.mutationDisabledReason({
-            method: "sessions.patch",
-            params: { key: "", label: null },
-          }),
+          labelDisabledReason: (row) =>
+            this.mutationDisabledReason({
+              method: "sessions.patch",
+              params: { key: row.key, label: null },
+              session: row,
+            }),
           patchAdminDisabledReason: this.mutationDisabledReason({
             method: "sessions.patch",
             params: { key: "", thinkingLevel: null },

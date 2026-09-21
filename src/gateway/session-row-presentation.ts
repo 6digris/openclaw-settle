@@ -79,7 +79,7 @@ export function prepareProjectedSessionPresentation(
             projectSessionProfileInvolvement(value.entry, profileId, profiles)?.hidden ?? false,
         }
       : {}),
-    sharingRole: sharing.roleForTarget(value),
+    sharingRole: sharing.presentRoleForTarget(value),
   });
   const present = (
     captured: records.MaterializedRow,

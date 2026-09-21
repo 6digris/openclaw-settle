@@ -71,27 +71,33 @@ export function createChatPaneQueuedEditProps(
 export function readChatPaneMutationAccess(
   snapshot: ApplicationGatewaySnapshot,
   sessionKey: string,
+  session?: GatewaySessionRow,
 ) {
   return {
     model: readSessionMethodAccess(snapshot, {
       method: "sessions.patch",
       params: { key: sessionKey, model: null },
+      session,
     }),
     effort: readSessionMethodAccess(snapshot, {
       method: "sessions.patch",
       params: { key: sessionKey, thinkingLevel: null },
+      session,
     }),
     contextWindow: readSessionMethodAccess(snapshot, {
       method: "sessions.patch",
       params: { key: sessionKey, contextWindow: null },
+      session,
     }),
     permission: readSessionMethodAccess(snapshot, {
       method: "sessions.patch",
       params: { key: sessionKey, permissionMode: "guarded" },
+      session,
     }),
     unarchive: readSessionMethodAccess(snapshot, {
       method: "sessions.patch",
       params: { key: sessionKey, archived: false },
+      session,
     }),
   };
 }

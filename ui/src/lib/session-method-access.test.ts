@@ -88,13 +88,22 @@ describe("readSessionMethodAccess", () => {
   it.each(["model", "thinkingLevel", "fastMode"])(
     "allows write-scoped %s changes while keeping read-only clients read-only",
     (field) => {
-      for (const scope of ["operator.read", "operator.write", "operator.admin"]) {
+      for (const scope of [
+        "operator.read",
+        "operator.sessions.read",
+        "operator.sessions.write",
+        "operator.write",
+        "operator.admin",
+      ]) {
         expect(
           readSessionMethodAccess(snapshot({ methods: ["sessions.patch"], scopes: [scope] }), {
             method: "sessions.patch",
             params: { key: "agent:main:main", [field]: null },
           }),
-        ).toMatchObject({ allowed: scope !== "operator.read", requiredScope: "operator.write" });
+        ).toMatchObject({
+          allowed: scope === "operator.write" || scope === "operator.admin",
+          requiredScope: "operator.write",
+        });
       }
     },
   );
@@ -120,15 +129,23 @@ describe("readSessionMethodAccess", () => {
     ).toBe(true);
   });
 
-  it("allows read, write, and admin scopes to satisfy read-scoped actions", () => {
+  it("keeps membership details behind broad read access", () => {
     for (const method of ["session.members.list", "session.members.listEvidence"]) {
-      for (const scope of ["operator.read", "operator.write", "operator.admin"]) {
+      for (const scope of [
+        "operator.sessions.read",
+        "operator.sessions.write",
+        "operator.read",
+        "operator.write",
+        "operator.admin",
+      ]) {
         expect(
           readSessionMethodAccess(snapshot({ methods: [method], scopes: [scope] }), {
             method,
             requiredScope: "operator.read",
           }).allowed,
-        ).toBe(true);
+        ).toBe(
+          scope === "operator.read" || scope === "operator.write" || scope === "operator.admin",
+        );
       }
     }
   });
