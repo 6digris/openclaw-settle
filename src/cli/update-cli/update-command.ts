@@ -1,15 +1,14 @@
+// Main update orchestration for source checkouts and package installs.
 import { theme } from "../../../packages/terminal-core/src/theme.js";
+import { bindBridgeExecutor } from "../../infra/update-bridge-binding.js";
 import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import { finishUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { DEFAULT_UPDATE_STEP_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
 import { defaultRuntime } from "../../runtime.js";
 import { VERSION } from "../../version.js";
 import { createUpdateProgress } from "./progress.js";
-import {
-  confirmUpdateDowngrade,
-  tryResolveInvocationCwd,
-  type UpdateCommandOptions,
-} from "./shared.js";
+import { confirmUpdateDowngrade, type UpdateCommandOptions } from "./shared.js";
+import { runUpdateCommandAdmission } from "./update-command-admission.js";
 import {
   captureUpdateCommandExecutorAuthority,
   type UpdateCommandExecutor,
@@ -17,19 +16,23 @@ import {
 } from "./update-command-executor.js";
 import type { InitializedUpdate } from "./update-command-initialization.js";
 import { preparePackageUpdateRuntime } from "./update-command-node-runtime.js";
-import { UpdateCommandFailure, withUpdateAdmissionReporting } from "./update-command-result.js";
+import { UpdateCommandFailure } from "./update-command-result.js";
 import {
   admitUpdateCommandRun,
+  beginBridgeMutation,
+  assertBridgePackageTarget,
   assertUpdatePackageActivationAdmission,
   createUpdateRunProgress,
   prepareUpdateCommand,
   prepareMutableUpdateRuntime,
-  resolveUpdateCommandAdmissionEnv,
   resolveUpdateCommandAdmissionRoot,
   withUpdatePreviewSignals,
 } from "./update-command-run.js";
 import { preflightUpdateCommandSchemas, previewUpdateCommand } from "./update-command-schema.js";
-import { resolveServiceRefreshEnv, withUpdateInProgressEnv } from "./update-command-service-env.js";
+import {
+  withOwnedManagedUpdateEnv,
+  withUpdateInProgressEnv,
+} from "./update-command-service-env.js";
 import type { UpdateCommandRecoveryState } from "./update-command-service.js";
 import { resolveUpdateCommandTarget } from "./update-command-target.js";
 import {
@@ -39,56 +42,24 @@ import {
 } from "./update-command-terminal.js";
 import { withUpdateFailureTriage } from "./update-command-triage.js";
 import { withUpdateCommandRecoveryUnwind } from "./update-command-unwind.js";
+// Main update orchestration for source checkouts and package installs.
 
 type PreparedUpdate = NonNullable<Awaited<ReturnType<typeof prepareUpdateCommand>>>;
 
 export async function updateCommand(inputOpts: UpdateCommandOptions): Promise<void> {
-  const invocationCwd = tryResolveInvocationCwd();
-  const recoveryState: UpdateCommandRecoveryState = {
-    triageTarget: { env: resolveServiceRefreshEnv(process.env, invocationCwd) },
-  };
-  // Rejected arguments and handoffs must not open or recover persistent state.
-  const prepared = await withUpdateAdmissionReporting(inputOpts, () =>
-    withUpdateInProgressEnv(invocationCwd, () => prepareUpdateCommand(inputOpts)),
+  return await runUpdateCommandAdmission(
+    inputOpts,
+    {
+      initialize: async (opts, prepared, state, cwd, env) => {
+        const { initializeAndRunUpdate } = await import("./update-command-initialization-run.js");
+        await initializeAndRunUpdate(opts, prepared, state, cwd, env, (initialization) =>
+          runAdmittedUpdate(opts, prepared, state, cwd, initialization),
+        );
+      },
+      run: runAdmittedUpdate,
+    },
+    DEFAULT_UPDATE_STEP_TIMEOUT_MS,
   );
-  // Post-core children report phase results; the outer updater owns the run ledger.
-  if (prepared.postCoreUpdateResume) {
-    return await withUpdateInProgressEnv(invocationCwd, async () =>
-      (await import("./update-execution.runtime.js")).resumePostCoreUpdate({
-        root: prepared.discoveredRoot,
-        channel: prepared.postCoreUpdateChannel,
-        opts: inputOpts,
-        timeoutMs: prepared.timeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS,
-      }),
-    );
-  }
-  return await withUpdateAdmissionReporting(inputOpts, async () => {
-    const root = prepared.servicePlan?.rootRedirect?.root ?? prepared.discoveredRoot;
-    const serviceRoot = prepared.servicePlan?.serviceRoot;
-    const env = await resolveUpdateCommandAdmissionEnv({
-      opts: inputOpts,
-      root: resolveUpdateCommandAdmissionRoot(prepared),
-      invocationCwd,
-      pkgOwnership: prepared.pkgOwnership,
-      expectedForeground:
-        prepared.controlPlaneUpdateSentinelMeta?.completionOwner === "gateway-restart" || undefined,
-    });
-    const { updateStateNeedsInitialization } = await import("./update-command-initialization.js");
-    assertUpdatePackageActivationAdmission(root, { serviceRoot });
-    if (await updateStateNeedsInitialization(env)) {
-      const { initializeAndRunUpdate } = await import("./update-command-initialization-run.js");
-      return await initializeAndRunUpdate(
-        inputOpts,
-        prepared,
-        recoveryState,
-        invocationCwd,
-        env,
-        (initialization) =>
-          runAdmittedUpdate(inputOpts, prepared, recoveryState, invocationCwd, initialization),
-      );
-    }
-    return await runAdmittedUpdate(inputOpts, prepared, recoveryState, invocationCwd);
-  });
 }
 
 async function runAdmittedUpdate(
@@ -130,7 +101,8 @@ async function runAdmittedUpdate(
     }
     const presentation = createUpdateProgress(!opts.json, run);
     disposePresentation = presentation.dispose;
-    const executeWith = (executor: UpdateCommandExecutor) => {
+    const executeWith = (unboundExecutor: UpdateCommandExecutor) => {
+      const executor = bindBridgeExecutor(opts, unboundExecutor);
       executionStarted = true;
       return withUpdateCommandRecoveryUnwind(opts, recoveryState, () =>
         updateCommandInternal(
@@ -202,6 +174,7 @@ async function updateCommandInternal(
   if (!target) {
     return;
   }
+  assertBridgePackageTarget(opts, target);
   const {
     root,
     mode,
@@ -313,6 +286,7 @@ async function updateCommandInternal(
     });
     run.executorFence.assertCurrent();
     assertUpdatePackageActivationAdmission(root, { serviceRoot: managedServiceRoot });
+    await beginBridgeMutation(opts, executor, root, run.env);
   };
   if (packageAlreadyCurrent) {
     await activateCurrentCore();
@@ -402,6 +376,13 @@ async function updateCommandInternal(
     }
     const installKey = captureUpdateCommandExecutorAuthority(fence).installKey;
     assertUpdatePackageActivationAdmission(installKey, { serviceRoot: managedServiceRoot });
+    await withOwnedManagedUpdateEnv(env, async () => {
+      const { assertUpdateCommandBackupRecovery } =
+        await import("./update-command-backup-lifecycle.js");
+      await assertUpdateCommandBackupRecovery({ opts, root, env: process.env });
+      fence.assertCurrent();
+    });
+    await beginBridgeMutation(opts, executor, root, env ?? run.env);
     preUpdatePluginInstallRecords = await prepareMutableUpdateRuntime(env, fence);
     mutableUpdatePrepared = true;
   };
@@ -489,8 +470,13 @@ async function updateCommandInternal(
         timeoutMs: updateStepTimeoutMs,
       });
   run.executorFence?.assertCurrent();
-  if (opts.recovery || rollbackBlockedReason) {
-    // Only candidate code may reopen migrated state, including during reporting and cleanup.
+  if (
+    opts.recovery ||
+    rollbackBlockedReason ||
+    (finalization.updateRecoveryBackup && finalization.candidateUpdateRecovery === "parent-v1")
+  ) {
+    // The target runtime owns protected convergence even when schemas did not change.
+    // The parent retains capture restoration until that mutating child has settled.
     recoveryState.ledgerHandoffOwned = true;
     const continued = await continueMigratedUpdateInFreshProcess(
       { ...finalization, rollbackBlockedReason },

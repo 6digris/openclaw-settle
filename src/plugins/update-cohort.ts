@@ -25,7 +25,6 @@ import {
   type PluginUpdateOutcome,
 } from "./update-source.js";
 import { syncPluginsForUpdateChannel, updateNpmInstalledPlugins } from "./update.js";
-
 export type PluginCohortConvergenceResult = {
   config: OpenClawConfig;
   changed: boolean;
@@ -53,6 +52,7 @@ export async function convergePluginReleaseCohort(params: {
   onIntegrityDrift?: (params: PluginUpdateIntegrityDriftParams) => boolean | Promise<boolean>;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   beforePersistentEffect?: () => void;
+  preparePersistentEffect?: () => void | Promise<void>;
 }): Promise<PluginCohortConvergenceResult> {
   return await withPluginLifecycleLease(
     { env: params.env, assertCurrent: params.beforePersistentEffect },
@@ -124,6 +124,7 @@ async function convergePluginReleaseCohortWithLease(
     logger: params.logger,
     onCapabilityConsent: params.onCapabilityConsent,
     beforePersistentEffect: params.beforePersistentEffect,
+    preparePersistentEffect: params.preparePersistentEffect,
   });
   params.beforePersistentEffect?.();
   let config = sync.config;
@@ -200,6 +201,7 @@ async function convergePluginReleaseCohortWithLease(
       onIntegrityDrift: params.onIntegrityDrift,
       onCapabilityConsent: params.onCapabilityConsent,
       beforePersistentEffect: params.beforePersistentEffect,
+      preparePersistentEffect: params.preparePersistentEffect,
     });
     params.beforePersistentEffect?.();
     config = repair.config;
@@ -231,6 +233,7 @@ async function convergePluginReleaseCohortWithLease(
     onIntegrityDrift: params.onIntegrityDrift,
     onCapabilityConsent: params.onCapabilityConsent,
     beforePersistentEffect: params.beforePersistentEffect,
+    preparePersistentEffect: params.preparePersistentEffect,
   });
   params.beforePersistentEffect?.();
   config = update.config;

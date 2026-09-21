@@ -1,4 +1,5 @@
 import type { TriageFailureContext } from "../../commands/triage-prompt.js";
+import type { UpdateRecoveryBackupRef } from "../../infra/update-recovery-backup-contract.js";
 import type {
   UpdateRequester,
   UpdateRequesterAuthority,
@@ -9,8 +10,8 @@ import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { UpdateTimeoutHandoff } from "../../infra/update-timeout-provenance.js";
 import type { UpdateCommandChildGrant } from "./update-command-executor.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
-
 export type UpdateDoctorInput = {
+  updateRecoveryBackup?: UpdateRecoveryBackupRef;
   executor: UpdateCommandChildGrant;
   runId: string;
   root: string;
@@ -44,12 +45,27 @@ export type MigratedUpdateFinalizationInput = Partial<UpdateTimeoutHandoff> & {
   resultPath: string;
 };
 
-export type MigratedUpdateFinalizationResult = {
+type MigratedUpdateFinalizationOutcome = {
+  definitionRecovery?: import("./update-command-service-context-types.js").UpdateServiceDefinitionRecovery;
   result: UpdateRunResult;
   exitCode: number;
   executorDelegation?: "pid-start-v1";
   automaticTriage?: TriageFailureContext;
-} & (
-  | { terminalRunId: string; restartRunId?: never }
-  | { restartRunId: string; terminalRunId?: never }
-);
+};
+
+export type MigratedUpdateFinalizationResult = MigratedUpdateFinalizationOutcome &
+  (
+    | { terminalRunId: string; restartRunId?: never; recoveryRequired?: never }
+    | { restartRunId: string; terminalRunId?: never; recoveryRequired?: never }
+    | { terminalRunId?: never; restartRunId?: never; recoveryRequired: true }
+  );
+
+export type UpdateCaptureRetirementInput = {
+  executor?: UpdateCommandChildGrant;
+  runId: string;
+  root: string;
+  runtimeRoot: string;
+  runtimeBuildId: string;
+  backup: UpdateRecoveryBackupRef;
+  result: UpdateRunResult;
+};

@@ -32,10 +32,18 @@ import {
 } from "../../infra/update-failure-facts.js";
 import { POST_CORE_UPDATE_ENV } from "../../infra/update-post-core-context.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
-import { buildUpdateDoctorEnv } from "../../infra/update-runner-doctor.js";
+import {
+  buildUpdateDoctorEnv,
+  buildUpdateRecoveryDoctorArgs,
+} from "../../infra/update-runner-doctor.js";
 import { redactSupportString } from "../../logging/diagnostic-support-redaction.js";
 import { formatCommandOutput } from "../../process/command-error.js";
-import { isPlainCommandExitFailure, runExec, type RunExecOptions } from "../../process/exec.js";
+import {
+  isPlainCommandExitFailure,
+  runExec,
+  runUtf8CommandWithTimeout,
+  type RunExecOptions,
+} from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import { truncateUtf8Prefix, truncateUtf8Suffix } from "../../utils/utf8-truncate.js";
 import { parseUpdateTimeoutMs, resolveNodeRunner, type UpdateCommandOptions } from "./shared.js";
@@ -58,8 +66,20 @@ import {
   stripGatewayServiceMarkerEnv,
 } from "./update-command-service-env.js";
 import { captureUpdateFinalizationDoctorOutput } from "./update-finalization-output.js";
+// Runs post-plugin convergence checks without retaining pre-update plugin modules.
 
 type UpdateDoctorPhase = "pre-plugin" | "post-plugin";
+
+export class UpdateDoctorProcessUnsettledError extends Error {
+  override name = "UpdateDoctorProcessUnsettledError";
+
+  constructor(cause?: unknown) {
+    super(
+      "Doctor child processes have not been proven settled; retain the recovery capture and do not restore state.",
+      { cause },
+    );
+  }
+}
 
 export async function withPrePluginUpdateDoctorEnv<T>(run: () => Promise<T>): Promise<T> {
   const previousValues = [
@@ -121,6 +141,8 @@ function createPostPluginDoctorExecutionFailure(
 }
 
 export async function runUpdateFinalizationDoctorInFreshProcess(params: {
+  updateRecoveryBackup?: import("../../infra/update-recovery-backup-contract.js").UpdateRecoveryBackupRef;
+  updateRecoveryOwner?: "unprotected";
   phase: UpdateDoctorPhase;
   root: string;
   runId?: string;
@@ -160,6 +182,7 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
     "--non-interactive",
     ...(params.workspaceSuggestions ? [] : ["--no-workspace-suggestions"]),
     ...(params.yes ? ["--yes"] : []),
+    ...buildUpdateRecoveryDoctorArgs(params.updateRecoveryBackup, params.updateRecoveryOwner),
   ];
   const baseEnv = stripGatewayServiceMarkerEnv(disableUpdatedPackageCompileCacheEnv(process.env));
   delete baseEnv[UPDATE_POST_CORE_CONVERGENCE_ENV];
@@ -228,6 +251,7 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
           input: {
             configInputHash: snapshot.hash,
             repair: true,
+            updateRecoveryBackup: params.updateRecoveryBackup,
             yes: params.yes,
             workspaceSuggestions: params.workspaceSuggestions === true,
             ...(params.phase === "post-plugin" && process.env[POST_CORE_UPDATE_ENV] === "1"
@@ -248,7 +272,51 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
     } else {
       // A valid legacy target contract retains its shipped CLI Doctor. This is
       // capability selection, never recovery from missing or refused authority.
-      result = await runExec(params.nodeRunner ?? resolveNodeRunner(), args, commandOptions);
+      const command = await runUtf8CommandWithTimeout(
+        [params.nodeRunner ?? resolveNodeRunner(), ...args],
+        {
+          ...commandOptions,
+          maxOutputBytes: commandOptions.maxBuffer,
+          killProcessTree: true,
+          requireProcessTreeExtinction: true,
+        },
+      ).catch((error: unknown) => {
+        if (
+          !isRecord(error) ||
+          (error.cleanup !== "normal" &&
+            error.cleanup !== "cooperative" &&
+            error.cleanup !== "forced")
+        ) {
+          throw new UpdateDoctorProcessUnsettledError(error);
+        }
+        throw error;
+      });
+      result = command;
+      if (command.cleanup === undefined || command.cleanup === "uncertain") {
+        throw new UpdateDoctorProcessUnsettledError();
+      }
+      if (
+        command.code !== 0 ||
+        command.termination !== "exit" ||
+        command.cleanup !== "normal" ||
+        command.outputLimitExceeded ||
+        command.outputErrorStream
+      ) {
+        throw Object.assign(
+          new Error(`Doctor command failed (${command.termination}, exit ${command.code})`),
+          {
+            failed: true,
+            exitCode: command.code,
+            signal: command.signal ?? undefined,
+            timedOut: command.termination !== "exit",
+            isMaxBuffer: command.outputLimitExceeded,
+            isTerminated: command.cleanup !== "normal",
+            stdout: command.stdout,
+            stderr: command.stderr,
+          },
+        );
+      }
+
       assertCurrent();
     }
   } catch (error) {
@@ -262,6 +330,9 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
       refuseAuthority(error);
     }
     assertCurrent();
+    if (error instanceof UpdateDoctorProcessUnsettledError) {
+      throw error;
+    }
     doctorResult = await consumeUpdatePostInstallDoctorResult(doctorResultPath);
     if (
       doctorResult?.configWriteRefusal?.reason === "authority-check-failed" ||
@@ -369,6 +440,8 @@ async function validatePostPluginConfigInFreshProcess(params: {
 }
 
 export async function completePostCorePluginUpdate(params: {
+  updateRecoveryBackup?: import("../../infra/update-recovery-backup-contract.js").UpdateRecoveryBackupRef;
+  updateRecoveryOwner?: "unprotected";
   root: string;
   runId?: string;
   opts?: UpdateCommandOptions;
@@ -425,6 +498,9 @@ export async function completePostCorePluginUpdate(params: {
       }
       // Lost updater authority must not become an advisory that starts more children.
       assertCurrent();
+      if (err instanceof UpdateDoctorProcessUnsettledError) {
+        throw err;
+      }
       pluginUpdate = createPostPluginDoctorExecutionFailure(
         params.pluginUpdate,
         String(err),

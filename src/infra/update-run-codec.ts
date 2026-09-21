@@ -100,10 +100,33 @@ function boundedJson(input: unknown, maxBytes = JSON_BYTES): string {
 }
 
 function boundedOriginJson(origin: UpdateRunRecord["origin"]): string {
-  const { driver, previousDrivers, ...diagnostics } = origin;
-  const identities = JSON.stringify({ driver, previousDrivers });
-  const boundedDiagnostics = boundedJson(diagnostics, JSON_BYTES - Buffer.byteLength(identities));
-  return `{${[identities.slice(1, -1), boundedDiagnostics.slice(1, -1)].filter(Boolean).join(",")}}`;
+  const {
+    driver,
+    previousDrivers,
+    updateRecoveryCapture,
+    unprotectedGatewayUpdate,
+    ...diagnostics
+  } = origin;
+  // Operational receipts are not expendable diagnostics. Keep them exact inside
+  // the existing database byte budget; oversized sets fail before replacing a row.
+  const retained = JSON.stringify({
+    driver,
+    previousDrivers,
+    updateRecoveryCapture,
+    unprotectedGatewayUpdate,
+  });
+  const remainingBytes = JSON_BYTES - Buffer.byteLength(retained);
+  if (remainingBytes < 0) {
+    throw new Error("Update run recovery receipts exceed the origin byte limit");
+  }
+  // Merging removes the diagnostic braces and needs a comma only when receipts exist.
+  const diagnosticBudget = remainingBytes + 2 - (retained === "{}" ? 0 : 1);
+  const minimumDiagnostics = JSON.stringify(mapJsonText(diagnostics, () => ""));
+  if (Buffer.byteLength(minimumDiagnostics) > diagnosticBudget) {
+    return retained;
+  }
+  const boundedDiagnostics = boundedJson(diagnostics, diagnosticBudget);
+  return `{${[retained.slice(1, -1), boundedDiagnostics.slice(1, -1)].filter(Boolean).join(",")}}`;
 }
 
 export function encodeRun(input: UpdateRunRecord, options: UpdateRunLedgerOptions): UpdateRuns {
@@ -141,8 +164,14 @@ export function encodeRun(input: UpdateRunRecord, options: UpdateRunLedgerOption
         ]
       : [];
   });
-  // Process identities are exact observations, never redacted diagnostic strings.
-  const { driver, previousDrivers, ...originDiagnostics } = input.origin;
+  // Recovery receipts and process identities must remain exact, not diagnostic excerpts.
+  const {
+    driver,
+    previousDrivers,
+    updateRecoveryCapture,
+    unprotectedGatewayUpdate,
+    ...originDiagnostics
+  } = input.origin;
   const record = UpdateRunRecordSchema.parse(
     mapJsonText(
       {
@@ -168,6 +197,8 @@ export function encodeRun(input: UpdateRunRecord, options: UpdateRunLedgerOption
     ...record.origin,
     driver,
     previousDrivers,
+    updateRecoveryCapture,
+    unprotectedGatewayUpdate,
   });
   return {
     run_id: record.runId,

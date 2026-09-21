@@ -95,11 +95,13 @@ import {
 import type { ConfigFileSnapshot, OpenClawConfig } from "./types.js";
 import { validateConfigObjectWithPlugins } from "./validation.js";
 import { createConfigWriteAuthorityGuard } from "./write-authority.js";
+import { getConfigFileWriteCapture, recordConfigFileWrite } from "./write-capture.js";
 import {
   captureConfigWriteLockGuard,
   markActiveConfigMutationPath,
   withConfigWriteLock,
 } from "./write-lock.js";
+// Applies scoped config mutations while preserving IO and observer state.
 
 const DEFAULT_CONFIG_MUTATION_RETRY_ATTEMPTS = 5;
 
@@ -739,6 +741,13 @@ async function tryWriteIncludeOwnedConfigMutation(params: {
           !hadRuntimeSnapshot &&
           !getRuntimeConfigSnapshotRefreshHandler()
         ) {
+          if (getConfigFileWriteCapture()) {
+            recordConfigFileWrite(
+              includeTarget.absolutePath,
+              previousIncludeRaw === null ? null : hashConfigRaw(previousIncludeRaw),
+              hashConfigRaw(committedIncludeRaw),
+            );
+          }
           return {
             persistedHash: null,
             persistedConfig: runtimeConfigToWrite,
@@ -824,6 +833,13 @@ async function tryWriteIncludeOwnedConfigMutation(params: {
             new Error(`runtime snapshot refresh failed: ${detail}`, { cause }),
         });
         assertPostCommitCurrent();
+        if (getConfigFileWriteCapture()) {
+          recordConfigFileWrite(
+            includeTarget.absolutePath,
+            previousIncludeRaw === null ? null : hashConfigRaw(previousIncludeRaw),
+            hashConfigRaw(committedIncludeRaw),
+          );
+        }
         return {
           persistedHash,
           persistedConfig: refreshedSnapshot.sourceConfig,

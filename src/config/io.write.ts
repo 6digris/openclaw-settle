@@ -10,8 +10,8 @@ import {
 import { isVitestRuntimeEnv } from "../infra/env.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
-  getUpdateDoctorConfigWriteAuthority,
   assertUpdateDoctorConfigInputHash,
+  getUpdateDoctorConfigWriteAuthority,
   recordUpdateDoctorConfigWrite,
 } from "../infra/update-doctor-result.js";
 import { initializeNativeSessionCatalogPreferences } from "../plugins/native-session-catalog-config.js";
@@ -55,8 +55,8 @@ import { recordConfigWriteMetadata } from "./io.meta.js";
 import {
   collectEnvRefPaths,
   containsConfigIncludeDirective,
-  hashConfigRaw,
   hasConfigMeta,
+  hashConfigRaw,
   parseConfigJson5,
   resolveGatewayMode,
   restoreAuthoredTildePathsForWrite,
@@ -72,6 +72,7 @@ import type {
 import {
   ConfigRuntimeRefreshError,
   configWriteCommittedSnapshot,
+  configWritePostCommitCapture,
   configWritePostCommitRollback,
 } from "./io.types.js";
 import { logConfigWarningsOnce } from "./io.warnings.js";
@@ -80,6 +81,7 @@ import {
   createConfigValidationFailedError,
   type ConfigWriteRollbackStatus,
 } from "./io.write-errors.js";
+import { withConfigWriteLockGuard } from "./io.write-lock-guard.js";
 import { resolvePersistCandidateForWrite } from "./io.write-prepare.js";
 import {
   assertBaseSnapshotStillCurrent,
@@ -102,8 +104,8 @@ import { preflightRuntimeSnapshotWrite } from "./runtime-snapshot.js";
 import type { OpenClawConfig } from "./types.js";
 import { validateConfigObjectRawWithPlugins } from "./validation.js";
 import { rejectConfigNonFiniteNumbers } from "./value-tree.js";
+import { getConfigFileWriteCapture, recordConfigFileWrite } from "./write-capture.js";
 import { captureConfigWriteLockGuard } from "./write-lock.js";
-
 export async function writeConfigFileFromContext(
   context: ConfigIoContext,
   cfg: OpenClawConfig,
@@ -111,23 +113,9 @@ export async function writeConfigFileFromContext(
   readSnapshot: () => Promise<ReadConfigFileSnapshotInternalResult>,
 ): Promise<InternalConfigWriteResult> {
   const { deps, configPath } = context;
-  let options = writeOptions;
   const sourceGuard = captureConfigWriteLockGuard(configPath);
+  let options = withConfigWriteLockGuard(sourceGuard, writeOptions);
   const doctorAuthority = getUpdateDoctorConfigWriteAuthority(configPath);
-  if (sourceGuard) {
-    const original = options;
-    options = {
-      ...options,
-      assertConfigPathForWrite: () => {
-        sourceGuard();
-        original.assertConfigPathForWrite?.();
-      },
-      beforeCommit: async () => {
-        await original.beforeCommit?.();
-        sourceGuard();
-      },
-    };
-  }
   options.assertConfigPathForWrite?.();
   assertConfigWriteAllowedInCurrentMode({ configPath, env: deps.env });
   const unsetPaths = resolveManagedUnsetPathsForWrite(options.unsetPaths);
@@ -632,6 +620,17 @@ export async function writeConfigFileFromContext(
       deps.logger.warn(
         "Cleared agents.defaults.sessionStore.agentId because session.store changed. Set that owner path explicitly to assign the destination store's owner.",
       );
+    }
+    if (getConfigFileWriteCapture() && (!snapshot.exists || typeof snapshot.raw === "string")) {
+      const beforeHash =
+        snapshot.exists && typeof snapshot.raw === "string" ? hashConfigRaw(snapshot.raw) : null;
+      const record = () => recordConfigFileWrite(configPath, beforeHash, nextHash);
+      const deferCapture = options[configWritePostCommitCapture];
+      if (deferCapture) {
+        deferCapture(record);
+      } else {
+        record();
+      }
     }
     setDeferredPluginMigrationConfigFacts(sourceConfigForPreflight, deferredPluginMigrations);
     return {

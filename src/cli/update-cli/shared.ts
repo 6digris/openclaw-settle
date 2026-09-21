@@ -11,6 +11,10 @@ import { resolveOpenClawPackageRoot } from "../../infra/openclaw-root.js";
 import { readPackageName, readPackageVersion } from "../../infra/package-json.js";
 import { normalizePackageTagInput } from "../../infra/package-tag.js";
 import { parseSemver } from "../../infra/runtime-guard.js";
+import {
+  resolveBoundUpdateTarget,
+  type AdmittedUpdateBridgeContext,
+} from "../../infra/update-bridge-binding.js";
 import { fetchNpmTagVersion } from "../../infra/update-check.js";
 import {
   normalizeUpdateFailureFacts,
@@ -50,6 +54,7 @@ import { isJsonOutputModeActive } from "../json-output-mode.js";
 import { resolveNodeRunner } from "./node-runner.js";
 
 export { resolveNodeRunner } from "./node-runner.js";
+// Shared update command primitives for channel resolution, install roots, and subprocess steps.
 
 export type UpdateCommandOptions = {
   /** Doctor's accepted source update targets dev without changing the saved channel. */
@@ -58,6 +63,8 @@ export type UpdateCommandOptions = {
   onResult?: (result: UpdateRunResult) => void;
   /** Captured before dotenv; only inherited selectors may choose a Node executable. */
   runtimeRecoveryEnv?: NodeJS.ProcessEnv;
+  /** Private external bridge capability; never serialize or expose as a root override. */
+  bridge?: AdmittedUpdateBridgeContext;
   /** In-process executor only; workers must reacquire authority, never deserialize this. */
   /** Legacy live context is unsupported; its presence is refusal-only. */
   recovery?: unknown;
@@ -259,7 +266,10 @@ export function tryResolveInvocationCwd(): string | undefined {
 }
 
 /** Locate the installed OpenClaw package root that should receive update operations. */
-export async function resolveUpdateRoot(): Promise<string> {
+export async function resolveUpdateRoot(bridge?: AdmittedUpdateBridgeContext): Promise<string> {
+  if (bridge !== undefined) {
+    return resolveBoundUpdateTarget(bridge);
+  }
   // Preserve the lexical package path from the invoking shim. pnpm 11 package
   // modules realpath into a shared store, which is not the install owner.
   const invocationRoot = process.argv[1]

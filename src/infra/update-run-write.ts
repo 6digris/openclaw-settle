@@ -5,6 +5,10 @@ import type { DB } from "../state/openclaw-state-db.generated.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../state/openclaw-state-schema.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { createUpdateErrorFact } from "./update-failure-facts.js";
+import {
+  mergeUpdateRecoveryCaptureState,
+  type UpdateRecoveryCaptureState,
+} from "./update-recovery-backup-contract.js";
 import { encodeRun, isRetainedStep, type UpdateRunLedgerOptions } from "./update-run-codec.js";
 import { decodeRun, readUpdateRunRecord } from "./update-run-read.kernel.js";
 import {
@@ -205,6 +209,26 @@ export function finishUpdateRun(
         record.before = { ...record.before, ...result.before };
       }
       finishUpdateRunRecord(record, result);
+    },
+    options,
+  );
+}
+
+/** Exact recovery receipts share the existing run owner, outside diagnostic eviction. */
+export function recordUpdateRunRecoveryCapture(
+  runId: string,
+  patch: Pick<UpdateRecoveryCaptureState, "manifestSha256"> & Partial<UpdateRecoveryCaptureState>,
+  assertCurrent: () => void,
+  options: UpdateRunLedgerOptions = {},
+): UpdateRunRecord {
+  return mutateRun(
+    runId,
+    (record) => {
+      assertCurrent();
+      record.origin.updateRecoveryCapture = mergeUpdateRecoveryCaptureState(
+        record.origin.updateRecoveryCapture,
+        patch,
+      );
     },
     options,
   );

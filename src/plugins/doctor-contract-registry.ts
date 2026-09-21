@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
@@ -23,6 +22,7 @@ import { resolvePluginDoctorContractArtifact } from "./doctor-contract-artifact.
 import {
   coercePluginDoctorContractModule,
   type PluginDoctorContractModule,
+  type PluginDoctorMigrationBackupResource,
   type PluginDoctorStateMigration,
 } from "./doctor-contract-module.js";
 import { pluginDoctorContractRegistryLoaderState } from "./doctor-contract-registry-loader-state.js";
@@ -30,6 +30,8 @@ import {
   collectRelevantDoctorPluginIds,
   collectRelevantDoctorPluginIdsForTouchedPaths,
 } from "./doctor-contract-relevance.js";
+// Loads plugin doctor contracts from manifest-owned metadata.
+import { isPluginDoctorMigrationDeferred } from "./doctor-migration-deferral.js";
 import type { DoctorSessionRouteStateOwner } from "./doctor-session-route-state-owner-types.js";
 import { isActivatedManifestOwner } from "./manifest-owner-policy.js";
 import { loadBundledPluginManifestRegistry } from "./manifest-registry-build.js";
@@ -40,24 +42,16 @@ import { getCachedPluginModuleLoader } from "./plugin-module-loader-cache.js";
 import { loadPluginManifestRegistryForPluginRegistry } from "./plugin-registry.js";
 import { getPluginSetupModuleLoader } from "./plugin-setup-module.js";
 import { loadBundledPluginPublicArtifactModuleFromCandidatesSync } from "./public-surface-loader.js";
+// Loads plugin doctor contracts from manifest-owned metadata.
+
+export {
+  withDeferredPluginDoctorMigrations,
+  isPluginDoctorMigrationDeferred,
+} from "./doctor-migration-deferral.js";
 
 export { collectRelevantDoctorPluginIds } from "./doctor-contract-relevance.js";
 
 const log = createSubsystemLogger("plugins/doctor-contracts");
-
-const deferredPluginMigrations = new AsyncLocalStorage<ReadonlySet<string>>();
-
-/** A prepared Doctor generation excludes unavailable owners from every migration surface. */
-export function withDeferredPluginDoctorMigrations<T>(
-  pluginIds: readonly string[],
-  run: () => T,
-): T {
-  return deferredPluginMigrations.run(new Set(pluginIds), run);
-}
-
-export function isPluginDoctorMigrationDeferred(pluginId: string): boolean {
-  return deferredPluginMigrations.getStore()?.has(pluginId) === true;
-}
 
 type PluginDoctorContractSurface = keyof PluginManifestDoctorContract;
 
@@ -228,7 +222,7 @@ function filterPluginDoctorRecordsByScope(
     : null;
   return records.filter(
     (record) =>
-      !deferredPluginMigrations.getStore()?.has(record.id) &&
+      !isPluginDoctorMigrationDeferred(record.id) &&
       !(
         scopedPluginIds &&
         !scopedPluginIds.has(record.id) &&
@@ -267,7 +261,7 @@ function resolvePluginDoctorContracts(params: {
   const installedPluginIds = new Set(records.map((record) => record.id));
   for (const { channelId, pluginId } of GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA) {
     if (
-      deferredPluginMigrations.getStore()?.has(pluginId) ||
+      isPluginDoctorMigrationDeferred(pluginId) ||
       (!Object.hasOwn(params.config?.channels ?? {}, channelId) &&
         !Object.hasOwn(params.config?.plugins?.entries ?? {}, pluginId)) ||
       ownedChannels.has(channelId) ||
@@ -425,6 +419,21 @@ export function listPluginDoctorStateMigrationEntries(params?: {
   );
 }
 
+/** Inspect plugin-owned migration paths before the updater captures its recovery set. */
+export async function collectPluginDoctorMigrationBackupResources(params: {
+  config: OpenClawConfig;
+  env: NodeJS.ProcessEnv;
+  stateDir: string;
+  workspaceDir?: string;
+  requireDeclaredResources?: boolean;
+}): Promise<PluginDoctorMigrationBackupResource[]> {
+  const entries = loadPluginDoctorStateMigrationEntries(
+    resolvePluginDoctorStateMigrationRecords({ ...params, artifactPreservingReadOnly: true }),
+  );
+  const { collectPluginDoctorMigrationResources } = await import("./doctor-migration-resources.js");
+  return await collectPluginDoctorMigrationResources(entries, params);
+}
+
 function loadPluginDoctorStateMigrationEntries(
   records: readonly PluginManifestRegistryRecord[],
   validateDeclarations = true,
@@ -528,7 +537,7 @@ function filterPluginDoctorStateMigrationRecords(
   const records: PluginManifestRegistryRecord[] = [];
   const normalizedConfig = normalizePluginsConfig(config?.plugins);
   for (const record of candidates) {
-    if (deferredPluginMigrations.getStore()?.has(record.id)) {
+    if (isPluginDoctorMigrationDeferred(record.id)) {
       continue;
     }
     const channelOwner = record.channels.length > 0;

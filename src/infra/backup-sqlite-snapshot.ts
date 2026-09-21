@@ -15,15 +15,13 @@ import { normalizeAgentId } from "../routing/session-key.js";
 import { assertOpenClawAgentDatabaseOwner } from "../state/openclaw-agent-db-maintenance.js";
 import { readOpenClawAgentDatabaseRegistryRows } from "../state/openclaw-agent-db-registry.read.js";
 import { resolveQuarantineStorePath } from "../state/openclaw-quarantine-store.js";
+import { clearOpenClawStateCopyLeases } from "../state/openclaw-state-copy-leases.js";
 import { assertOpenClawStateDatabaseOwner } from "../state/openclaw-state-db-maintenance.js";
 import {
   resolveOpenClawRegisteredAgentDatabasePath,
   resolveOpenClawStateSqlitePath,
 } from "../state/openclaw-state-db.paths.js";
-import {
-  sanitizeOpenClawGlobalStateSnapshot,
-  sanitizeOpenClawStateLeaseRows,
-} from "../state/openclaw-state-snapshot-sanitizer.js";
+import { sanitizeOpenClawGlobalStateSnapshot } from "../state/openclaw-state-snapshot-sanitizer.js";
 import {
   captureBackupSqliteSourceGroup,
   planBackupSqliteSourceGroups,
@@ -46,6 +44,7 @@ import {
   type LegacyAuditBackupSnapshot,
 } from "./state-migrations.audit-backup.js";
 import { assertNotUpdateCapturePath } from "./update-capture-paths.js";
+// Snapshots every SQLite database owned by the frozen backup resource inventory.
 
 type SqliteBackupAsset = {
   sourcePath: string;
@@ -255,7 +254,7 @@ export async function createBackupSqliteSnapshotPlan(params: {
               sanitizeOpenClawGlobalStateSnapshot(database);
               rewriteLegacyAuditBackupCheckpoints(database, params.legacyAuditSnapshots);
             } else if (canonicalSource?.role === "agent") {
-              sanitizeOpenClawStateLeaseRows(database);
+              clearOpenClawStateCopyLeases(database);
             }
             await embedSessionColdArchivesInSnapshot({
               database,

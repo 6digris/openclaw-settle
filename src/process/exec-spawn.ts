@@ -26,6 +26,30 @@ import { resolveSafeChildProcessInvocation } from "./windows-command.js";
 
 export const COMMAND_PROCESS_TREE_KILL_GRACE_MS = 300;
 
+export class CommandProcessScopeUnsettledError extends Error {
+  constructor(cause?: unknown) {
+    super(
+      "Command process scope could not prove that every child stopped; recovery must retain its capture",
+      { cause },
+    );
+    this.name = "CommandProcessScopeUnsettledError";
+  }
+}
+
+/** Retire only settled operation ownership before an intentional process handoff. */
+export async function retireCommandProcessJobForHandoff(): Promise<void> {
+  if (process.platform !== "win32") {
+    return;
+  }
+  const { retireRetainedWindowsProcessJob } =
+    await import("./supervisor/service-child-windows-job-native.js");
+  try {
+    retireRetainedWindowsProcessJob();
+  } catch (cause) {
+    throw new CommandProcessScopeUnsettledError(cause);
+  }
+}
+
 /** Remote PID and pipes arrive together before admission or stream subscription. */
 export async function waitForCommandSpawn(
   child: { nodeChildProcess: ChildProcess } & PromiseLike<unknown>,

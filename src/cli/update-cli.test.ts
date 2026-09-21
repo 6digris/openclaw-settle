@@ -46,6 +46,7 @@ import {
 } from "../infra/update-doctor-result.js";
 import { resolveUpdateInstallRoot } from "../infra/update-install-root.js";
 import { cleanupStaleManagedServiceUpdateHandoffs } from "../infra/update-managed-service-handoff-cleanup.js";
+import { updateRecoveryBackupRefSchema } from "../infra/update-recovery-backup-contract.js";
 import { renderUpdateRunReport } from "../infra/update-run-report.js";
 import type { UpdateRunResult } from "../infra/update-runner-types.js";
 import * as windowsPrivateDirectory from "../infra/windows-private-directory.js";
@@ -65,7 +66,6 @@ import { createCliRuntimeCapture, getMockCallOutput } from "./test-runtime-captu
 import { registerUpdateCapacityTests, statfsFixture } from "./update-cli.capacity.test-support.js";
 import { registerCurrentCoreUpdateTests } from "./update-cli.current-core.test-support.js";
 import { withUpdateCutoverResponses } from "./update-cli.cutover.test-support.js";
-import { createFinalizerDoctorAssertions } from "./update-cli.finalizer.test-support.js";
 import {
   createUpdateCliConfigFixtures,
   pluginSyncResult,
@@ -817,8 +817,6 @@ const {
   expectSelectorTriageFailure,
 } = await import("./update-cli-invocation.test-support.js");
 
-const { writeCurrentCoreDoctorFixture } =
-  await import("./update-cli.current-core-recovery.test-support.js");
 const { updateFinalizeCommand } = await import("./update-cli/update-command-finalize.js");
 const { updateStatusCommand } = await import("./update-cli/status.js");
 const { updateWizardCommand } = await import("./update-cli/wizard.js");
@@ -1352,7 +1350,42 @@ function defineUpdateCliSuite() {
       ),
     ].toSorted((left, right) => left.order - right.order);
 
-  const { expectFinalizerDoctor } = createFinalizerDoctorAssertions(runUtf8CommandWithTimeout);
+  const capturedDoctorArgs = (argv: string[]): string[] => {
+    const encoded = requireValue(
+      argv.find((arg) => arg.startsWith("--update-recovery-backup=")),
+      "Doctor recovery capture",
+    );
+    const ref = updateRecoveryBackupRefSchema.parse(
+      JSON.parse(encoded.slice("--update-recovery-backup=".length)),
+    );
+    expect(path.dirname(ref.directory)).toMatch(/\.update-captures$/u);
+    expect(ref.manifestPath).toBe(path.join(ref.directory, "manifest.json"));
+    expect(ref.manifestSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(fsSync.existsSync(ref.manifestPath)).toBe(true);
+    return ["--update-recovery-owner=driver", encoded];
+  };
+
+  const expectFreshPostUpdateDoctor = (params: {
+    yes: boolean;
+    workspaceSuggestions?: boolean;
+  }) => {
+    const calls = vi
+      .mocked(runUtf8CommandWithTimeout)
+      .mock.calls.filter(
+        ([argv]) => argv[1] === FRESH_POST_UPDATE_ENTRYPOINT && argv[2] === "doctor",
+      );
+    expect(calls).toHaveLength(1);
+    const argv = requireValue(calls[0]?.[0], "Doctor argv");
+    expect(argv.slice(1)).toEqual([
+      FRESH_POST_UPDATE_ENTRYPOINT,
+      "doctor",
+      "--repair",
+      "--non-interactive",
+      ...(params.workspaceSuggestions ? [] : ["--no-workspace-suggestions"]),
+      ...(params.yes ? ["--yes"] : []),
+      ...capturedDoctorArgs(argv),
+    ]);
+  };
 
   const doctorProcessResult = (
     overrides: Partial<Awaited<ReturnType<typeof runUtf8CommandWithTimeout>>> = {},
@@ -2474,43 +2507,6 @@ function defineUpdateCliSuite() {
       observe: false,
     });
   });
-
-  it.each(["before lookup", "after lookup", "after command", "never"] as const)(
-    "refuses a stale completion-cache owner revoked %s",
-    async (revokedAt) => {
-      const root = createCaseDir("completion-owner");
-      const failure = new Error("completion recovery owner revoked");
-      let current = revokedAt !== "before lookup";
-      const assertCurrent = () => {
-        if (!current) {
-          throw failure;
-        }
-      };
-      pathExists.mockReset().mockImplementation(async () => {
-        if (revokedAt === "after lookup") {
-          current = false;
-        }
-        return true;
-      });
-      vi.mocked(runCommandWithTimeout)
-        .mockReset()
-        .mockImplementation(async () => {
-          if (revokedAt === "after command") {
-            current = false;
-          }
-          return commandResult({ code: 0 });
-        });
-      const operation = updateCliShared.tryWriteCompletionCache(root, false, 1000, assertCurrent);
-      if (revokedAt === "never") {
-        await expect(operation).resolves.toBe("completed");
-      } else {
-        await expect(operation).rejects.toBe(failure);
-      }
-      expect(runCommandWithTimeout).toHaveBeenCalledTimes(
-        revokedAt === "never" || revokedAt === "after command" ? 1 : 0,
-      );
-    },
-  );
 
   it.each([undefined, 1_200])(
     "passes the completion refresh budget %s and core-only command scope",
@@ -13351,19 +13347,11 @@ function defineUpdateCliSuite() {
       },
       async () => {
         let doctorEnv: NodeJS.ProcessEnv | undefined;
-        const worker = requireValue(
-          vi.mocked(runUtf8CommandWithTimeout).getMockImplementation(),
-          "fixture worker",
-        );
-        vi.mocked(runUtf8CommandWithTimeout).mockImplementation(async (argv, options) => {
-          if (
-            argv.at(-1) === "--doctor" &&
-            typeof options === "object" &&
-            JSON.parse(String(options.input)).workspaceSuggestions === true
-          ) {
+        vi.mocked(runUtf8CommandWithTimeout).mockImplementationOnce(async (_argv, options) => {
+          if (typeof options === "object") {
             doctorEnv = { ...options.baseEnv, ...options.env };
           }
-          return worker(argv, options);
+          return doctorProcessResult();
         });
         vi.mocked(defaultRuntime.writeJson).mockClear();
 
@@ -13382,7 +13370,7 @@ function defineUpdateCliSuite() {
         expect(process.env.OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR).toBeUndefined();
         expect(process.env.OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE).toBeUndefined();
         expect(process.env.OPENCLAW_UPDATE_POST_CORE_CONVERGENCE).toBe("1");
-        expectFinalizerDoctor({ root: process.cwd(), yes: true, workspaceSuggestions: true });
+        expectFreshPostUpdateDoctor({ yes: true, workspaceSuggestions: true });
         expect(syncPluginCall()?.channel).toBe("stable");
         expect(lastNpmPluginUpdateCall()?.timeoutMs).toBe(9_000);
         expect(
@@ -13414,7 +13402,6 @@ function defineUpdateCliSuite() {
         expect(output?.phaseTimings?.map((timing) => timing.phase)).toEqual([
           "preflight",
           "targetConfigValidation",
-          "plugins",
           "configSnapshot",
           "doctor",
           "plugins",
@@ -13432,7 +13419,6 @@ function defineUpdateCliSuite() {
           "completed",
           "completed",
           "completed",
-          "completed",
           "skipped",
         ]);
       },
@@ -13440,6 +13426,12 @@ function defineUpdateCliSuite() {
   });
 
   it("updateFinalizeCommand can defer only the best-effort completion cache", async () => {
+    const { entryPath } = await setupInstalledPackageRoot(
+      createCaseDir("finalizer-completion-cache"),
+      VERSION,
+    );
+    // Direct finalization has no package-update/resume entrypoint sequence.
+    vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValue(entryPath);
     pathExists.mockResolvedValue(true);
     vi.mocked(runCommandWithTimeout).mockClear();
     vi.mocked(defaultRuntime.writeJson).mockClear();
@@ -13604,16 +13596,9 @@ function defineUpdateCliSuite() {
     } satisfies Record<string, PluginInstallRecord>;
     let currentSnapshot = preDoctorSnapshot;
     vi.mocked(readConfigFileSnapshot).mockImplementation(async () => currentSnapshot);
-    const worker = requireValue(
-      vi.mocked(runUtf8CommandWithTimeout).getMockImplementation(),
-      "fixture worker",
-    );
-    vi.mocked(runUtf8CommandWithTimeout).mockImplementation(async (argv, options) => {
-      const result = await worker(argv, options);
-      if (argv.at(-1) === "--doctor") {
-        currentSnapshot = postDoctorSnapshot;
-      }
-      return result;
+    vi.mocked(runUtf8CommandWithTimeout).mockImplementationOnce(async () => {
+      currentSnapshot = postDoctorSnapshot;
+      return doctorProcessResult();
     });
     loadInstalledPluginIndexInstallRecords.mockResolvedValueOnce(postDoctorRecords);
     syncPluginsForUpdateChannel.mockImplementationOnce(
@@ -13626,13 +13611,20 @@ function defineUpdateCliSuite() {
 
     await updateFinalizeCommand({ json: true, timeout: "9", restart: false });
 
-    expectFinalizerDoctor({ root: process.cwd(), yes: false, workspaceSuggestions: true });
-    const postDoctor = expectFinalizerDoctor({
-      root: process.cwd(),
-      yes: false,
-      workspaceSuggestions: false,
-    });
-    expect(postDoctor.options).toMatchObject({
+    expectFreshPostUpdateDoctor({ yes: false, workspaceSuggestions: true });
+    const freshDoctorCall = vi
+      .mocked(runUtf8CommandWithTimeout)
+      .mock.calls.find(([argv]) => argv[1] === "/tmp/openclaw-entry.mjs" && argv[2] === "doctor");
+    const freshDoctorArgv = requireValue(freshDoctorCall?.[0], "post-plugin Doctor argv");
+    expect(freshDoctorArgv.slice(1)).toEqual([
+      "/tmp/openclaw-entry.mjs",
+      "doctor",
+      "--repair",
+      "--non-interactive",
+      "--no-workspace-suggestions",
+      ...capturedDoctorArgs(freshDoctorArgv),
+    ]);
+    expect(freshDoctorCall?.[1]).toMatchObject({
       cwd: process.cwd(),
       env: {
         OPENCLAW_UPDATE_IN_PROGRESS: "1",
@@ -13658,10 +13650,9 @@ function defineUpdateCliSuite() {
 
   it("updateFinalizeCommand restores channels from the RPC pre-update config payload", async () => {
     const tempDir = createCaseDir("openclaw-rpc-finalize");
-    const entryPath = await writeOpenClawPackageFixture(tempDir, VERSION, {
+    const entryPath = await writeOpenClawPackageFixture(tempDir, "2026.6.18", {
       entrySource: "export {};\n",
     });
-    await writeCurrentCoreDoctorFixture(tempDir);
     vi.mocked(resolveOpenClawPackageRoot).mockResolvedValue(tempDir);
     mockFileBackedPathExists();
     const sourceConfigPath = path.join(tempDir, "source-config.json");
@@ -13674,7 +13665,7 @@ function defineUpdateCliSuite() {
       },
     };
     const postDoctorConfig: OpenClawConfig = {
-      meta: { lastTouchedVersion: VERSION },
+      meta: { lastTouchedVersion: "2026.6.18" },
     };
     const postDoctorSnapshot = configSnapshot(postDoctorConfig, {
       parsed: baseSnapshot.parsed,
@@ -13701,14 +13692,13 @@ function defineUpdateCliSuite() {
     expect(lastReplaceConfigCall()?.nextConfig?.channels?.whatsapp).toEqual(
       preUpdateConfig.channels?.whatsapp,
     );
-    const pre = expectFinalizerDoctor({ root: tempDir, yes: false, workspaceSuggestions: true });
-    const post = expectFinalizerDoctor({ root: tempDir, yes: false, workspaceSuggestions: false });
-    expect(post.ref).toEqual(pre.ref);
-    expect(
-      freshUpdateCommands()
-        .filter(({ argv }) => argv[1] === entryPath)
-        .map(({ argv }) => argv.slice(2)),
-    ).toEqual([["config", "validate", "--json"]]);
+    const calls = freshUpdateCommands().filter(({ argv }) => argv[1] === entryPath);
+    const captureArgs = capturedDoctorArgs(requireValue(calls[0]?.argv, "pre-plugin Doctor argv"));
+    expect(calls.map(({ argv }) => argv.slice(2))).toEqual([
+      ["doctor", "--repair", "--non-interactive", ...captureArgs],
+      ["doctor", "--repair", "--non-interactive", "--no-workspace-suggestions", ...captureArgs],
+      ["config", "validate", "--json"],
+    ]);
     expect(doctorCommand).not.toHaveBeenCalled();
     expect(lastWriteJsonCall()).toMatchObject({ status: "ok" });
   });
@@ -13716,7 +13706,6 @@ function defineUpdateCliSuite() {
   it("updateFinalizeCommand reapplies requested channel against post-doctor config", async () => {
     const root = createCaseDir("channel-finalize");
     await writeOpenClawPackageFixture(root, VERSION, { entrySource: "export {};\n" });
-    await writeCurrentCoreDoctorFixture(root);
     vi.mocked(resolveOpenClawPackageRoot).mockResolvedValue(root);
     vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValue(FRESH_POST_UPDATE_ENTRYPOINT);
     const preDoctorConfig: OpenClawConfig = { update: { channel: "stable" } };
@@ -13736,16 +13725,16 @@ function defineUpdateCliSuite() {
       "fixture worker",
     );
     vi.mocked(runUtf8CommandWithTimeout).mockImplementation(async (argv, options) => {
-      const result = await worker(argv, options);
-      if (argv.at(-1) === "--doctor") {
+      if (argv[2] === "doctor") {
         currentSnapshot = postDoctorSnapshot;
+        return doctorProcessResult();
       }
-      return result;
+      return worker(argv, options);
     });
 
     await updateFinalizeCommand({ channel: "dev", json: true, restart: false });
 
-    expectFinalizerDoctor({ root, yes: false, workspaceSuggestions: true });
+    expectFreshPostUpdateDoctor({ yes: false, workspaceSuggestions: true });
     expect(replaceConfigCall(0)?.baseHash).toBe("pre-doctor");
     expect(replaceConfigCall(0)?.nextConfig).toEqual({ update: { channel: "dev" } });
     expect(replaceConfigCall(1)?.baseHash).toBe("post-doctor");
@@ -13757,7 +13746,6 @@ function defineUpdateCliSuite() {
   it("updateFinalizeCommand converges on the effective channel from env without persisting update.channel", async () => {
     const root = createCaseDir("channel-finalize");
     await writeOpenClawPackageFixture(root, VERSION, { entrySource: "export {};\n" });
-    await writeCurrentCoreDoctorFixture(root);
     vi.mocked(resolveOpenClawPackageRoot).mockResolvedValue(root);
     vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValue(FRESH_POST_UPDATE_ENTRYPOINT);
     const noChannelConfig: OpenClawConfig = {};

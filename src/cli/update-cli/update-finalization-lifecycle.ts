@@ -11,6 +11,7 @@ import {
   type UpdateFailureFact,
 } from "../../infra/update-failure-facts.js";
 import { POST_CORE_UPDATE_ENV } from "../../infra/update-post-core-context.js";
+import type { UpdateRecoveryBackupRef } from "../../infra/update-recovery-backup-contract.js";
 import { readUpdateRunDriver, type UpdateRunDriver } from "../../infra/update-run-driver.js";
 import {
   adoptUpdateRun,
@@ -68,6 +69,7 @@ export class UpdateFinalizationLifecycle {
     outcome: Outcome;
   }[] = [];
   root?: string;
+  updateRecoveryBackup?: UpdateRecoveryBackupRef;
   private runId?: string;
   private driver?: UpdateRunDriver;
   private ledgerOptions?: { env: NodeJS.ProcessEnv };
@@ -283,6 +285,18 @@ export class UpdateFinalizationLifecycle {
         stopPhaseChildren();
         this.reportTimeout = () => {
           writeSync(2, `${failure.message}\n`);
+          const recovery = this.updateRecoveryBackup
+            ? {
+                manifestPath: this.updateRecoveryBackup.manifestPath,
+                command: "npx openclaw@latest doctor --fix",
+              }
+            : undefined;
+          if (recovery) {
+            writeSync(
+              2,
+              `Update recovery capture retained at ${recovery.manifestPath}; inspect with openclaw update status --json, then run ${recovery.command}.\n`,
+            );
+          }
           if (doctorOutput) {
             writeSync(2, `[update finalize] Doctor output: ${JSON.stringify(doctorOutput)}\n`);
           }
@@ -290,7 +304,9 @@ export class UpdateFinalizationLifecycle {
             2,
             `[update finalize] Stalled phase children: ${JSON.stringify(diagnostics)}\n`,
           );
-          this.recordDiagnostic(JSON.stringify(diagnostics));
+          this.recordDiagnostic(
+            JSON.stringify({ ...diagnostics, ...(recovery ? { recovery } : {}) }),
+          );
           if (this.json) {
             defaultRuntime.writeJson({
               status: "failed",
@@ -302,6 +318,7 @@ export class UpdateFinalizationLifecycle {
               error: failure.message,
               phaseTimings: this.phaseTimings,
               ...diagnostics,
+              ...(recovery ? { recovery } : {}),
               ...(doctorOutput ? { doctorOutput } : {}),
             });
           }
@@ -431,12 +448,16 @@ export class UpdateFinalizationLifecycle {
     }
   }
 
-  private finishLedger(exitCode: number): void {
+  private finishLedger(exitCode: number, reason?: string): void {
     if (this.runId && this.ownsRun) {
       try {
         finishUpdateRun(
           this.runId,
-          { status: exitCode ? "failed" : "succeeded", diagnostics: this.failureObservation },
+          {
+            status: exitCode ? "failed" : "succeeded",
+            diagnostics: this.failureObservation,
+            ...(reason ? { reason } : {}),
+          },
           this.ledgerOptions,
         );
       } catch {

@@ -429,6 +429,7 @@ export async function convergePostCoreUpdatePlugins(params: {
   /** Only an explicitly forwarded update start makes an empty index authoritative. */
   updateStartedAtMs?: number;
   assertCurrent?: () => void;
+  beforePersistentEffect?: () => void | Promise<void>;
 }): Promise<{
   pluginUpdate: PostCorePluginUpdateResult;
   configSnapshot: Awaited<ReturnType<typeof readConfigFileSnapshot>>;
@@ -444,6 +445,7 @@ export async function convergePostCoreUpdatePlugins(params: {
       suppressFutureVersionWarning: true,
       observe: false,
       assertCurrent,
+      beforePersistentEffect: params.beforePersistentEffect,
     });
     // The updated doctor may have repaired or removed plugin installs before this process resumed.
     const currentPluginInstallRecords = await loadInstalledPluginIndexInstallRecords();
@@ -472,6 +474,7 @@ export async function convergePostCoreUpdatePlugins(params: {
       workTimeoutMs: parseUpdateTimeoutMs(params.opts.timeout) ?? null,
       pluginInstallRecords,
       assertCurrent,
+      preparePersistentEffect: params.beforePersistentEffect,
     });
     assertCurrent?.();
     return { pluginUpdate, configSnapshot: preparedConfig.configSnapshot };

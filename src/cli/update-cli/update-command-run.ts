@@ -17,6 +17,11 @@ import {
 } from "../../infra/gateway-supervision.js";
 import { resolveOpenClawPackageRootSync } from "../../infra/openclaw-root.js";
 import { assertNoPendingPackageActivation } from "../../infra/package-update-activation.js";
+import {
+  assertBoundUpdateSelectors,
+  assertExternalUpdateBridgeInvocation,
+  resolveBoundUpdateTarget,
+} from "../../infra/update-bridge-binding.js";
 import { normalizeUpdateChannel } from "../../infra/update-channels.js";
 import { resolveUpdateInstallKind } from "../../infra/update-check.js";
 import {
@@ -25,15 +30,14 @@ import {
 } from "../../infra/update-control-plane-sentinel.js";
 import {
   parseDevUpdateTargetEnv,
-  type DevUpdateTarget,
   UPDATE_DEV_TARGET_REF_ENV,
+  type DevUpdateTarget,
 } from "../../infra/update-dev-target.js";
 import {
   createFreeBsdPkgOwnershipInspection,
   type FreeBsdPkgOwnershipInspection,
 } from "../../infra/update-freebsd-pkg-ownership.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
-import { cleanupStaleManagedServiceUpdateHandoffs } from "../../infra/update-managed-service-handoff-cleanup.js";
 import {
   POST_CORE_UPDATE_CHANNEL_ENV,
   POST_CORE_UPDATE_ENV,
@@ -51,18 +55,14 @@ import {
   finishUpdateRun,
   getUpdateRun,
   heartbeatUpdateRun,
-  recordUpdateRunPhase,
   recordUpdateRunDiagnostics,
+  recordUpdateRunPhase,
   recordUpdateRunStep,
   recordUpdateRunVerification,
 } from "../../infra/update-run-ledger.js";
 import type { UpdateRunRecord, UpdateRunStep } from "../../infra/update-run-record.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
-import {
-  inspectUpdateRecoveries,
-  loadUpdateRecovery,
-  type UpdateRecoveryFence,
-} from "../../infra/update-run-recovery.js";
+import { inspectUpdateRecoveries, loadUpdateRecovery } from "../../infra/update-run-recovery.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import {
   AUTO_UPDATE_STEP_TIMEOUT_MS,
@@ -70,12 +70,12 @@ import {
   UPDATE_RUNNER_TIMEOUT_MS,
 } from "../../infra/update-run-timeouts.js";
 import type { UpdateRunResult, UpdateStepProgress } from "../../infra/update-runner-types.js";
-import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership.js";
 import { VERSION } from "../../version.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
+import { retainCliProcessJobUntilExit } from "../runtime-cleanup-scope.js";
 import { registerSignalExitBarrier, waitForSignalExitBarriers } from "../signal-exit-barrier.js";
 import type { UpdateDisplayProgress } from "./progress.js";
 import { parseUpdateTimeoutMs, resolveUpdateRoot, type UpdateCommandOptions } from "./shared.js";
@@ -89,17 +89,20 @@ import {
 import { UpdateCommandPendingRecoveryFailure } from "./update-command-result.js";
 import {
   resolveOwnedManagedUpdateEnv,
-  withOwnedManagedUpdateEnv,
   resolveServiceRefreshEnv,
 } from "./update-command-service-env.js";
 import {
-  GatewayServiceUpdateOwnershipError,
   assertGatewayServiceManagementAllowedForUpdate,
+  GatewayServiceUpdateOwnershipError,
   isGatewayServiceManagementAllowedForUpdate,
   readManagedGatewayServiceForUpdate,
   resolveManagedServicePackageUpdatePlan,
 } from "./update-command-service-plan.js";
-
+export {
+  assertBridgePackageTarget,
+  beginBridgeMutation,
+  prepareMutableUpdateRuntime,
+} from "./update-command-mutation.js";
 // Identity in this map is minted only for a new local preview, never reconstructed
 // from a run ID, process absence, or another invocation's diagnostic history.
 const previewAdmissions = new WeakMap<
@@ -192,6 +195,15 @@ export async function resolveUpdateCommandAdmissionEnv(params: {
         assertGatewayServiceManagementAllowedForUpdate(env);
       }
     }
+  }
+  if (params.opts.bridge !== undefined) {
+    if (params.root !== resolveBoundUpdateTarget(params.opts.bridge)) {
+      throw new Error("Update bridge target changed during admission.");
+    }
+    assertBoundUpdateSelectors(params.opts.bridge, {
+      configPath: resolveConfigPath(env),
+      statePath: resolveOpenClawStateSqlitePath(env),
+    });
   }
   return env;
 }
@@ -571,6 +583,17 @@ export function readDevUpdateTarget(): DevUpdateTarget | undefined {
 }
 
 export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
+  if (opts.bridge !== undefined) {
+    assertExternalUpdateBridgeInvocation(process.env);
+    if (opts.run !== undefined || opts.recovery !== undefined) {
+      throw new Error("Update bridge cannot adopt a continuation or recovery context.");
+    }
+    resolveBoundUpdateTarget(opts.bridge);
+    assertBoundUpdateSelectors(opts.bridge, {
+      configPath: resolveConfigPath(process.env),
+      statePath: resolveOpenClawStateSqlitePath(process.env),
+    });
+  }
   // Refuse before preflight can inspect write ownership or admit a live run ledger.
   const runtimeFailure = process.versions.bun
     ? null
@@ -614,7 +637,7 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   }
   // The shim can move during preparation; the loaded module owns the executing generation.
   const executingRoot = resolveOpenClawPackageRootSync({ moduleUrl: import.meta.url });
-  const discoveredRoot = opts.sourceUpdate?.root ?? (await resolveUpdateRoot());
+  const discoveredRoot = opts.sourceUpdate?.root ?? (await resolveUpdateRoot(opts.bridge));
   const installKind = await resolveUpdateInstallKind(discoveredRoot, { timeoutMs });
   if (opts.sourceUpdate && installKind !== "git") {
     throw new Error("Doctor source update requires the accepted Git checkout.");
@@ -626,6 +649,11 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
       root: discoveredRoot,
       meta: controlPlaneUpdateSentinelMeta,
     }));
+  if (opts.bridge !== undefined && (installKind !== "package" || requestedChannel === "dev")) {
+    throw new Error(
+      "The explicit update bridge requires a package target and cannot switch to a Git install.",
+    );
+  }
   const pkgOwnership = createFreeBsdPkgOwnershipInspection(timeoutMs ?? UPDATE_RUNNER_TIMEOUT_MS);
   // Inspect the invoking installation before a service can redirect its root,
   // runtime or state. This also covers package-to-Git and preview requests.
@@ -643,6 +671,11 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
           rebind: shouldRestart,
         })
       : undefined;
+  if (opts.bridge !== undefined && servicePlan?.rootRedirect) {
+    throw new Error(
+      "Update bridge refuses an installation redirect; select the service owner explicitly.",
+    );
+  }
   const packageAdmission = {
     continuation: postCoreUpdateResume ? opts.run?.executorFence : undefined,
     serviceRoot: servicePlan?.serviceRoot ?? servicePlan?.rootRedirect?.root,
@@ -650,6 +683,7 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   assertUpdatePackageActivationAdmission(discoveredRoot, packageAdmission);
   opts.run?.executorFence?.assertCurrent();
   if (opts.dryRun !== true) {
+    await retainCliProcessJobUntilExit();
     await assertOpenClawStateWriteAllowedAtPath({
       databasePath: resolveOpenClawStateSqlitePath(process.env),
       recoverOrphanedSidecars: false,
@@ -657,6 +691,9 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   }
   opts.run?.executorFence?.assertCurrent();
   const handoffRoot = controlPlaneUpdateSentinelMeta?.root;
+  if (opts.bridge !== undefined && handoffRoot) {
+    throw new Error("Update bridge cannot adopt a managed handoff sentinel.");
+  }
   if (handoffRoot) {
     const { assertManagedServiceUpdateHandoffRoot } =
       await import("../../infra/update-managed-service-handoff.js");
@@ -691,25 +728,4 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
     servicePlan,
     pkgOwnership,
   };
-}
-
-/** Prepare mutable runtime state only under the admitted installation owner. */
-export async function prepareMutableUpdateRuntime(
-  env: NodeJS.ProcessEnv | undefined,
-  fence: UpdateRecoveryFence,
-) {
-  return await withOwnedManagedUpdateEnv(env, async () => {
-    fence.assertCurrent();
-    await cleanupStaleManagedServiceUpdateHandoffs().catch(() => undefined);
-    fence.assertCurrent();
-    await assertOpenClawStateWriteAllowedAtPath({
-      databasePath: resolveOpenClawStateSqlitePath(process.env),
-    });
-    fence.assertCurrent();
-    await disableCurrentOpenClawUpdateLaunchdJob().catch(() => undefined);
-    fence.assertCurrent();
-    const records = await loadInstalledPluginIndexInstallRecords();
-    fence.assertCurrent();
-    return records;
-  });
 }

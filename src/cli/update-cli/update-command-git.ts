@@ -56,13 +56,13 @@ import {
   resolveGlobalManager,
   runUpdateStep,
 } from "./shared.js";
+import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import {
   prepareGitPackageExposure,
   readPackageUpdateIdentity,
   runPackageUpdateDoctor,
 } from "./update-command-package.js";
 import { gatewayServiceCommandUsesRoot } from "./update-command-service-plan.js";
-
 const DEFAULT_UPDATE_STEP_TIMEOUT_MS = 30 * 60_000;
 
 export async function retireStandaloneGitWrapper(params: {
@@ -426,9 +426,11 @@ export async function updateGitInstall(params: {
   validateCandidate: (root: string) => Promise<void>;
   assertCurrent?: () => void;
   onTransaction?: (transaction: PackageUpdateTransaction) => void;
+  onUnchangedCore?: (core: NonNullable<FinishUpdateParams["unchangedCore"]>) => void;
   onConfigSnapshot?: Parameters<typeof runPackageUpdateDoctor>[0]["onConfigSnapshot"];
   getDoctorContext?: Parameters<typeof runPackageUpdateDoctor>[0]["getDoctorContext"];
   getManagedServiceEnv: () => NodeJS.ProcessEnv | undefined;
+  getUpdateRecoveryBackup?: UpdateRunnerOptions["getUpdateRecoveryBackup"];
   getSnapshotSource: () => Promise<{ config: OpenClawConfig; env: NodeJS.ProcessEnv }>;
   jsonMode?: boolean;
   invocationCwd?: string;
@@ -556,6 +558,7 @@ export async function updateGitInstall(params: {
           runPackageUpdateDoctor({
             ...params,
             managedServiceEnv: params.getManagedServiceEnv(),
+            updateRecoveryBackup: params.getUpdateRecoveryBackup?.(),
             root,
             timeoutMs: effectiveTimeout,
           }),
@@ -583,6 +586,7 @@ export async function updateGitInstall(params: {
                   runPackageUpdateDoctor({
                     ...params,
                     managedServiceEnv: params.getManagedServiceEnv(),
+                    updateRecoveryBackup: params.getUpdateRecoveryBackup?.(),
                     root,
                     timeoutMs: effectiveTimeout,
                   }),
@@ -673,6 +677,12 @@ export async function updateGitInstall(params: {
       // Recover that exact package; its version alone cannot authorize Git source.
       if (packageOwner && gitOwner && packageOwner !== gitOwner && serviceUsesPackage === true) {
         updateResult.recovery = cancelled.recovery;
+        if (cancelled.recovery?.serviceRestartSafe && cancelled.unchangedCore) {
+          // The source owner cancelled before exposure; restore state against this exact package.
+          updateResult.root = packageRoot;
+          updateResult.after = before;
+          params.onUnchangedCore?.(cancelled.unchangedCore);
+        }
       }
       steps.push(...cancelled.steps);
     }

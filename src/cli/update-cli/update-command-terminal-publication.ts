@@ -11,14 +11,15 @@ import {
 } from "./update-command-terminal.js";
 
 export function completeUpdateCommandResult(
-  params: Pick<FinishUpdateParams, "startedAt" | "rollbackBlockedReason">,
+  params: Pick<FinishUpdateParams, "startedAt" | "rollbackBlockedReason" | "updateRecoveryBackup">,
   result: UpdateRunResult,
 ): UpdateRunResult {
   return normalizeControlPlaneUpdateResult({
     ...result,
     ...(result.status === "error" &&
     result.reason !== UPDATE_ACTIVATION_TIMEOUT_REASON &&
-    params.rollbackBlockedReason
+    params.rollbackBlockedReason &&
+    !params.updateRecoveryBackup
       ? { reason: params.rollbackBlockedReason }
       : {}),
     durationMs: Math.max(0, Date.now() - params.startedAt),
@@ -34,6 +35,7 @@ export async function publishSettledUpdateCommandResult(
     | "coreAlreadyCurrent"
     | "startedAt"
     | "rollbackBlockedReason"
+    | "updateRecoveryBackup"
   >,
   state: {
     pendingResult: UpdateRunResult;
@@ -55,7 +57,10 @@ export async function publishSettledUpdateCommandResult(
     state.terminalRecord,
   );
   const result = completeUpdateCommandResult(params, settled.result);
-  result.recovery = settled.settlementFailed ? undefined : result.recovery;
+  if (settled.settlementFailed) {
+    // A failed executor settlement invalidates any earlier recovery verification.
+    result.recovery = { serviceRestartSafe: false, reason: "runtime-verification-failed" };
+  }
   const reporting = state.readReportingState();
   const reportDowntime = !settled.settlementFailed && reporting.pendingRestartAtMs === undefined;
   if (reporting.notify) {

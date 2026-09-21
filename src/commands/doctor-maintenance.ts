@@ -54,6 +54,7 @@ import {
   recordUpdateDoctorRefusal,
   resolveUpdateDoctorGitRecovery,
 } from "./doctor-update-refusal.js";
+/** Coordinates explicit Doctor repair with the managed Gateway lifecycle. */
 
 type DoctorConfigWriter = (nextConfig: OpenClawConfig) => Promise<OpenClawConfig>;
 
@@ -65,6 +66,8 @@ export async function beginDoctorMaintenance(params: {
   assertCurrent?: () => void;
 }): Promise<
   | {
+      assertCurrent(): void;
+      closeStores(): Promise<void>;
       run<T>(operation: () => T): T;
       releaseState(): Promise<void>;
       release(): Promise<void>;
@@ -653,6 +656,15 @@ export async function beginDoctorMaintenance(params: {
     warnings,
     failureFacts,
     run: <T>(operation: () => T) => resources!.run(operation),
+    assertCurrent() {
+      if (this !== maintenance || custody !== "held" || coordinators.length !== 2) {
+        throw new Error("Doctor maintenance authority has expired.");
+      }
+      assertUpdateAdmissionCurrent?.();
+    },
+    closeStores: async () => {
+      await resources?.close();
+    },
     releaseState: () => settle(releaseState),
     async release() {
       if (this !== maintenance) {

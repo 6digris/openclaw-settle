@@ -1,78 +1,17 @@
-import { createHash } from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
-import { expect } from "vitest";
-import { writePackageDistInventory } from "../../scripts/lib/package-dist-inventory.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
-import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
 import type { UpdateCliExtractedContext } from "./update-cli.test.js";
 
-/** The command double supplies effects; keep real worker presence and child PID admission. */
-export async function writeCurrentCoreDoctorFixture(root: string): Promise<void> {
-  const worker = path.join(
-    root,
-    "dist",
-    runtimeProcessEntrypoints.updateMigratedFinalize.distWorkerPath,
-  );
-  await fs.mkdir(path.dirname(worker), { recursive: true });
-  await fs.writeFile(worker, "// Delegated Doctor effects are supplied by the test transport.\n");
-  await writePackageDistInventory(root);
-}
-
-/** No reverse migration owner exists for this deliberately unregistered plugin database. */
-async function expectRetainedPluginGenerations(
-  context: UpdateCliExtractedContext,
-  stateMarker: string,
-): Promise<void> {
-  const { verifyUpdateRecoveryBackup } = await import("../infra/update-recovery-backup.js");
-  const run = context.requireValue(context.listUpdateRuns({ limit: 1 })[0], "failed plugin run");
-  const capture = context.requireValue(run.origin.updateRecoveryCapture, "retained capture");
-  expect(capture.restored).not.toBe(true);
-  const directory = path.join(
-    `${await fs.realpath(context.resolveStateDir())}.update-captures`,
-    run.runId,
-  );
-  for (const [kind, value] of [
-    ["baseline", "before-plugin-update"],
-    ["candidate", "after-plugin-update"],
-  ] as const) {
-    const root = kind === "baseline" ? directory : path.join(directory, kind);
-    const manifestPath = path.join(root, "manifest.json");
-    const manifestSha256 = createHash("sha256")
-      .update(await fs.readFile(manifestPath))
-      .digest("hex");
-    if (kind === "baseline") {
-      expect(manifestSha256).toBe(capture.manifestSha256);
-    }
-    const manifest = await verifyUpdateRecoveryBackup({
-      directory: root,
-      manifestPath,
-      manifestSha256,
-    });
-    expect(manifest.runId).toBe(run.runId);
-    expect(manifest.generation?.kind).toBe(kind);
-    if (kind === "candidate") {
-      expect(manifest.generation).toMatchObject({ baselineSha256: capture.manifestSha256 });
-    }
-    const entry = manifest.entries.find(
-      (candidate) => candidate.kind === "file" && candidate.sourcePath === stateMarker,
-    );
-    if (!entry || entry.kind !== "file") {
-      throw new Error(`Missing ${kind} plugin capture`);
-    }
-    const database = new context.DatabaseSync(path.join(root, entry.archivePath), {
-      readOnly: true,
-    });
-    try {
-      expect(database.prepare("SELECT value FROM plugin_state").get()?.value).toBe(value);
-    } finally {
-      database.close();
-    }
-  }
-}
-
 export function registerCurrentCoreConvergenceTests(context: UpdateCliExtractedContext): void {
-  context.it.each(context.runtimeRecovery.alreadyCurrentConvergenceCases)(
+  context.it.each([
+    { restart: true, running: true, failure: undefined },
+    { restart: false, running: true, failure: undefined },
+    { restart: true, running: false, failure: undefined },
+    { restart: true, running: true, failure: "doctor" },
+    { restart: false, running: true, failure: "doctor" },
+    { restart: true, running: true, failure: "stop" },
+    { restart: true, running: true, failure: undefined, platform: "linux" as const },
+    { restart: true, running: true, failure: "changed owner" },
+  ])(
     "converges plugins on an already-current core (restart=$restart, running=$running, failure=$failure, platform=$platform)",
     async ({ restart, running, failure, platform }) => {
       if (platform) {
@@ -80,7 +19,6 @@ export function registerCurrentCoreConvergenceTests(context: UpdateCliExtractedC
       }
       const root = await context.mockPackageInstallAtCaseDir();
       await context.writeOpenClawPackageFixture(root, context.VERSION);
-      await writeCurrentCoreDoctorFixture(root);
       context.mockFileBackedPathExists();
       context.vi.mocked(context.resolveGatewayInstallEntrypoint).mockReset();
       context.readPackageVersion.mockResolvedValue(context.VERSION);
@@ -186,13 +124,23 @@ export function registerCurrentCoreConvergenceTests(context: UpdateCliExtractedC
             .expect(readPluginState())
             .toBe(failure ? "before-plugin-update" : "after-plugin-update");
         }
-        if (failure === "doctor" && argv.at(-1) === "--doctor") {
-          return context.doctorProcessResult({ code: 1, stderr: "plugin Doctor failed" });
-        }
         return await runFixtureCommand(argv, options);
       });
 
-      if (failure === "stop") {
+      if (failure === "doctor") {
+        const runFixtureWorker = context.requireValue(
+          context.vi.mocked(context.runUtf8CommandWithTimeout).getMockImplementation(),
+          "fixture worker",
+        );
+        context.vi
+          .mocked(context.runUtf8CommandWithTimeout)
+          .mockImplementation(async (argv, options) => {
+            if (argv[2] === "doctor" && argv.includes("--repair")) {
+              return context.doctorProcessResult({ code: 1, stderr: "plugin Doctor failed" });
+            }
+            return runFixtureWorker(argv, options);
+          });
+      } else if (failure === "stop") {
         context.serviceStop.mockImplementationOnce(async (params: { onMutation?: () => void }) => {
           context.serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
           params.onMutation?.();
@@ -206,26 +154,22 @@ export function registerCurrentCoreConvergenceTests(context: UpdateCliExtractedC
         context
           .expect(context.serviceStop)
           .toHaveBeenCalledTimes(failure === "changed owner" ? 0 : 1);
-        if (failure === "doctor") {
-          context.expect(readPluginState()).toBe("after-plugin-update");
-          context.expect(publishPluginState).toHaveBeenCalledOnce();
-          context.expect(context.freshRestartCalls()).toHaveLength(0);
-          context.expect(context.packageInstallCommandCall()).toBeUndefined();
-          context.expect(context.lastWriteJsonCall()).toMatchObject({
-            status: "error",
-            recovery: { serviceRestartSafe: false },
-          });
-          await expectRetainedPluginGenerations(context, stateMarker);
-          return;
-        }
         context.expect(readPluginState()).toBe("before-plugin-update");
-        context.expect(publishPluginState).not.toHaveBeenCalled();
+        context.expect(publishPluginState).toHaveBeenCalledTimes(failure === "doctor" ? 1 : 0);
         context
           .expect(context.freshRestartCalls())
           .toHaveLength(restart && failure !== "changed owner" ? 1 : 0);
         context.expect(context.lastWriteJsonCall()).toMatchObject({
           status: "error",
-          reason: "update-capture-failed",
+          reason: failure === "doctor" ? "post-update-plugins" : "update-capture-failed",
+          ...(failure === "doctor"
+            ? {
+                run: {
+                  origin: { updateRecoveryCapture: { restored: true } },
+                  verification: { serviceRunning: restart },
+                },
+              }
+            : {}),
         });
         context.expect(context.packageInstallCommandCall()).toBeUndefined();
         return;

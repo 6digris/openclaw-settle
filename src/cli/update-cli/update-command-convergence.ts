@@ -7,6 +7,10 @@ import { compareSemverStrings } from "../../infra/update-check.js";
 import { hasDeferredUpdateModelRetirement } from "../../infra/update-deferred-model-retirement.js";
 import { normalizeUpdatePostInstallDoctorWarnings } from "../../infra/update-doctor-result.js";
 import { updateInstallRootsMatch } from "../../infra/update-install-root.js";
+import {
+  persistUpdateRecoveryConfigWrites,
+  withUpdateRecoveryConfigWrites,
+} from "../../infra/update-recovery-config-writes.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
@@ -28,8 +32,58 @@ import {
 import { convergePostCoreUpdatePlugins } from "./update-command-resume.js";
 import { completeSourceUpdateRuntime } from "./update-command-runtime.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
+export async function convergeUpdatePlugins(
+  params: Parameters<typeof convergeUpdatePluginsInternal>[0],
+  providedAssertion?: () => void,
+): ReturnType<typeof convergeUpdatePluginsInternal> {
+  const assertCurrent =
+    providedAssertion ?? params.assertCurrent ?? params.opts.run?.executorFence?.assertCurrent;
+  // Receipt publication must remain in the same profile as its config writes.
+  return await withOwnedManagedUpdateEnv(params.ownedManagedUpdateEnv, async () => {
+    if (!params.updateRecoveryBackup && !params.preparePersistentMutation) {
+      return await convergeUpdatePluginsInternal(params);
+    }
+    if (!assertCurrent) {
+      throw new Error("Backed plugin convergence requires its finalization authority.");
+    }
+    const pending = { ...params };
+    const prepare = async () => {
+      assertCurrent();
+      if (!pending.updateRecoveryBackup && params.preparePersistentMutation) {
+        pending.updateRecoveryBackup = await params.preparePersistentMutation();
+        pending.candidateUpdateRecovery = "parent-v1";
+      }
+      await params.beforePersistentEffect?.();
+      assertCurrent();
+    };
+    pending.beforePersistentEffect = prepare;
+    pending.beforeDoctor = async () => {
+      await prepare();
+      await params.beforeDoctor?.();
+      assertCurrent();
+      if (pending.updateRecoveryBackup) {
+        await persistUpdateRecoveryConfigWrites(pending.updateRecoveryBackup, {
+          assertOwned: assertCurrent,
+        });
+      }
+      assertCurrent();
+    };
+    return await withUpdateRecoveryConfigWrites(
+      () => pending.updateRecoveryBackup,
+      { assertOwned: assertCurrent },
+      () => convergeUpdatePluginsInternal(pending),
+    );
+  });
+}
 
-export async function convergeUpdatePlugins(params: {
+async function convergeUpdatePluginsInternal(params: {
+  updateRecoveryBackup?: import("../../infra/update-recovery-backup-contract.js").UpdateRecoveryBackupRef;
+  candidateUpdateRecovery?: "parent-v1";
+  deferFailureRecoveryToParent?: boolean;
+  preparePersistentMutation?: () => Promise<
+    import("../../infra/update-recovery-backup-contract.js").UpdateRecoveryBackupRef
+  >;
+  beforePersistentEffect?: () => void | Promise<void>;
   coreAlreadyCurrent?: boolean;
   /** Local running-code context, never installation state or mutation authority. */
   candidateRuntime?: boolean;
@@ -91,9 +145,11 @@ export async function convergeUpdatePlugins(params: {
     postUpdateRoot,
   );
   const retainedDifferentRuntime =
+    !params.deferFailureRecoveryToParent &&
     params.coreAlreadyCurrent === true &&
     (runtimeRootChanged || (versionComparison !== null && versionComparison !== 0));
   const shouldResumePostCoreInFreshProcess =
+    !params.deferFailureRecoveryToParent &&
     (!params.coreAlreadyCurrent || retainedDifferentRuntime) &&
     !params.candidateRuntime &&
     shouldResumePostCoreUpdateInFreshProcess({
@@ -162,7 +218,10 @@ export async function convergeUpdatePlugins(params: {
           root: postUpdateRoot,
           timeoutMs: params.updateStepTimeoutMs,
           lease,
-          beforePersistentEffect: assertCurrent,
+          beforePersistentEffect: async () => {
+            await params.beforePersistentEffect?.();
+            assertCurrent?.();
+          },
           beforePublication: params.beforeRuntimePublication,
         }),
       );
@@ -239,6 +298,7 @@ export async function convergeUpdatePlugins(params: {
               }
             : {}),
           assertCurrent,
+          beforePersistentEffect: params.beforePersistentEffect,
         });
         postCorePluginUpdate = phase.pluginUpdate;
         postUpdateConfigSnapshot = phase.configSnapshot;
@@ -254,6 +314,10 @@ export async function convergeUpdatePlugins(params: {
         // Release the plugin lease before fresh Doctor. The finalizer either
         // retains its stopped interval or parks an already-current core here.
         const completedPluginUpdate = await completePostCorePluginUpdate({
+          updateRecoveryBackup:
+            params.candidateUpdateRecovery === "parent-v1"
+              ? params.updateRecoveryBackup
+              : undefined,
           root: postUpdateRoot,
           opts: params.opts,
           ...(params.candidateRuntime ? { doctorConfigWrites: true as const } : {}),
@@ -345,6 +409,7 @@ export async function convergeUpdatePlugins(params: {
         (runtime.changed ||
           postCorePluginUpdate?.changed ||
           (retainedDifferentRuntime && params.opts.run?.gatewayRestartRequired) ||
+          params.updateRecoveryBackup !== undefined ||
           (params.requestedChannel !== null && params.requestedChannel !== params.storedChannel))
       ) {
         resultWithPostUpdate.status = "ok";

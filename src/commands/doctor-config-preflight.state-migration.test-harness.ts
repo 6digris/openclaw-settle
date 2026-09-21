@@ -47,6 +47,8 @@ const prepareDoctorDatabasePreflight = vi.hoisted(() =>
 const doctorMaintenanceRelease = vi.hoisted(() => vi.fn(async () => {}));
 const beginDoctorMaintenance = vi.hoisted(() =>
   vi.fn<typeof import("./doctor-maintenance.js").beginDoctorMaintenance>(async () => ({
+    assertCurrent: vi.fn(),
+    closeStores: vi.fn(async () => {}),
     run: <T>(operation: () => T): T => operation(),
     releaseState: vi.fn(async () => {}),
     release: doctorMaintenanceRelease,

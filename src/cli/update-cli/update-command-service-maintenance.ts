@@ -49,6 +49,7 @@ import {
   UpdateCommandAbort,
   type WindowsTaskAutoStartRecovery,
 } from "./update-command-windows-task.js";
+// Managed service identity, shutdown, and recovery shared by update and Doctor.
 
 export { withGatewayRuntimeArtifactPublication } from "./update-command-service-publication.js";
 // Doctor primes this module before package replacement and reuses it during restoration.
@@ -101,6 +102,7 @@ export function createWindowsTaskAutoStartGuard(params: {
 
 async function maybeSuspendWindowsTaskAutoStartForUpdate(params: {
   serviceEnv: NodeJS.ProcessEnv | undefined;
+  restoreOnFailure?: false;
   assertCurrentService?: () => Promise<void>;
   assertCurrent?: () => void;
   updateRun?: UpdateCommandOptions["run"];
@@ -163,9 +165,11 @@ export async function maybeResumeWindowsTaskAutoStartAfterPackageUpdate(
 type ManagedServiceStopParams = {
   recovery?: unknown;
   updateRun?: UpdateCommandOptions["run"];
+  deferLedgerWrites?: boolean;
   updateInstallKind: "git" | "package";
   root: string;
   shouldRestart: boolean;
+  restoreWindowsTaskOnFailure?: false;
   jsonMode: boolean;
   phase?: "inspect" | "prepare" | "refresh";
   /** Package/helper root can differ from the inspected service during a rebind. */
@@ -423,6 +427,7 @@ async function stopManagedServiceBeforeMutableUpdate(
   const suspendTask = async () => {
     return await maybeSuspendWindowsTaskAutoStartForUpdate({
       serviceEnv: serviceState.env,
+      restoreOnFailure: params.restoreWindowsTaskOnFailure,
       updateRun,
       assertCurrentService: createWindowsTaskAutoStartGuard({
         root: params.root,
@@ -435,6 +440,7 @@ async function stopManagedServiceBeforeMutableUpdate(
         assertExecutor();
         if (
           updateRun &&
+          !params.deferLedgerWrites &&
           getUpdateRun(updateRun.runId, { env: updateRun.env })?.status !== "running"
         ) {
           throw new Error("Update run no longer owns Windows task activation.");
@@ -582,7 +588,7 @@ async function stopManagedServiceBeforeMutableUpdate(
         }
       }
       stoppedAtMs = Date.now();
-      if (params.updateRun) {
+      if (params.updateRun && !params.deferLedgerWrites) {
         recordUpdateRunPhase(params.updateRun.runId, "activating", undefined, {
           env: params.updateRun.env,
         });

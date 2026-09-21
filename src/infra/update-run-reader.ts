@@ -17,6 +17,7 @@ import {
   iterateSqliteQuerySync,
 } from "./kysely-sync.js";
 import { inspectUpdateRunAbandonment } from "./update-run-activity.js";
+import { LEGACY_UPDATE_RUN_EXPIRED_REASON } from "./update-run-legacy-expiry.js";
 import {
   decodeRun,
   readActiveUpdateRun,
@@ -96,6 +97,16 @@ export async function getUpdateRunAsync(
     throw new Error("Unexpected update run lookup result");
   }
   return reply.run;
+}
+
+/** A capped active-owner listing cannot establish complete recovery ownership. */
+export function requireCompleteActiveUpdateRuns(runs: UpdateRunRecord[]): UpdateRunRecord[] {
+  if (runs.length >= 100) {
+    throw new Error(
+      "Doctor cannot verify every active update owner; resolve update history first.",
+    );
+  }
+  return runs;
 }
 
 export function listUpdateRuns(
@@ -249,5 +260,17 @@ export function readUpdateRunReconciliationCandidates(
   }
   return executeSqliteQuerySync(db, query.orderBy("run_id")).rows.map((row) =>
     inspectUpdateRunReconciliation(db, decodeRun(row), input),
+  );
+}
+
+export function canReconcileCandidates(
+  candidates: UpdateRunReconciliationCandidate[],
+  input: UpdateRunReconciliationInput,
+): boolean {
+  return (
+    candidates.some(
+      ({ rule }) => rule && (!input.legacyOnly || rule === LEGACY_UPDATE_RUN_EXPIRED_REASON),
+    ) &&
+    !(input.explicit && candidates.some(({ record, rule }) => record.status === "running" && !rule))
   );
 }

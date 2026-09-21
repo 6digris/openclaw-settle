@@ -206,8 +206,7 @@ export async function backupStartupMigrationDatabases(params: {
     pending.add(sharedPath);
   }
   const { createVerifiedSqliteSnapshot } = await import("../infra/sqlite-snapshot.js");
-  const { sanitizeOpenClawStateLeaseRows } =
-    await import("../state/openclaw-state-snapshot-sanitizer.js");
+  const { clearOpenClawStateCopyLeases } = await import("../state/openclaw-state-copy-leases.js");
   const backupId = randomUUID();
   const changes: string[] = [];
   for (const sourcePath of new Set([...pending].map((pathname) => realpathSync.native(pathname)))) {
@@ -216,7 +215,7 @@ export async function backupStartupMigrationDatabases(params: {
       sourcePath,
       targetPath: `${sourcePath}.pre-startup-migration-${backupId}.bak`,
       preserveRowIds: true,
-      transform: sanitizeOpenClawStateLeaseRows,
+      transform: clearOpenClawStateCopyLeases,
       beforePublish: () => params.lease.heartbeat(),
     });
     params.lease.heartbeat();

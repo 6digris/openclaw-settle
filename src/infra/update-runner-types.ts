@@ -14,6 +14,7 @@ import type { UpdateDoctorLintFinding } from "./update-doctor-lint-schema.js";
 import type { PackageUpdateStepAdvisory } from "./update-doctor-result.js";
 import type { UpdateFailureFact } from "./update-failure-facts.js";
 import type { GlobalInstallManager } from "./update-global.js";
+import type { UpdateRecoveryBackupRef } from "./update-recovery-backup-contract.js";
 import type { UpdateRecovery } from "./update-recovery.js";
 import type { UpdateRollbackOutcome, UpdateRunRecordSchema } from "./update-run-schema.js";
 import type { UpdateSnapshotCapacity } from "./update-snapshot-capacity.js";
@@ -148,6 +149,12 @@ type GitUpdateTarget = {
 export type UpdateRunnerOptions = {
   channel?: UpdateChannel;
   devTarget?: DevUpdateTarget;
+  deferConfiguredPluginInstallRepair?: boolean;
+  allowGatewayServiceRepair?: boolean;
+  allowGatewayActivation?: boolean;
+  getDoctorEnv?: () => NodeJS.ProcessEnv | undefined;
+  getUpdateRecoveryBackup?: () => UpdateRecoveryBackupRef | undefined;
+  updateRecoveryOwner?: "unprotected";
   /** Expose a new checkout only after target admission; subsequent work uses the published path. */
   publishGitCheckout?: () => Promise<string>;
   /** Read-only admission before executing a fetched candidate; never stops a service. */

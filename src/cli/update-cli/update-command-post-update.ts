@@ -5,13 +5,18 @@ import {
   buildControlPlaneUpdateRestartHealthPendingResult,
   resolveManagedServiceUpdateFailureExitCode,
 } from "../../infra/update-control-plane-sentinel.js";
+import { verifyPackageUpdateRecovery } from "../../infra/update-global.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
+import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import { defaultRuntime } from "../../runtime.js";
 import { classifyUpdateOutcome, isVerifiedUpdateRollback } from "../../shared/update-outcome.js";
+import { UpdatePreMutationError } from "./shared.js";
+import { completeUpdateCommandBackup } from "./update-command-backup-lifecycle.js";
 import { convergeUpdatePlugins } from "./update-command-convergence.js";
+import { parkCurrentCoreUpdate } from "./update-command-current-core.js";
 import { verifyUpdateFailureRecovery } from "./update-command-failure-recovery.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import { parkForegroundUpdateForActivation } from "./update-command-handoff.js";
@@ -27,6 +32,7 @@ import {
 } from "./update-command-recovery.js";
 import { prepareUpdateRestart } from "./update-command-restart-context.js";
 import {
+  describeWindowsTaskRecoveryFailure,
   markControlPlaneUpdateRestartSentinelFailureBestEffort,
   prepareUpdateServiceResult,
   UpdateCommandFailure,
@@ -35,6 +41,7 @@ import {
   recordUpdateResultNextAction,
   writeControlPlaneUpdateRestartSentinelBestEffort,
 } from "./update-command-result.js";
+import { refuseUnsettledUpdateProcesses } from "./update-command-rollback-state.js";
 import { rollbackFailedUpdate } from "./update-command-rollback.js";
 import type { UpdateServiceDefinitionRecovery } from "./update-command-service-context-types.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
@@ -42,7 +49,6 @@ import { GatewayServiceUpdateOwnershipError } from "./update-command-service-pla
 import {
   maybeRestartService,
   maybeRestartServiceAfterFailedMutableUpdate,
-  maybeStopManagedServiceBeforeMutableUpdate,
   type PreManagedServiceStop,
 } from "./update-command-service.js";
 import {
@@ -61,9 +67,11 @@ import {
 
 export async function finishUpdate(
   params: FinishUpdateParams,
-  { candidateRuntime = false } = {},
+  {
+    candidateRuntime = false,
+    definitionRecovery = {},
+  }: { candidateRuntime?: boolean; definitionRecovery?: UpdateServiceDefinitionRecovery } = {},
 ): Promise<UpdateRunResult> {
-  const definitionRecovery: UpdateServiceDefinitionRecovery = {};
   const assertCurrent = createUpdateCommandFinalizationFence(params);
   const parkForegroundOrigin = () => parkForegroundUpdateForActivation(params, assertCurrent);
 
@@ -139,19 +147,25 @@ export async function finishUpdate(
       },
       onTerminalRecord,
     );
-  const deferredTerminal = deferUpdateCommandTerminalResult(params.opts.run, publishFinalResult);
+  const deferredTerminal =
+    !params.deferFailureRecoveryToParent &&
+    deferUpdateCommandTerminalResult(params.opts.run, publishFinalResult);
   const recoverFailedResult = async (
     initialResult: UpdateRunResult,
     initialRecoverService: boolean,
   ) => {
     assertCurrent();
+    if (params.deferFailureRecoveryToParent && initialResult.status === "error") {
+      throw new UpdateCommandFailure(initialResult, 1);
+    }
     let result = initialResult;
     let recoverService = initialRecoverService;
     if (
       result.status === "error" &&
       (params.packageTransaction ||
         params.rollbackBlockedReason ||
-        params.originalManagedServiceRuntime) &&
+        params.originalManagedServiceRuntime ||
+        params.updateRecoveryBackup) &&
       !rollbackAttempted &&
       !isUpdateGatewayReadinessPending(result)
     ) {
@@ -161,13 +175,15 @@ export async function finishUpdate(
           result,
           previousRoot: params.root,
           packageTransaction: params.packageTransaction,
+          unchangedCore: params.unchangedCore,
+          allowGatewayRestart: params.shouldRestart,
+          updateRecoveryBackup: params.updateRecoveryBackup,
           rollbackBlockedReason: params.rollbackBlockedReason,
           schemaVersions: params.schemaVersions,
           candidateSchemaVersions: params.candidateSchemaVersions,
           previousSchemaVersions: params.previousSchemaVersions,
           previousVerified: params.previousVerified,
           originalManagedServiceRuntime: params.originalManagedServiceRuntime,
-          allowGatewayRestart: params.shouldRestart,
           configSnapshot: params.configSnapshot,
           activationConfig: params.activationConfig,
           opts: params.opts,
@@ -178,7 +194,7 @@ export async function finishUpdate(
           definitionRecovery,
         }),
       );
-      if (params.originalManagedServiceRuntime && rollback.pendingRecoveryReason) {
+      if (rollback.pendingRecoveryReason) {
         throw new UpdateCommandPendingRecoveryFailure(
           rollback.result,
           rollback.pendingRecoveryReason,
@@ -194,7 +210,7 @@ export async function finishUpdate(
       }
       recoverService = false;
     }
-    if (result.status === "error" && params.rollbackBlockedReason) {
+    if (result.status === "error" && params.rollbackBlockedReason && !params.updateRecoveryBackup) {
       result = { ...result, reason: params.rollbackBlockedReason };
       recoverService = false;
     } else if (
@@ -285,6 +301,8 @@ export async function finishUpdate(
         stderrTail: formatErrorMessage(restoreFailure.cause),
       });
     }
+    assertCurrent();
+    await completeUpdateCommandBackup(params, finalResult, assertCurrent);
     const completedBeforeCleanup = deferredTerminal
       ? await captureUpdateCommandTerminalRecord(params, finalResult, assertCurrent)
       : undefined;
@@ -362,15 +380,11 @@ export async function finishUpdate(
     if (restoreFailure) {
       // Persist the unsafe outcome before unwinding. Keep both failures for
       // recovery diagnostics, with the failed compensation as the primary cause.
-      const priorDetail = [result.reason, params.failure?.detail].filter(Boolean).join(": ");
-      const detail =
-        `${priorDetail ? `${priorDetail}; ` : ""}Windows Scheduled Task autostart recovery failed: ` +
-        formatErrorMessage(restoreFailure.cause);
-      const cause = params.failure
-        ? new AggregateError([params.failure.cause, restoreFailure.cause], detail, {
-            cause: restoreFailure.cause,
-          })
-        : restoreFailure.cause;
+      const { detail, cause } = describeWindowsTaskRecoveryFailure(
+        result,
+        params.failure,
+        restoreFailure.cause,
+      );
       throw createFailure(
         reportedResult,
         resolveManagedServiceUpdateFailureExitCode(reportedResult),
@@ -425,7 +439,15 @@ export async function finishUpdate(
         assertCurrent,
         candidateRuntime,
       };
-      const convergence = await convergeUpdatePlugins(pluginParams);
+      let convergence: Awaited<ReturnType<typeof convergeUpdatePlugins>>;
+      try {
+        convergence = await withCommandProcessScope(() =>
+          convergeUpdatePlugins(pluginParams, assertCurrent),
+        );
+      } finally {
+        // Capture a lazy stop before reporting; a verified interval must never be reopened.
+        pendingRestartAtMs ??= currentServiceStop()?.stoppedAtMs;
+      }
       if (convergence.resultWithPostUpdate.status === "error") {
         triageAllowed = !convergence.cancelled;
         const reported = await reportResult(convergence.resultWithPostUpdate);
@@ -447,7 +469,7 @@ export async function finishUpdate(
     let postUpdateConfigSnapshot: Awaited<ReturnType<typeof readConfigFileSnapshot>> | undefined;
     if (!deferPluginConvergence) {
       ({ resultWithPostUpdate, postUpdateConfigSnapshot } = await convergePlugins());
-      if (params.coreAlreadyCurrent) {
+      if (params.coreAlreadyCurrent && !params.preManagedServiceStop?.stopped) {
         return await reportResult(resultWithPostUpdate);
       }
     }
@@ -552,38 +574,33 @@ export async function finishUpdate(
       resultWithPostUpdate = recovered.result;
       return true;
     };
-    if (!params.coreAlreadyCurrent) {
+    if (
+      !params.coreAlreadyCurrent ||
+      (!deferPluginConvergence && currentServiceStop()?.stopped && shouldRestart)
+    ) {
       await restart();
     }
     if (deferPluginConvergence) {
       ({ resultWithPostUpdate, postUpdateConfigSnapshot } = await convergePlugins(async () => {
         const before = currentServiceStop();
-        if (!before) {
-          throw new Error("Plugin maintenance lost its update service owner.");
-        }
-        await before.windowsTaskAutoStartRecovery?.complete(true);
-        // Package work finished online. Full Doctor owns state migrations, so
-        // park only now and retain this suspension through verified activation.
-        const stopped = await maybeStopManagedServiceBeforeMutableUpdate({
-          updateRun: params.opts.run,
-          updateInstallKind: resultWithPostUpdate.mode === "git" ? "git" : "package",
-          root: postUpdateRoot,
-          shouldRestart: true,
-          jsonMode: Boolean(params.opts.json),
-          expectedService: before,
-          phase: "prepare",
-          timeoutMs: params.updateStepTimeoutMs,
-          onStopped: (state) => {
-            rollbackStopState = state;
-            pendingRestartAtMs ??= state.stoppedAtMs;
+        const stopped = await parkCurrentCoreUpdate(
+          {
+            before,
+            updateRun: params.opts.run,
+            updateInstallKind: resultWithPostUpdate.mode === "git" ? "git" : "package",
+            root: postUpdateRoot,
+            jsonMode: Boolean(params.opts.json),
+            timeoutMs: params.updateStepTimeoutMs,
+            onStopped: (state) => {
+              rollbackStopState = state;
+              pendingRestartAtMs ??= state.stoppedAtMs;
+            },
           },
-        });
+          assertCurrent,
+        );
         rollbackStopState = stopped;
-        before.windowsTaskAutoStartRecovery = stopped.windowsTaskAutoStartRecovery;
-        if (stopped.blockMessage || !stopped.stopped) {
-          throw new Error(
-            stopped.blockMessage ?? "Gateway could not be parked for plugin maintenance.",
-          );
+        if (before) {
+          before.windowsTaskAutoStartRecovery = stopped.windowsTaskAutoStartRecovery;
         }
         stopped.windowsTaskAutoStartRecovery?.beginMutation();
         pendingRestartAtMs ??= stopped.stoppedAtMs;
@@ -594,7 +611,8 @@ export async function finishUpdate(
       if (
         resultWithPostUpdate.postUpdate?.plugins?.changed ||
         params.serviceRuntimeRefreshRequired ||
-        requiresInstallRootRefresh
+        requiresInstallRootRefresh ||
+        currentServiceStop()?.stopped
       ) {
         // Installation-only repair keeps the old Gateway serving; the native
         // installer owns replacement and rollback with its actual running state.
@@ -637,6 +655,7 @@ export async function finishUpdate(
 
     return await reportResult(resultWithPostUpdate);
   } catch (error) {
+    refuseUnsettledUpdateProcesses(error, params.result, params.updateRecoveryBackup);
     if (
       params.originalManagedServiceRuntime &&
       error instanceof UpdateCommandRecoveryPendingError
@@ -651,7 +670,16 @@ export async function finishUpdate(
     }
     const { result, message } = createPostUpdateFailureResult(params, error);
     defaultRuntime.error(`Post-update verification failed: ${message}`);
-    const reported = await reportResult(result);
+    const preMutation = error instanceof UpdatePreMutationError && !params.updateRecoveryBackup;
+    const reported = await reportResult(
+      {
+        ...result,
+        ...(preMutation
+          ? { recovery: await verifyPackageUpdateRecovery(params.root), reason: error.reason }
+          : {}),
+      },
+      preMutation,
+    );
     throw createFailure(reported, resolveManagedServiceUpdateFailureExitCode(reported), message, {
       cause: error,
     });

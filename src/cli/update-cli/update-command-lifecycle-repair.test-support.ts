@@ -1,5 +1,3 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { expect, it, vi, type Mock } from "vitest";
 import { note } from "../../../packages/terminal-core/src/note.js";
 import { noteStaleUpdateRuns } from "../../commands/doctor-update-run.js";
@@ -18,8 +16,6 @@ import {
 } from "../../process/exec-spawn.js";
 import { defaultRuntime } from "../../runtime.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { VERSION } from "../../version.js";
-import { resolveUpdateRoot, tryWriteCompletionCache } from "./shared.js";
 import { updateFinalizeCommand } from "./update-command-finalize.js";
 import {
   completePostCorePluginUpdate,
@@ -28,8 +24,7 @@ import {
 import {
   successfulPluginUpdate,
   validConfigSnapshot,
-} from "./update-command-lifecycle-fixtures.test-support.js";
-import { finalizationCleanupCases } from "./update-command-lifecycle.test-support.js";
+} from "./update-command-lifecycle.test-support.js";
 import { updateRepairCommand } from "./update-repair-command.js";
 
 export function registerAbandonedRepairHistoryTests(): void {
@@ -229,111 +224,6 @@ export function registerRepairCustodyTests(mocks: {
           expect(mocks.triage).toHaveBeenCalledOnce();
           expect(listUpdateRuns()[0]?.status).toBe("failed");
         }
-      }
-    },
-  );
-}
-
-export function registerFinalizerCleanupTests(mocks: {
-  verifyGateway: Mock<typeof import("./update-command-verification.js").verifyUpdatedGateway>;
-  triage: Mock;
-}): void {
-  it.each(finalizationCleanupCases)(
-    "joins finalizer cleanup before publication ($phase, $cleanup, failure=$failed)",
-    async ({ phase, cleanup, failed }) => {
-      const physicalCleanup = createDeferredCore<"forced" | "uncertain">();
-      const joining = createDeferredCore();
-      const originalError = new Error("Finalization was cancelled");
-      const retainCleanup = () => {
-        retainCommandProcessCleanup(physicalCleanup.promise);
-        const signal = resolveCommandProcessSignal();
-        if (!signal) {
-          throw new Error("Finalization lost its command scope");
-        }
-        signal.addEventListener("abort", () => joining.resolve(), { once: true });
-      };
-      if (phase === "recovery") {
-        await fs.writeFile(
-          path.join(await resolveUpdateRoot(), "package.json"),
-          JSON.stringify({ name: "openclaw", version: VERSION }),
-        );
-        mocks.verifyGateway.mockImplementationOnce(async () => {
-          retainCleanup();
-          return { ok: true, score: 7, summary: "healthy" };
-        });
-      }
-      // Keep the real finalizer, lifecycle, ledger, and process scopes; discovery
-      // and the completion subprocess are the only deferred boundaries here.
-      vi.spyOn(updateCheck, "resolveUpdateInstallKind").mockImplementationOnce(async () => {
-        if (phase === "preflight") {
-          retainCleanup();
-        }
-        return "package";
-      });
-      vi.mocked(tryWriteCompletionCache)
-        .mockReset()
-        .mockResolvedValue("completed")
-        .mockImplementationOnce(async () => {
-          if (phase === "completion") {
-            retainCleanup();
-          }
-          if (failed) {
-            throw originalError;
-          }
-          return "completed";
-        });
-      let finished = false;
-      // An explicit phase budget bypasses the native database-size probe.
-      const command = updateFinalizeCommand({ json: true, yes: true, timeout: "5" }).then(
-        () => {
-          finished = true;
-          return { error: undefined };
-        },
-        (error: unknown) => {
-          finished = true;
-          return { error };
-        },
-      );
-      try {
-        await Promise.race([
-          joining.promise,
-          command.then(() => {
-            throw new Error("Finalization returned before joining its cleanup");
-          }),
-        ]);
-        expect(finished).toBe(false);
-        expect(defaultRuntime.writeJson).not.toHaveBeenCalled();
-        expect(listUpdateRuns()[0]?.status).toBe("running");
-        expect(mocks.triage).not.toHaveBeenCalled();
-        if (phase === "preflight") {
-          expect(runUpdateFinalizationDoctorInFreshProcess).not.toHaveBeenCalled();
-        }
-      } finally {
-        physicalCleanup.resolve(cleanup);
-        await command;
-      }
-      const { error } = await command;
-      if (cleanup === "uncertain") {
-        expect(error).toMatchObject({ code: "ERR_COMMAND_PROCESS_CLEANUP_UNCERTAIN" });
-        if (failed) {
-          expect(collectNestedErrorCandidates(error)).toContain(originalError);
-        }
-        expect(defaultRuntime.writeJson).not.toHaveBeenCalled();
-        expect(mocks.triage).not.toHaveBeenCalled();
-        expect(listUpdateRuns()[0]?.status).not.toBe("succeeded");
-        if (phase === "recovery") {
-          expect(listUpdateRuns()[0]?.status).toBe("running");
-        }
-      } else if (failed) {
-        expect(error).toBe(originalError);
-        expect(listUpdateRuns()[0]?.status).toBe("failed");
-        expect(mocks.triage).toHaveBeenCalledOnce();
-      } else {
-        expect(error).toBeUndefined();
-        expect(defaultRuntime.writeJson).toHaveBeenCalledWith(
-          expect.objectContaining({ status: "ok", mode: "finalize" }),
-        );
-        expect(listUpdateRuns()[0]?.status).toBe("succeeded");
       }
     },
   );
