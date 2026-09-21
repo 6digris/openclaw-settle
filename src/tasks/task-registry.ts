@@ -34,7 +34,6 @@ export {
   listTaskRecords,
   listTaskRecordsForOwnerTree,
   listTaskRecordsUnsorted,
-  listTasksForAgentId,
   listTasksForFlowId,
   listTasksForOwnerKey,
   listTasksForRelatedSessionKey,

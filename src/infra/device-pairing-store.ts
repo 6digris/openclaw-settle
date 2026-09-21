@@ -46,6 +46,7 @@ import {
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
 import { clearApnsRegistrationFromDatabase } from "./push-apns-store-transaction.js";
+import { runSqliteDeferredTransactionSync } from "./sqlite-transaction.js";
 
 const DEVICE_BOOTSTRAP_TOKEN_COLUMNS_WITHOUT_SETUP = [
   "device_id",
@@ -311,20 +312,22 @@ function fromBootstrapRow(row: DeviceBootstrapTokens): DeviceBootstrapTokenRecor
 }
 
 export function readDevicePairingStoreStateFromDatabase(db: DatabaseSync): DevicePairingStoreState {
-  const kysely = getNodeSqliteKysely<OpenClawStateKyselyDatabase>(db);
-  const pendingById: Record<string, DevicePairingPendingRecord> = {};
-  for (const row of executeSqliteQuerySync(
-    db,
-    kysely.selectFrom("device_pairing_pending").selectAll(),
-  ).rows) {
-    pendingById[row.request_id] = fromPendingRow(row);
-  }
-  const pairedByDeviceId = Object.fromEntries(
-    executeSqliteQuerySync(db, kysely.selectFrom("device_pairing_paired").selectAll()).rows.map(
-      (row) => [row.device_id, fromPairedRow(row)],
-    ),
-  );
-  return { pendingById, pairedByDeviceId };
+  return runSqliteDeferredTransactionSync(db, () => {
+    const kysely = getNodeSqliteKysely<OpenClawStateKyselyDatabase>(db);
+    const pendingById: Record<string, DevicePairingPendingRecord> = {};
+    for (const row of executeSqliteQuerySync(
+      db,
+      kysely.selectFrom("device_pairing_pending").selectAll(),
+    ).rows) {
+      pendingById[row.request_id] = fromPendingRow(row);
+    }
+    const pairedByDeviceId = Object.fromEntries(
+      executeSqliteQuerySync(db, kysely.selectFrom("device_pairing_paired").selectAll()).rows.map(
+        (row) => [row.device_id, fromPairedRow(row)],
+      ),
+    );
+    return { pendingById, pairedByDeviceId };
+  });
 }
 
 /** Load the full pending + paired device snapshot from the shared state DB. */

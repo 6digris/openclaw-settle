@@ -10,7 +10,10 @@ import {
   listTaskRecordsUnsorted,
   markTaskTerminalById,
 } from "../tasks/task-registry.js";
-import { configureTaskRegistryRuntime } from "../tasks/task-registry.store.js";
+import {
+  configureTaskRegistryRuntime,
+  getTaskRegistryStore,
+} from "../tasks/task-registry.store.js";
 import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
 import { createInMemoryTaskRegistryStore } from "../test-utils/task-registry-store.js";
 import { installGatewayTestHooks } from "./server.auth.test-helpers.js";
@@ -421,27 +424,38 @@ describe("tasks.list Gateway performance", () => {
           }),
         );
         let scopedRevision = 0;
-        let scopedChurn: ReturnType<typeof setImmediate> | undefined;
-        const mutateUnrelatedTask = () => {
-          scopedRevision += 1;
-          markTaskTerminalById({
-            taskId: "task-00064",
-            status: "succeeded",
-            endedAt: TASK_COUNT + scopedRevision,
-          });
-          scopedChurn = setImmediate(mutateUnrelatedTask);
+        let scopedRevisionAtStop = 0;
+        let scopedChurn: Promise<void> | undefined;
+        let scopedChurnStopped = false;
+        const mutateUnrelatedTask = async () => {
+          for (;;) {
+            await new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            });
+            if (scopedChurnStopped) {
+              return;
+            }
+            scopedRevision += 1;
+            markTaskTerminalById({
+              taskId: "task-00064",
+              status: "succeeded",
+              endedAt: TASK_COUNT + scopedRevision,
+            });
+          }
         };
         resetTaskRegistryForTests({ persist: false });
         configureTaskRegistryRuntime({
           store: {
             ...createInMemoryTaskRegistryStore(),
             loadSnapshot: () => {
-              scopedChurn = setImmediate(mutateUnrelatedTask);
+              scopedChurn ??= mutateUnrelatedTask();
               return { tasks: scopedTasks, deliveryStates: new Map() };
             },
           },
         });
         try {
+          // Repeated snapshot reads must share the fixture's one owned churn loop.
+          getTaskRegistryStore().loadSnapshot();
           const scopedPage = await sendRpc<TasksListResult>(viewer, "tasks-scoped", "tasks.list", {
             sessionKey: OWNED_SESSION_KEY,
             agentId: "main",
@@ -451,7 +465,9 @@ describe("tasks.list Gateway performance", () => {
           expect(scopedPage.payload?.tasks.map((task) => task.id)).toEqual(["task-00000"]);
           expect(scopedPage.payload?.nextCursor).toBeUndefined();
         } finally {
-          clearImmediate(scopedChurn);
+          scopedChurnStopped = true;
+          scopedRevisionAtStop = scopedRevision;
+          await scopedChurn;
         }
 
         const accessTasks = new Map([...createTaskSnapshot()].slice(0, 1_000));
@@ -503,6 +519,9 @@ describe("tasks.list Gateway performance", () => {
         } finally {
           accessChurn.mockRestore();
         }
+        expect(scopedRevision, "scoped task fixture must stop before later task fixtures").toBe(
+          scopedRevisionAtStop,
+        );
       } finally {
         sortSpy.mockRestore();
         accessWork.mockRestore();
