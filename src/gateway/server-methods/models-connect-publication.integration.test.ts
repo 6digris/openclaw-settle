@@ -9,15 +9,45 @@ import {
   loadSessionEntry,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
-import { getActiveGatewayRootWorkCount } from "../../process/gateway-work-admission.js";
+import {
+  getActiveGatewayRootWorkCount,
+  getActiveGatewayRootWorkHolders,
+} from "../../process/gateway-work-admission.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { acquireTestPortBlock } from "../../test-utils/port-claims.js";
 import * as modelCatalogAuth from "../server-model-catalog-auth.js";
 import {
   connectGatewayClient,
   disconnectGatewayClient,
-  getGatewayE2ePortBlock,
   startGatewayWithClient,
 } from "../test-helpers.e2e.js";
+
+// Optional startup prewarming must not compete with the catalog request drain.
+vi.mock("../server-startup-context-cache-prewarm.js", () => ({
+  scheduleContextCachePrewarm: () => ({ stop() {} }),
+}));
+vi.mock("../server-startup-handler-prewarm.js", () => ({
+  scheduleGatewayHandlerPrewarm: () => ({ stop() {} }),
+}));
+
+// Keep real catalog publication while excluding automatic startup work from the
+// manual-RPC root-work assertion.
+vi.mock("../server-runtime-services.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../server-runtime-services.js")>();
+  return {
+    ...actual,
+    activateGatewayScheduledServices: (
+      params: Parameters<typeof actual.activateGatewayScheduledServices>[0],
+    ) => actual.activateGatewayScheduledServices({ ...params, minimalTestGateway: true }),
+    scheduleGatewayPostReadyMaintenance: (
+      ...args: Parameters<typeof actual.scheduleGatewayPostReadyMaintenance>
+    ) => {
+      const timer = actual.scheduleGatewayPostReadyMaintenance(...args);
+      clearTimeout(timer);
+      return timer;
+    },
+  };
+});
 
 it("connect negotiates snapshots and preserves draft and saved-session catalog scopes", async () => {
   const state = await createOpenClawTestState({
@@ -30,7 +60,6 @@ it("connect negotiates snapshots and preserves draft and saved-session catalog s
       OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
     },
   });
-  const port = await getGatewayE2ePortBlock();
   const token = "synthetic-catalog-gateway-token";
   const publications: ModelsSnapshotEvent[] = [];
   try {
@@ -53,8 +82,10 @@ it("connect negotiates snapshots and preserves draft and saved-session catalog s
       },
       "alpha",
     );
+    const portClaim = await acquireTestPortBlock({ offsets: [0, 1, 2, 3, 4] });
+    const { port } = portClaim;
     const { client, server } = await startGatewayWithClient({
-      port,
+      portClaim,
       configPath: state.configPath,
       token,
       clientName: GATEWAY_CLIENT_IDS.CONTROL_UI,
@@ -220,13 +251,18 @@ it("connect negotiates snapshots and preserves draft and saved-session catalog s
       const acquisitionStarted = createDeferred();
       const releaseAcquisition = createDeferred();
       const readPreparedCatalog = modelCatalogAuth.readPreparedCatalog;
+      let acquisitionSettled = false;
       const acquisition = vi
         .spyOn(modelCatalogAuth, "readPreparedCatalog")
         .mockImplementationOnce(async (...args) => {
           // The registered reader has captured the saved account before catalog acquisition.
           acquisitionStarted.resolve();
           await releaseAcquisition.promise;
-          return readPreparedCatalog(...args);
+          try {
+            return await readPreparedCatalog(...args);
+          } finally {
+            acquisitionSettled = true;
+          }
         });
       const racingPublications: ModelsSnapshotEvent[] = [];
       const sessionChanges: unknown[] = [];
@@ -271,7 +307,19 @@ it("connect negotiates snapshots and preserves draft and saved-session catalog s
         expect(racingPublications).toEqual([]);
         expect(getActiveGatewayRootWorkCount()).toBeGreaterThan(0);
         releaseAcquisition.resolve();
-        await expect.poll(() => getActiveGatewayRootWorkCount()).toBe(0);
+        try {
+          await expect.poll(() => getActiveGatewayRootWorkCount()).toBe(0);
+        } catch (error) {
+          try {
+            console.error("Model catalog root work did not settle", {
+              acquisitionSettled,
+              holders: getActiveGatewayRootWorkHolders(),
+            });
+          } catch {
+            // Diagnostic failures must not replace the original assertion.
+          }
+          throw error;
+        }
         // A response on this same socket is a delivery barrier after initial work settles.
         await expect(
           racingClient.request("models.list", { agentId: "alpha", sessionKey }),

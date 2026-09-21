@@ -50,12 +50,14 @@ import {
   extractTranscriptIndexEntry,
   hasTranscriptMessage,
   transcriptEventContextEligibility,
-} from "./session-transcript-projection-rebuild.js";
+} from "./session-transcript-projection-append.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
 import { copyRetainedTranscriptPayload } from "./session-transcript-retained-data.js";
 import { createSessionTranscriptHeader } from "./transcript-header.js";
 
 type TranscriptAppendOptions = {
+  /** Exact event bytes, including canonical media, prepared by the message append owner. */
+  eventJson?: string;
   allowStoredAlias?: boolean;
   idempotencyKeyMode?: "dedupe" | "preserve-owner" | "relocate-owner";
   onProjectionReconcileNeeded?: () => void;
@@ -88,7 +90,7 @@ export function createTranscriptEventInserter(database: OpenClawAgentDatabase, s
   );
 }
 
-function createTranscriptIdentityInserter(
+export function createTranscriptIdentityInserter(
   database: OpenClawAgentDatabase,
   sessionId: string,
   ignoreConflicts: boolean,
@@ -170,7 +172,8 @@ function appendTranscriptEvent(
   options: TranscriptAppendOptions,
   cursor: TranscriptAppendCursor = {},
 ): string | false {
-  const persistedEvent = canonicalizeTranscriptEventMedia(event);
+  const persistedEvent =
+    options.eventJson === undefined ? canonicalizeTranscriptEventMedia(event) : event;
   const db = getSessionKysely(database.db);
   const createdAt = readEventTimestamp(persistedEvent) ?? Date.now();
   if (cursor.initialized) {
@@ -206,7 +209,7 @@ function appendTranscriptEvent(
   }
   const seq = cursor.nextSeq ?? readNextTranscriptSeq(database, scope.sessionId);
   cursor.insertEvent ??= createTranscriptEventInserter(database, scope.sessionId);
-  const eventJson = JSON.stringify(persistedEvent);
+  const eventJson = options.eventJson ?? JSON.stringify(persistedEvent);
   cursor.insertEvent({ seq, eventJson, createdAt });
   cursor.nextSeq = seq + 1;
   if (options.touchMutation !== false) {

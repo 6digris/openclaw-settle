@@ -162,6 +162,17 @@ function normalizedText(element: Element | null | undefined): string | undefined
 
 beforeEach(async () => {
   vi.stubGlobal("localStorage", createStorageMock());
+  // JSDOM has no layout observation; browser tests exercise real panel geometry.
+  if (typeof ResizeObserver === "undefined") {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+  }
   await i18n.setLocale("en");
 });
 
@@ -667,7 +678,10 @@ describe("DebugOverlay", () => {
 
       // One sample: tiles show current values, charts wait for a second point.
       expect(overlay.querySelectorAll(".gateway-vital")).toHaveLength(5);
-      expect(normalizedText(overlay.querySelector(".gateway-vital--cpu"))).toContain("loop 42%");
+      expect(normalizedText(overlay.querySelector(".gateway-vital--cpu"))).toContain("Host —");
+      expect(normalizedText(overlay.querySelector(".gateway-cpu-detail"))).toContain(
+        "Event loop busy 42%",
+      );
       expect(overlay.querySelector(".sparkline-tile__chart")).toBeNull();
       expect(normalizedText(overlay.querySelector(".debug-overlay__vitals-footer"))).toBe(
         "Uptime 1m",

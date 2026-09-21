@@ -37,7 +37,6 @@ import {
   resolveRunVitestSpawnEnv,
   resolveVitestNoOutputTimeoutMs,
   resolveVitestNoOutputHeartbeatMs,
-  resolveVitestCompileCacheSafeEnv,
   resolveVitestConfigArg,
   normalizeVitestConfigPath,
   matchesVitestConfigPath,
@@ -213,7 +212,7 @@ export function resolveVitestSpawnParams(
   platform: NodeJS.Platform = process.platform,
 ): PnpmRunnerParams {
   return {
-    env: resolveVitestProcessEnv(resolveVitestCompileCacheSafeEnv(env)),
+    env: resolveVitestProcessEnv(env),
     detached: shouldUseDetachedVitestProcessGroup(platform),
     stdio: ["inherit", "pipe", "pipe"],
   };
@@ -619,10 +618,10 @@ export function installVitestNoOutputWatchdog(params: {
   onForceKill?: () => void;
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
-}): () => void {
+}): { recordActivity: () => void; teardown: () => void } {
   const timeoutMs = params.timeoutMs;
   if (!timeoutMs || timeoutMs <= 0) {
-    return () => {};
+    return { recordActivity: () => {}, teardown: () => {} };
   }
 
   const setTimeoutFn = params.setTimeoutFn ?? setTimeout;
@@ -730,17 +729,20 @@ export function installVitestNoOutputWatchdog(params: {
 
   resetSilenceTimer();
 
-  return () => {
-    if (!active) {
-      return;
-    }
-    active = false;
-    clearSilenceTimer();
-    clearForceKillTimer();
-    clearHeartbeatTimer();
-    for (const { stream, handler } of listeners) {
-      stream.off("data", handler);
-    }
+  return {
+    recordActivity: handleActivity,
+    teardown() {
+      if (!active) {
+        return;
+      }
+      active = false;
+      clearSilenceTimer();
+      clearForceKillTimer();
+      clearHeartbeatTimer();
+      for (const { stream, handler } of listeners) {
+        stream.off("data", handler);
+      }
+    },
   };
 }
 
@@ -850,7 +852,7 @@ export function spawnWatchedVitestProcess({
     forceSignal: "SIGKILL",
     forceSignalDelayMs: 100,
   });
-  const teardownNoOutputWatchdog = installVitestNoOutputWatchdog({
+  const noOutputWatchdog = installVitestNoOutputWatchdog({
     streams: [child.stdout, child.stderr],
     timeoutMs: resolveVitestNoOutputTimeoutMs(env),
     heartbeatMs: resolveVitestNoOutputHeartbeatMs(env),
@@ -889,7 +891,7 @@ export function spawnWatchedVitestProcess({
 
   const teardown = () => {
     childCleanup.teardown();
-    teardownNoOutputWatchdog();
+    noOutputWatchdog.teardown();
   };
   const completion = Promise.all([childCompletion, forwardedOutput])
     .then(async ([{ code: childCode, signal, groupJoined }]) => {
@@ -904,7 +906,9 @@ export function spawnWatchedVitestProcess({
 
   return {
     child,
-    completion: workerRun ? workerRun.borrow(child, completion) : completion,
+    completion: workerRun
+      ? workerRun.borrow(child, completion, noOutputWatchdog.recordActivity)
+      : completion,
     getForwardedSignal: childCleanup.getForwardedSignal,
     teardown,
   };
@@ -915,6 +919,20 @@ export async function runVitest(
   argv: string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
+  if (argv.some((arg) => arg === "--isolated-image" || arg.startsWith("--isolated-image="))) {
+    const { parseIsolatedVitestArgs, runIsolatedVitest } =
+      await import("./lib/vitest-isolated.mts");
+    const isolated = parseIsolatedVitestArgs(argv);
+    if (isolated) {
+      process.exitCode = await runIsolatedVitest(
+        resolveRepoRoot(import.meta.url),
+        isolated.image,
+        isolated.args,
+        env,
+      );
+      return;
+    }
+  }
   if (argv.length === 0) {
     console.error("usage: node scripts/run-vitest.mjs <vitest args...>");
     process.exitCode = 1;

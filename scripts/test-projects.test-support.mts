@@ -240,10 +240,6 @@ const EXTENSION_ACTIVE_MEMORY_VITEST_CONFIG =
 const EXTENSION_ACPX_VITEST_CONFIG = "test/vitest/vitest.extension-acpx.config.ts";
 const EXTENSION_BROWSER_VITEST_CONFIG = "test/vitest/vitest.extension-browser.config.ts";
 const EXTENSION_CODEX_VITEST_CONFIG = "test/vitest/vitest.extension-codex.config.ts";
-const EXTENSION_CODEX_APP_SERVER_ATTEMPT_VITEST_CONFIG =
-  "test/vitest/vitest.extension-codex-app-server-attempt.config.ts";
-const EXTENSION_CODEX_APP_SERVER_ATTEMPT_EXTRA_VITEST_CONFIG =
-  "test/vitest/vitest.extension-codex-app-server-attempt-extra.config.ts";
 const EXTENSION_CODEX_APP_SERVER_ATTEMPT_LIGHT_VITEST_CONFIG =
   "test/vitest/vitest.extension-codex-app-server-attempt-light.config.ts";
 const EXTENSION_CODEX_APP_SERVER_ATTEMPT_SUPPORT_VITEST_CONFIG =
@@ -330,8 +326,6 @@ const FULL_SUITE_CONFIG_WEIGHT = new Map([
   [AGENTS_SUPPORT_VITEST_CONFIG, 168],
   [AGENTS_TOOLS_VITEST_CONFIG, 167],
   [EXTENSION_CODEX_VITEST_CONFIG, 168],
-  [EXTENSION_CODEX_APP_SERVER_ATTEMPT_VITEST_CONFIG, 168],
-  [EXTENSION_CODEX_APP_SERVER_ATTEMPT_EXTRA_VITEST_CONFIG, 118],
   [EXTENSION_CODEX_APP_SERVER_ATTEMPT_LIGHT_VITEST_CONFIG, 82],
   [EXTENSION_CODEX_APP_SERVER_ATTEMPT_SUPPORT_VITEST_CONFIG, 80],
   [EXTENSION_CODEX_APP_SERVER_RUNTIME_VITEST_CONFIG, 88],
@@ -951,9 +945,9 @@ const VITEST_NO_OUTPUT_TIMEOUT_ENV_KEY = "OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS";
 const VITEST_NO_OUTPUT_HEARTBEAT_ENV_KEY = "OPENCLAW_VITEST_NO_OUTPUT_HEARTBEAT_MS";
 const VITEST_NO_OUTPUT_RETRY_ENV_KEY = "OPENCLAW_VITEST_NO_OUTPUT_RETRY";
 /** Default no-output timeout applied to test-projects Vitest children. */
-export const DEFAULT_TEST_PROJECTS_VITEST_NO_OUTPUT_TIMEOUT_MS = String(900_000);
+const DEFAULT_TEST_PROJECTS_VITEST_NO_OUTPUT_TIMEOUT_MS = String(900_000);
 /** Default heartbeat interval applied to test-projects Vitest children. */
-export const DEFAULT_TEST_PROJECTS_VITEST_NO_OUTPUT_HEARTBEAT_MS = String(
+const DEFAULT_TEST_PROJECTS_VITEST_NO_OUTPUT_HEARTBEAT_MS = String(
   DEFAULT_VITEST_NO_OUTPUT_HEARTBEAT_MS,
 );
 
@@ -2436,6 +2430,7 @@ const EXACT_TOOLING_TARGETS = new Map<string, string[]>([
   ["scripts/openclaw-npm-prepublish-verify.ts", ["test/openclaw-npm-prepublish-verify.test.ts"]],
   ["scripts/lib/docker-e2e-scenarios.mts", [dockerE2e, pluginPrerelease]],
   ["scripts/lib/upgrade-survivor-policy.mjs", [dockerE2e]],
+  ["scripts/lib/upgrade-survivor-scenarios.json", [dockerE2e]],
   ["scripts/e2e/kitchen-sink-rpc-walk.mts", ["kitchen-sink-rpc-walk", pluginPrerelease]],
   [
     "scripts/e2e/agents-delete-shared-workspace-docker.sh",
@@ -2703,7 +2698,10 @@ const SEMANTIC_TOOLING_TARGET_PATTERNS: Array<[RegExp, string[]]> = [
   ],
   [/^scripts\/run-node\.(?:mjs|mts)$/u, [runNode]],
   [/^scripts\/ios-write-swift-filelist\.m[jt]s$/u, ["ios-run"]],
-  [/^scripts\/pr-lib\/merge(?:-outcome)?\.sh$/u, ["pr-merge", "pr-merge-outcome"]],
+  [
+    /^scripts\/pr-lib\/(?:merge(?:-outcome)?\.sh|merge-legacy-refusal\.mjs)$/u,
+    ["pr-merge", "pr-merge-outcome"],
+  ],
   [/^scripts\/plugin-clawhub-publish\.sh$/u, ["test/plugin-clawhub-release.test.ts"]],
   [/^scripts\/openclaw-npm-postpublish-verify\.ts$/u, [npmPostpublish]],
   [
@@ -2751,12 +2749,30 @@ const SEMANTIC_TOOLING_TARGET_PATTERNS: Array<[RegExp, string[]]> = [
   [/^scripts\/native-app-i18n\.ts$/u, ["native-app-i18n", workflowGuards]],
   [
     /^scripts\/github\/(?:dependency-guard|guard-shared)\.mjs$/u,
-    ["dependency-guard-script", "dependency-guard-workflow"],
+    ["dependency-guard-script", "security-review-workflow"],
   ],
   [
     /^scripts\/github\/(?:security-sensitive-guard|guard-shared)\.mjs$/u,
-    ["security-sensitive-guard-script", "security-sensitive-guard-workflow"],
+    ["security-sensitive-guard-script", "security-review-workflow"],
   ],
+  [
+    /^\.github\/workflows\/security-review\.yml$/u,
+    ["security-review-workflow", "security-review-event", "security-review-script", workflowGuards],
+  ],
+  [
+    /^scripts\/github\/(?:security-review|security-review-rollout)\.mjs$/u,
+    ["security-review-script", "security-review-rollout"],
+  ],
+  [
+    /^scripts\/github\/(?:guard-review|security-review-policy)\.mjs$/u,
+    [
+      "dependency-guard-script",
+      "security-sensitive-guard-script",
+      "security-review-script",
+      "security-review-rollout",
+    ],
+  ],
+  [/^scripts\/github\/guard-shared\.mjs$/u, ["security-review-script", "security-review-event"]],
   [/^scripts\/plugin-clawhub-release-check\.ts$/u, ["release-wrapper-scripts"]],
   [
     /^scripts\/generate-runtime-sidecar-paths-baseline\.ts$/u,
@@ -3381,6 +3397,9 @@ function resolveToolingTestTargets(changedPath: string, cwd = process.cwd()) {
       ? resolveDirectToolingReferenceTests(implementationPath, cwd)
       : [];
   const targets = [
+    ...(!hasDirectOwner && isRoutableChangedTarget(changedPath) && isTestFileTarget(changedPath)
+      ? [changedPath]
+      : []),
     ...exactTargets,
     ...(explicitTargets ?? []),
     ...semanticTargets,
@@ -4045,16 +4064,19 @@ export function buildVitestRunPlans(
   }));
   const hasGatewayAggregateTarget = classifiedTargets.some(({ kind }) => kind === "gateway");
   const explicitConfigTargets = classifiedTargets.map(({ relative }) => relative);
+  const databaseWorkerPatterns = uniqueOrdered([
+    ...requestedTargetArgs,
+    ...activeTargetArgs,
+  ]).flatMap((targetArg) => {
+    const relative = toRepoRelativeTarget(targetArg, cwd);
+    return isTestFileTarget(relative) ||
+      isGlobTarget(relative) ||
+      isExistingDirectoryTarget(targetArg, cwd)
+      ? [toScopedIncludePattern(targetArg, cwd)]
+      : [];
+  });
   const impliedDatabaseWorkerTargets = databaseWorkerCoreTestFiles.filter((file) =>
-    [...requestedTargetArgs, ...activeTargetArgs].some((targetArg) => {
-      const relative = toRepoRelativeTarget(targetArg, cwd);
-      return (
-        (isTestFileTarget(relative) ||
-          isGlobTarget(relative) ||
-          isExistingDirectoryTarget(targetArg, cwd)) &&
-        includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [file])
-      );
-    }),
+    databaseWorkerPatterns.some((pattern) => includePatternMatchesAnyFile(pattern, [file])),
   );
   const hasPackageFileTarget = classifiedTargets.some(
     ({ kind, relative }) =>

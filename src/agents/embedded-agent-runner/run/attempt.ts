@@ -152,7 +152,13 @@ export async function runEmbeddedAttempt(
       }),
     );
     restoreSkillEnv = preparedSkills.restoreSkillEnv;
-    const { codeModeSkills, skillUsagePaths, skillsPrompt, skillsSnapshotForRun } = preparedSkills;
+    const {
+      codeModeSkills,
+      skillReadResources,
+      skillUsagePaths,
+      skillsPrompt,
+      skillsSnapshotForRun,
+    } = preparedSkills;
     if (params.skillsSnapshot?.librarySelections?.length && sandbox?.enabled) {
       const remapped = remapSkillReferencePaths(params.prompt, skillUsagePaths);
       if (remapped !== params.prompt) {
@@ -203,6 +209,7 @@ export async function runEmbeddedAttempt(
         runAbortController,
         runTrace,
         skillUsagePaths,
+        skillReadResources,
         skillsSnapshot: skillsSnapshotForRun,
         codeModeSkills,
         reviewTranscript: () => {
@@ -282,7 +289,6 @@ export async function runEmbeddedAttempt(
           setup,
           preparedToolBase,
           bundleTools: { clientTools, uncompactedEffectiveTools },
-          runTrace,
           abortSignal: runAbortController.signal,
           executeCodeModeTool: (toolParams) => {
             if (!toolSearchCatalogExecutor) {
@@ -395,10 +401,13 @@ export async function runEmbeddedAttempt(
             preparedToolCatalog.refreshTools();
             preparedSessionRuntime.agentSession.refreshTools();
             promptToolPolicy.refresh();
-            const preparePermissionPrompt = preparedSystemPrompt.preparePermissionPrompt;
+            const prepareToolPrompt = preparedSystemPrompt.prepareToolPrompt;
             preparedSessionRuntime.agentSession.setPermissionPromptPreparation(
-              preparePermissionPrompt
-                ? () => preparePermissionPrompt(promptToolPolicy.current.effectiveTools)
+              prepareToolPrompt
+                ? () =>
+                    prepareToolPrompt(promptToolPolicy.current.effectiveTools, {
+                      permissionChanged: true,
+                    })
                 : undefined,
             );
             params.permissionChange?.recordApplied(mode);
@@ -422,6 +431,9 @@ export async function runEmbeddedAttempt(
         codeModeEngaged: codeModeControlsEnabledForRun,
         providerRetryMaxRetries:
           preparedSessionRuntime.agentSession.settingsManager.getProviderRetrySettings().maxRetries,
+        providerRetryMaxDelayMs:
+          preparedSessionRuntime.agentSession.settingsManager.getProviderRetrySettings()
+            .maxRetryDelayMs,
         ...(catalogSession
           ? {
               bridgeCalls: {

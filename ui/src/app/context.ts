@@ -5,7 +5,11 @@ import type { RouteId } from "../app-route-paths.ts";
 import type { AgentIdentityCapability } from "../lib/agents/identity.ts";
 import type { AgentCapability } from "../lib/agents/index.ts";
 import type { ChannelCapability } from "../lib/channels/index.ts";
-import type { ChatAttachment, ChatComposerMemoryFallback } from "../lib/chat/chat-types.ts";
+import type {
+  ChatAttachment,
+  ChatComposerMemoryFallback,
+  ChatGoalDraftMode,
+} from "../lib/chat/chat-types.ts";
 import type { RuntimeConfigCapability } from "../lib/config/runtime-config-capability.ts";
 import type { SessionCapability } from "../lib/sessions/index.ts";
 import type { LiveActivity } from "../pages/activity/live-activity.ts";
@@ -24,6 +28,7 @@ import type { ApplicationOverlays } from "./overlays-types.ts";
 import type { ApplicationPlacementStartup } from "./session-placement-startup.ts";
 import type { UiPreferences } from "./settings.ts";
 import type { SidebarAttentionStore } from "./sidebar-attention-store.ts";
+import type { ThemeCatalogSnapshot } from "./theme-catalog.ts";
 import type { ThemeMode, ThemeName } from "./theme.ts";
 import type { WebPushCapability } from "./web-push.ts";
 
@@ -41,6 +46,8 @@ export type ApplicationThemeServerSelection = {
 };
 
 export type ApplicationTheme = {
+  readonly catalog?: ThemeCatalogSnapshot;
+  retryCatalog?: () => void;
   readonly settings: UiPreferences;
   readonly mode: ThemeMode;
   readonly resolvedMode: "dark" | "light";
@@ -80,6 +87,8 @@ export type ApplicationChatAttachmentHandoff = {
       attachments: readonly ChatAttachment[];
       fallbacks: Readonly<Record<string, ChatComposerMemoryFallback>>;
       message?: string;
+      draftRevision?: number;
+      goalMode?: ChatGoalDraftMode | null;
       mentions?: readonly HumanMention[];
       newSessionDraft?: NewSessionDraftHandoff;
     },
@@ -88,19 +97,25 @@ export type ApplicationChatAttachmentHandoff = {
     attachments: ChatAttachment[];
     fallbacks: Record<string, ChatComposerMemoryFallback>;
     message?: string;
+    draftRevision?: number;
+    goalMode?: ChatGoalDraftMode | null;
     mentions?: readonly HumanMention[];
     newSessionDraft?: NewSessionDraftHandoff;
   } | null;
+  retainedAttachmentIds(attachments: readonly ChatAttachment[]): ReadonlySet<string>;
   retireScope(scopeKey: string, beforeRevision: number): void;
   clearPane(paneId: string): void;
   dispose(): void;
 };
 
-export type ApplicationContext<TRouteId extends string = string> = {
+export type ApplicationContext<TRouteId extends string = RouteId> = {
   readonly basePath: string;
   readonly resourceBasePath: string;
   readonly lifecycleAbortSignal?: AbortSignal;
-  readonly router: Pick<Router<RouteId, unknown, unknown, unknown>, "getState" | "subscribe">;
+  readonly router: Pick<
+    Router<RouteId, ApplicationContext, unknown, unknown>,
+    "getState" | "subscribe" | "navigate"
+  >;
   readonly gateway: ApplicationGateway;
   /** App-owned queue for automatic Gateway reconnect bootstrap work. */
   readonly connectionBootstrap: ConnectionBootstrapCoordinator;
@@ -139,5 +154,4 @@ export type ApplicationContext<TRouteId extends string = string> = {
   readonly preload: (routeId: TRouteId) => Promise<void>;
 };
 
-export const applicationContext =
-  createContext<ApplicationContext<RouteId>>("openclaw.application");
+export const applicationContext = createContext<ApplicationContext>("openclaw.application");

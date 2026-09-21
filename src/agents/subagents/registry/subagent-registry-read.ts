@@ -22,15 +22,17 @@ import {
   type LatestSubagentRunReadIndex,
   type SubagentRunReadIndex,
 } from "./subagent-registry-queries.js";
+import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
 import {
   getSubagentSessionListRunsSnapshotForRead,
   getSubagentSessionListRunsSnapshotForSessions,
   getSubagentRunsSnapshotForChildSession,
   getSubagentRunsSnapshotForController,
   getSubagentRunsSnapshotForRead,
+  getSubagentRunsSnapshotForSessions,
 } from "./subagent-registry-state.js";
 import { loadSubagentRunsForChildSessionFromSqlite } from "./subagent-registry.store.sqlite.js";
-import type { SubagentRunReadRecord, SubagentRunRecord } from "./subagent-registry.types.js";
+import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { isSubagentRunLive } from "./subagent-run-liveness.js";
 export { isSubagentRunLive, isSubagentRunQueued } from "./subagent-run-liveness.js";
 
@@ -100,11 +102,13 @@ export function listSubagentRunsForController(
 export function countActiveDescendantRuns(
   rootSessionKey: string,
   requesterAgentId?: string,
+  requesterStorePath?: string | null,
 ): number {
   return countActiveDescendantRunsFromRuns(
-    getSubagentRunsSnapshotForRead(subagentRuns),
+    getSubagentRunsSnapshotForSessions(subagentRuns, [rootSessionKey]),
     rootSessionKey,
     requesterAgentId,
+    requesterStorePath,
   );
 }
 
@@ -119,7 +123,7 @@ export function listDescendantRunsForRequester(rootSessionKey: string): Subagent
 /** Counts pending descendant runs below a requester/session tree. */
 export function countPendingDescendantRuns(rootSessionKey: string): number {
   return countPendingDescendantRunsFromRuns(
-    getSubagentRunsSnapshotForRead(subagentRuns),
+    getSubagentRunsSnapshotForSessions(subagentRuns, [rootSessionKey]),
     rootSessionKey,
   );
 }
@@ -129,12 +133,16 @@ export function hasDescendantRunAwaitingSettle(
   rootSessionKey: string,
   excludeRunId?: string,
   requesterAgentId?: string,
+  requesterStorePath?: string | null,
+  settledBefore?: number,
 ): boolean {
   return hasDescendantRunAwaitingSettleFromRuns(
-    getSubagentRunsSnapshotForRead(subagentRuns),
+    getSubagentRunsSnapshotForSessions(subagentRuns, [rootSessionKey]),
     rootSessionKey,
     excludeRunId,
     requesterAgentId,
+    requesterStorePath,
+    settledBefore,
   );
 }
 
@@ -177,7 +185,11 @@ export function isSubagentSessionRunActive(childSessionKey: string): boolean {
 /** Lists process-local runs requested by one session key. */
 export function listSubagentRunsForRequester(
   requesterSessionKey: string,
-  options?: { requesterRunId?: string; requesterAgentId?: string },
+  options?: {
+    requesterRunId?: string;
+    requesterAgentId?: string;
+    requesterStorePath?: string | null;
+  },
 ): SubagentRunRecord[] {
   // Request-run lifetime scoping must observe the raw live map, including rows not persisted yet.
   return listRunsForRequesterFromRuns(subagentRuns, requesterSessionKey, options);

@@ -152,6 +152,7 @@ const inspectPluginMigrationAvailability = vi.hoisted(() =>
     requiredPluginIds: [],
     inspectionRequiredPluginIds: [],
     statelessPluginIds: [],
+    runtimePluginAliases: [],
   })),
 );
 
@@ -191,6 +192,7 @@ vi.mock("./doctor/cron/legacy-repair.js", () => ({
 }));
 
 vi.mock("../infra/startup-migration-checkpoint.js", () => ({
+  STARTUP_MIGRATION_HEARTBEAT_INTERVAL_MS: 60_000,
   acquireStartupMigrationLeaseWithWait,
   readMigrationCheckpointStatus,
   recordSuccessfulStateMigrations,
@@ -271,6 +273,7 @@ export function resetStateMigrationPreflightMocks(): void {
     requiredPluginIds: [],
     inspectionRequiredPluginIds: [],
     statelessPluginIds: [],
+    runtimePluginAliases: [],
   });
   acquireStartupMigrationLeaseWithWait.mockResolvedValue(startupMigrationLease);
   pluginMigrationFingerprint.mockReset();

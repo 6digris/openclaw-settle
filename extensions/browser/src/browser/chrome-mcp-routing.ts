@@ -25,16 +25,13 @@ import {
   chromeMcpProfileOptionsFromParams,
   normalizeChromeMcpOptions,
 } from "./chrome-mcp-options.js";
-import { forgetCachedChromeMcpSessionIfCurrent } from "./chrome-mcp-pending.js";
-import { closeTrackedChromeMcpSession } from "./chrome-mcp-process.js";
 import {
+  extractChromeMcpToolError,
   extractStructuredPages,
-  extractToolErrorMessage,
   formatChromeMcpToolErrorMessage,
   shouldReconnectForToolError,
 } from "./chrome-mcp-result.js";
-import { leaseSession } from "./chrome-mcp-session.js";
-import { chromeMcpSessions as sessions } from "./chrome-mcp-state.js";
+import { getChromeMcpSessionOwner } from "./chrome-mcp-session.js";
 import type { ChromeMcpSnapshotNode } from "./chrome-mcp.snapshot.js";
 import { BrowserProfileUnavailableError, BrowserTabNotFoundError } from "./errors.js";
 
@@ -149,13 +146,49 @@ function updateChromeMcpTargetMappings(
   routing.targetIdByPageId = targetIdByPageId;
 }
 
+/** UID-only MCP actions cannot distinguish collisions between renderer documents. */
+export function validateChromeMcpSnapshotRefs(root: ChromeMcpSnapshotNode) {
+  const documents = new Map<string, { document: ChromeMcpSnapshotNode; documentUid?: string }>();
+  const pending = [{ node: root, document: root, documentUid: normalizeOptionalString(root.id) }];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) {
+      break;
+    }
+    const role = current.node.role?.trim().toLowerCase();
+    const document = role === "rootwebarea" ? current.node : current.document;
+    const documentUid =
+      role === "rootwebarea" ? normalizeOptionalString(current.node.id) : current.documentUid;
+    const uid = normalizeOptionalString(current.node.id);
+    if (uid) {
+      const previous = documents.get(uid);
+      if (previous && previous.document !== document) {
+        throw new Error(
+          "Chrome MCP returned ambiguous element IDs across documents. " +
+            "The snapshot and its refs were discarded. " +
+            "Use a managed browser profile for this page; ref-free screenshots remain available.",
+        );
+      }
+      documents.set(uid, { document, documentUid });
+    }
+    for (const child of current.node.children ?? []) {
+      pending.push({
+        node: child,
+        document: role === "iframe" ? current.node : document,
+        documentUid: role === "iframe" ? undefined : documentUid,
+      });
+    }
+  }
+  return documents;
+}
+
 export function wrapChromeMcpSnapshotRefs(
   session: ChromeMcpSession,
   targetId: string,
   root: ChromeMcpSnapshotNode,
 ): ChromeMcpSnapshotNode {
+  const documents = validateChromeMcpSnapshotRefs(root);
   const routing = getChromeMcpRoutingState(session);
-  clearChromeMcpSnapshotRefsForTarget(routing, targetId);
   const wrappedByUid = new Map<string, string>();
 
   const wrapNode = (node: ChromeMcpSnapshotNode): ChromeMcpSnapshotNode => {
@@ -167,18 +200,20 @@ export function wrapChromeMcpSnapshotRefs(
         id = `${CHROME_MCP_SNAPSHOT_REF_PREFIX}${routing.sessionNonce}:${routing.nextSnapshotRefId}`;
         routing.nextSnapshotRefId += 1;
         wrappedByUid.set(rawUid, id);
-        routing.snapshotRefById.set(id, { targetId, uid: rawUid });
+        routing.snapshotRefById.set(id, {
+          targetId,
+          uid: rawUid,
+          documentUid: documents.get(rawUid)?.documentUid,
+        });
       }
     }
     return {
       ...node,
       ...(id ? { id } : {}),
-      ...(node.children ? { children: [] } : {}),
     };
   };
 
-  // Ref rewriting is the first traversal of external MCP output. Keep it
-  // iterative so the renderer can own depth truncation and report that fact.
+  // Keep ref rewriting iterative; the renderer owns depth truncation.
   let wrappedRoot: ChromeMcpSnapshotNode | undefined;
   const stack: Array<{
     source: ChromeMcpSnapshotNode;
@@ -219,12 +254,12 @@ export function resolveChromeMcpSnapshotRef(
   session: ChromeMcpSession,
   targetId: string,
   refId: string,
-): string {
+) {
   const resolved = getChromeMcpRoutingState(session).snapshotRefById.get(refId);
   if (!resolved || resolved.targetId !== targetId) {
     throw new Error(`Unknown ref "${refId}". Run a new snapshot and use a ref from that snapshot.`);
   }
-  return resolved.uid;
+  return resolved;
 }
 
 export async function callTool(
@@ -257,12 +292,8 @@ export async function callTool(
     result = await rawCall;
   } catch (err) {
     // Transport/connection error, timeout, or abort: tear down the cached session.
-    if (!lease.temporary) {
-      const current = sessions.get(lease.cacheKey);
-      if (current?.transport === lease.session.transport) {
-        sessions.delete(lease.cacheKey);
-        await closeTrackedChromeMcpSession(lease.cacheKey, lease.session);
-      }
+    if (!lease.temporary && lease.owner.isCurrent(lease.session)) {
+      await lease.owner.close(lease.session);
     }
     if (signal?.aborted) {
       throw toErrorObject(signal.reason ?? err, "Non-Error abort reason");
@@ -277,15 +308,11 @@ export async function callTool(
   }
   // Ordinary tool errors leave the session usable. A stale selected-page list
   // poisons it, so the outer pre-operation list may reconnect once.
-  if (result.isError) {
-    const message = extractToolErrorMessage(result, name);
+  const message = extractChromeMcpToolError(result, name, args);
+  if (message) {
     if (shouldReconnectForToolError(name, message)) {
-      if (!lease.temporary) {
-        const current = sessions.get(lease.cacheKey);
-        if (current?.transport === lease.session.transport) {
-          sessions.delete(lease.cacheKey);
-          await closeTrackedChromeMcpSession(lease.cacheKey, lease.session);
-        }
+      if (!lease.temporary && lease.owner.isCurrent(lease.session)) {
+        await lease.owner.close(lease.session);
       }
       throw new ChromeMcpReconnectRequiredError(message);
     }
@@ -319,7 +346,7 @@ export async function callTargetTool(
   });
 }
 
-type ChromeMcpPinnedTarget = {
+export type ChromeMcpPinnedTarget = {
   lease: ChromeMcpSessionLease;
   profileOptions: NormalizedChromeMcpProfileOptions;
   pageId: number;
@@ -335,27 +362,24 @@ export async function withChromeMcpLease<T>(
   ) => Promise<T>,
 ): Promise<T> {
   const normalizedProfileOptions = normalizeChromeMcpOptions(profileOptions);
-  const lease = await leaseSession(profileName, normalizedProfileOptions, options);
+  options.signal?.throwIfAborted();
+  const lease = await getChromeMcpSessionOwner(profileName, normalizedProfileOptions).lease(
+    options,
+  );
   try {
     return await withChromeMcpOperationLock(lease.session, options, async () => {
-      if (!lease.temporary) {
-        const current = sessions.get(lease.cacheKey);
-        if (
-          current?.transport !== lease.session.transport ||
-          lease.session.transport.pid === null
-        ) {
-          forgetCachedChromeMcpSessionIfCurrent(lease.cacheKey, lease.session);
-          throw new BrowserProfileUnavailableError(
-            `Chrome MCP session for profile "${redactChromeMcpProfileLabelForDiagnostic(profileName)}" changed before the operation could start. Run the browser command again to reconnect.`,
-          );
-        }
+      if (
+        !lease.temporary &&
+        (!lease.owner.isCurrent(lease.session) || lease.session.transport.pid === null)
+      ) {
+        throw new BrowserProfileUnavailableError(
+          `Chrome MCP session for profile "${redactChromeMcpProfileLabelForDiagnostic(profileName)}" changed before the operation could start. Run the browser command again to reconnect.`,
+        );
       }
       return await operation(lease, normalizedProfileOptions);
     });
   } finally {
-    if (lease.temporary) {
-      await closeTrackedChromeMcpSession(lease.cacheKey, lease.session);
-    }
+    await lease.release();
   }
 }
 

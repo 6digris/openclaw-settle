@@ -3,7 +3,7 @@ import { executeGitWorktreeOperation } from "../agents/worktrees/git-worktree-op
 import { executeGitReadOperation } from "./git-read-operations.runtime.js";
 import { serializeGitWorkerFailure, withGitWorkerContext } from "./git-worker-context.js";
 import type { GitWorkerCommand, GitWorkerReply, GitWorkerResult } from "./git-worker-contract.js";
-import { serveWorkerTasks } from "./worker-task-pool.js";
+import { serveWorkerTasks } from "./worker-task-server.js";
 
 serveWorkerTasks<GitWorkerReply<GitWorkerResult>>(
   async (input, channel) => {
@@ -37,8 +37,9 @@ serveWorkerTasks<GitWorkerReply<GitWorkerResult>>(
           case "workspace.manifest.pair":
           case "workspace.manifest.staged":
           case "workspace.manifest.stage-input":
-          case "workspace.manifest.entry":
+          case "workspace.manifest.entries":
           case "workspace.manifest.file":
+          case "workspace.manifest.nodes":
           case "workspace.reconcile.preflight":
             return import("../gateway/worker-environments/workspace-manifest-computation.runtime.js").then(
               ({ executeWorkspaceManifestComputation }) =>

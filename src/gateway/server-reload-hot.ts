@@ -13,7 +13,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { resetDirectoryCache } from "../infra/outbound/target-resolver.js";
-import { setGatewaySigusr1RestartPolicy } from "../infra/restart.js";
+import { setGatewayRestartPolicy } from "../infra/restart.js";
 import { PluginRuntimeApplicationError, getPluginRuntimeGeneration } from "../plugins/lifecycle.js";
 import type { ChannelKind, GatewayReloadPlan } from "./config-reload-plan.js";
 import {
@@ -199,10 +199,9 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
           params
             .getPluginRegistry()
             .services.filter(
-              (entry) =>
-                plan.restartServices?.has(entry.service.id) && !pluginIds.has(entry.pluginId),
+              (entry) => plan.restartServices?.has(entry.id) && !pluginIds.has(entry.pluginId),
             )
-            .map((entry) => entry.service.id),
+            .map((entry) => entry.id),
         ),
       };
       assertIrreversibleReloadPlanHasRecoveryOwner(remainingPlan, restartRecoveryAvailable);
@@ -309,7 +308,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
           pluginNotificationFailure = { error };
           throw error;
         }
-        setGatewaySigusr1RestartPolicy({ allowExternal: isRestartEnabled(nextConfig) });
+        setGatewayRestartPolicy({ allowExternal: isRestartEnabled(nextConfig) });
       };
       try {
         await (publication ? publication.publish(commit, () => runtimeCommitted) : commit());
