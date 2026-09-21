@@ -128,9 +128,9 @@ These launchers retain tsx's in-process transform cache and Node's module cache.
 They skip tsx's shared disk cache before the loader starts, and child tooling
 inherits that policy. This cache policy does not clean
 existing temporary directories, Node or Vitest caches, or other global caches. Standalone
-`pnpm ui:build` keeps native startup and applies the same preload to its post-build
-validators; it does not require `TSX_DISABLE_CACHE` in the invoking shell. Raw
-external `tsx` and `node --import tsx` invocations outside these launchers are unchanged.
+`pnpm ui:build` starts natively and runs its post-build validators directly with Node.
+Those validators do not load tsx or require `TSX_DISABLE_CACHE` in the invoking shell.
+Raw external `tsx` and `node --import tsx` invocations outside these launchers are unchanged.
 
 Parallel project runs on macOS and Linux reuse filesystem transforms within
 exclusive worker slots, with separate directories for each Vitest configuration.
