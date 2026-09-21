@@ -10,6 +10,7 @@ import { SessionCatalogListLifetime } from "../gateway/server-methods/session-ca
 import { listSessionCatalogProvider } from "../gateway/server-methods/session-catalog-provider-access.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type { PluginManifestRecord } from "./manifest-registry.js";
+import { PluginInstanceDrainTimeoutError } from "./plugin-instance-error.js";
 import { getPluginInstance } from "./plugin-instance-scope.js";
 import { createPluginRegistry } from "./registry.js";
 import { withPluginRuntimeGatewayRequestScope } from "./runtime/gateway-request-scope.js";
@@ -361,10 +362,19 @@ describe("registered native catalog access", () => {
           expect(close).toHaveBeenCalledOnce();
         }
         vi.useFakeTimers();
-        const disposal = state.dispose();
-        await vi.advanceTimersByTimeAsync(5_050);
-        expect(cleanup).not.toHaveBeenCalled();
+        const disposal = state.instance.dispose();
+        await vi.advanceTimersByTimeAsync(4_999);
         expect(state.instance.lifecycle.signal.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        const { errors } = await disposal;
+        const timeout = errors[0];
+        expect(timeout).toBeInstanceOf(PluginInstanceDrainTimeoutError);
+        if (!(timeout instanceof PluginInstanceDrainTimeoutError)) {
+          throw new Error("Expected forced retirement");
+        }
+        expect(timeout.forcedRetirement).toEqual({ activeCallCount: 0, retainedConsumerCount: 1 });
+        expect(cleanup).not.toHaveBeenCalled();
+        expect(state.instance.lifecycle.signal.aborted).toBe(true);
         expect(state.instance.hasRetainedConsumers).toBe(true);
         if (phase === "queued") {
           const retirement = new Error("catalog owner retired");
@@ -375,11 +385,12 @@ describe("registered native catalog access", () => {
         expect(next).toHaveBeenCalledOnce();
         expect(published).not.toHaveBeenCalled();
         publication.resolve();
-        await disposal;
+        await timeout.settled;
         expect(published).toHaveBeenCalledOnce();
         expect(cleanup).toHaveBeenCalledOnce();
         expect(state.instance.hasRetainedConsumers).toBe(false);
         expect(state.instance.lifecycle.signal.aborted).toBe(true);
+        expect(guardedPublication).toThrow("reloaded or disabled");
       } finally {
         owner.abort(new Error("test cleanup"));
         first.resolve({ done: false });

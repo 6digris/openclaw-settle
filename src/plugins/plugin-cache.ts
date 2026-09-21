@@ -441,13 +441,10 @@ function beginPluginCacheRetirement(
       }
       const { resource, result } = outcome.value;
       for (const error of result.errors) {
-        // A registry join may have already included this same instance's outcome.
+        // The registry already attributes host hooks and instance cleanup from this resource.
         if (
           !failures.some(
-            (failure) =>
-              failure.pluginId === resource.pluginId &&
-              failure.hookId === "instance" &&
-              failure.error === error,
+            (failure) => failure.pluginId === resource.pluginId && failure.error === error,
           )
         ) {
           failures.push({ pluginId: resource.pluginId, hookId: "instance", error });

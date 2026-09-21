@@ -383,11 +383,15 @@ export function createPluginHostRegistryRetirement(params: {
         return { ...result, deferredPluginIds: [pluginId] };
       }
       const disposed = await (instance ? instance.dispose() : completion);
+      // Physical settlement retains host failures already attributed to their hooks.
+      const hostFailures = new Set(result.failures.map(({ error }) => error));
       return {
         cleanupCount: result.cleanupCount,
         failures: [
           ...result.failures,
-          ...disposed.errors.map((error) => ({ pluginId, hookId: "instance", error })),
+          ...disposed.errors
+            .filter((error) => !hostFailures.has(error))
+            .map((error) => ({ pluginId, hookId: "instance", error })),
         ],
       };
     });

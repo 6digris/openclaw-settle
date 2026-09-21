@@ -107,8 +107,8 @@ it.each(["registry", "cache"] as const)(
       const record = createPluginRecord({ id: "cleanup-outcome" });
       registry.plugins.push(record);
       const instance = new PluginInstance(record.id, { record, registry });
-      const hostFailure = new Error("synthetic host cleanup failure");
-      const disposeFailure = new Error("synthetic instance cleanup failure");
+      const hostFailure = new Error("synthetic cleanup failure");
+      const disposeFailure = new Error("synthetic cleanup failure");
       const hostCleanup = vi.fn(() => {
         throw hostFailure;
       });
@@ -131,6 +131,8 @@ it.each(["registry", "cache"] as const)(
         { pluginId: record.id, hookId: "runtime:fixture", error: hostFailure },
         { pluginId: record.id, hookId: "instance", error: disposeFailure },
       ]);
+      expect(result.failures[0]?.error).toBe(hostFailure);
+      expect(result.failures[1]?.error).toBe(disposeFailure);
       expect(await close()).toEqual(result);
       expect(hostCleanup).toHaveBeenCalledOnce();
       expect(instanceCleanup).toHaveBeenCalledOnce();
