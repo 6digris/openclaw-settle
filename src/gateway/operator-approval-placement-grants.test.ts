@@ -495,14 +495,20 @@ describe("placement standing grants", () => {
       params: DEMO_PARAMS,
       sessionKey: SESSION_KEY,
     });
-    const identityOnlyApproval = await expectSinglePendingApproval(manager);
+    const identityOnlyApproval = await expectSinglePendingApproval(
+      manager,
+      context,
+      identityOnlyLaunch,
+    );
     expect(identityOnlyApproval.request.allowedDecisions).not.toContain("allow-always");
     expect(identityOnlyApproval.request.placementGrant).toBeNull();
     expect(await manager.resolve(identityOnlyApproval.id, "deny")).toBe(true);
     await expect(identityOnlyLaunch).resolves.toMatchObject({ ok: false, code: "DENIED" });
 
-    const launch = () =>
-      withPluginRuntimeGatewayRequestScope(
+    const launch = () => {
+      // Each launch must observe its own request, not a prior approval's event.
+      vi.mocked(context.broadcastToConnIds).mockClear();
+      return withPluginRuntimeGatewayRequestScope(
         { isWebchatConnect: () => false, nodePlacementGrantAuthority },
         () =>
           applyPluginNodeInvokePolicy({
@@ -514,9 +520,10 @@ describe("placement standing grants", () => {
             sessionKey: SESSION_KEY,
           }),
       );
+    };
 
     const legacyLaunch = launch();
-    const legacyApproval = await expectSinglePendingApproval(manager);
+    const legacyApproval = await expectSinglePendingApproval(manager, context, legacyLaunch);
     expect(legacyApproval.request.allowedDecisions).not.toContain("allow-always");
     expect(legacyApproval.request.placementGrant).toBeNull();
     expect(await manager.resolve(legacyApproval.id, "deny")).toBe(true);
@@ -524,7 +531,7 @@ describe("placement standing grants", () => {
 
     policy.policy.standingApproval = { kind: "placement", scope: "demo.exec-placement" };
     const firstLaunch = launch();
-    const firstApproval = await expectSinglePendingApproval(manager);
+    const firstApproval = await expectSinglePendingApproval(manager, context, firstLaunch);
     expect(firstApproval.request.placementGrant).toMatchObject({
       sessionId: SESSION_ID,
       nodeId: NODE_ID,
@@ -549,14 +556,14 @@ describe("placement standing grants", () => {
         .where("session_id", "=", SESSION_ID),
     );
     const staleLaunch = launch();
-    const staleApproval = await expectSinglePendingApproval(manager);
+    const staleApproval = await expectSinglePendingApproval(manager, context, staleLaunch);
     placementAuthorityActive = false;
     expect(await manager.resolve(staleApproval.id, "allow-always")).toBe(false);
     await expect(staleLaunch).resolves.toMatchObject({ ok: false, code: "DENIED" });
     placementAuthorityActive = true;
 
     const movedLaunch = launch();
-    const movedApproval = await expectSinglePendingApproval(manager);
+    const movedApproval = await expectSinglePendingApproval(manager, context, movedLaunch);
     expect(movedApproval.id).not.toBe(firstApproval.id);
     expect(movedApproval.request.placementGrant).toMatchObject({ placementGeneration: 5 });
     expect(await manager.resolve(movedApproval.id, "deny")).toBe(true);

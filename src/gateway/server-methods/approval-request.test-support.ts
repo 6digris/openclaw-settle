@@ -1,18 +1,20 @@
 import { vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import type { GatewayRequestContext, GatewayRequestHandler } from "./types.js";
+import type { GatewayRequestContext } from "./types.js";
 
 /** Observe the RPC event, including calls made before observation was installed. */
 export async function waitForApprovalRequested(
-  broadcast: GatewayRequestContext["broadcast"],
+  broadcast: GatewayRequestContext["broadcast"] | GatewayRequestContext["broadcastToConnIds"],
   eventName: string,
-  request: ReturnType<GatewayRequestHandler>,
+  request: Promise<unknown> | void,
 ): Promise<void> {
   const mock = vi.mocked(broadcast);
   const observed = createDeferred();
   const implementation = mock.getMockImplementation();
   mock.mockImplementation((...args) => {
-    implementation?.(...args);
+    if (implementation) {
+      Reflect.apply(implementation, undefined, args);
+    }
     if (args[0] === eventName) {
       observed.resolve();
     }
@@ -28,6 +30,7 @@ export async function waitForApprovalRequested(
       }),
     ]);
   } finally {
-    mock.mockImplementation(implementation ?? (() => {}));
+    // Restore the exact callback so repeated waits do not accumulate wrappers.
+    Reflect.apply(mock.mockImplementation.bind(mock), undefined, [implementation ?? (() => {})]);
   }
 }

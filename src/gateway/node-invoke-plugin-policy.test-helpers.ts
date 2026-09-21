@@ -10,6 +10,7 @@ import { trackAsyncWork } from "../shared/async-work-scope.js";
 import type { ExecApprovalManager } from "./exec-approval-manager.js";
 import { applyPluginNodeInvokePolicy } from "./node-invoke-plugin-policy.js";
 import type { NodeRegistry, NodeSession } from "./node-registry.js";
+import { waitForApprovalRequested } from "./server-methods/approval-request.test-support.js";
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
 
 export const DEMO_PLUGIN_ID = "demo";
@@ -199,11 +200,13 @@ export async function invokeDemoPolicy(
 
 export async function expectSinglePendingApproval(
   manager: ExecApprovalManager<PluginApprovalRequestPayload>,
+  context: Pick<GatewayRequestContext, "broadcastToConnIds">,
+  request: Promise<unknown>,
 ): Promise<PluginApprovalRecord> {
-  await vi.waitFor(async () => {
-    expect(await manager.listPendingRecords()).toHaveLength(1);
-  });
-  const [record] = await manager.listPendingRecords();
+  await waitForApprovalRequested(context.broadcastToConnIds, "plugin.approval.requested", request);
+  const records = await manager.listPendingRecords();
+  expect(records).toHaveLength(1);
+  const [record] = records;
   if (!record) {
     throw new Error("expected pending approval");
   }

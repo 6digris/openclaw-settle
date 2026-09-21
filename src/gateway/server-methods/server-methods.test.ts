@@ -54,6 +54,7 @@ import type { HealthSummary } from "../health/types.js";
 import { createChatAbortMarker, createChatRunState } from "../server-chat-state.js";
 import { HEALTH_REFRESH_INTERVAL_MS } from "../server-constants.js";
 import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
+import { waitForApprovalRequested } from "./approval-request.test-support.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./attachment-normalize.js";
 import { createExecApprovalHandlers } from "./exec-approval.js";
 import { logsHandlers } from "./logs.js";
@@ -2608,9 +2609,9 @@ describe("exec approval handlers", () => {
     const respond = vi.fn();
     const context = {
       getRuntimeConfig: () => opts?.config ?? {},
-      broadcast: (event: string, payload: unknown) => {
+      broadcast: vi.fn((event: string, payload: unknown) => {
         broadcasts.push({ event, payload });
-      },
+      }),
       hasExecApprovalClients: () => true,
       chatRunState: createChatRunState(),
     };
@@ -2644,13 +2645,10 @@ describe("exec approval handlers", () => {
 
   async function waitForRequestedExecApprovalPayload(
     broadcasts: Array<{ event: string; payload: unknown }>,
+    context: { broadcast: (event: string, payload: unknown) => void },
+    request: Promise<void>,
   ): Promise<{ approvalKind: "exec"; id: string; request: Record<string, unknown> }> {
-    await waitForFast(
-      () => {
-        expect(broadcasts.some((entry) => entry.event === "exec.approval.requested")).toBe(true);
-      },
-      { timeout: 5_000 },
-    );
+    await waitForApprovalRequested(context.broadcast, "exec.approval.requested", request);
     return getRequestedExecApprovalPayload(broadcasts);
   }
 
@@ -2669,6 +2667,11 @@ describe("exec approval handlers", () => {
       params: params.request,
       client: params.client,
     });
+    await waitForApprovalRequested(
+      fixture.context.broadcast,
+      "exec.approval.requested",
+      requestPromise,
+    );
     await waitForFast(() => {
       expect(fixture.respond.mock.calls.some((call) => call[1]?.status === "accepted")).toBe(true);
     });
@@ -2695,7 +2698,11 @@ describe("exec approval handlers", () => {
       params: params.request,
       client: params.client,
     });
-    const requested = await waitForRequestedExecApprovalPayload(fixture.broadcasts);
+    const requested = await waitForRequestedExecApprovalPayload(
+      fixture.broadcasts,
+      fixture.context,
+      requestPromise,
+    );
     return { ...fixture, ...requested, requestPromise };
   }
 
@@ -2738,7 +2745,7 @@ describe("exec approval handlers", () => {
       context,
       params: requestParams,
     });
-    const { id } = await waitForRequestedExecApprovalPayload(broadcasts);
+    const { id } = await waitForRequestedExecApprovalPayload(broadcasts, context, requestPromise);
     const resolveRespond = await resolveExecApprovalForTest({
       handlers,
       id,
@@ -2809,7 +2816,7 @@ describe("exec approval handlers", () => {
     const respond = vi.fn();
     const context = {
       getRuntimeConfig: () => ({}),
-      broadcast: (_eventValue: string, _payload: unknown) => {},
+      broadcast: vi.fn(),
       hasExecApprovalClients: () => false,
       approvalWebPushDelivery: opts?.webPushDelivery,
     };
@@ -2948,9 +2955,9 @@ describe("exec approval handlers", () => {
         nodeId: undefined,
       },
     });
-    expect((await waitForRequestedExecApprovalPayload(broadcasts)).id).toBe(
-      "approval-allowed-before-abort",
-    );
+    expect(
+      (await waitForRequestedExecApprovalPayload(broadcasts, context, requestPromise)).id,
+    ).toBe("approval-allowed-before-abort");
     expect(await manager.resolve("approval-allowed-before-abort", "allow-once")).toBe(true);
     context.chatRunState.getOrCreate("run-allowed-before-abort").abortMarker =
       createChatAbortMarker();
@@ -3929,7 +3936,7 @@ describe("exec approval handlers", () => {
       params: { id: "-approval-123", host: "gateway", twoPhase: true },
     });
 
-    const { id } = await waitForRequestedExecApprovalPayload(broadcasts);
+    const { id } = await waitForRequestedExecApprovalPayload(broadcasts, context, requestPromise);
     await requestPromise;
     expect(id).toBe("-approval-123");
     expect(await manager.getSnapshot(id)).not.toBeNull();
@@ -4099,9 +4106,9 @@ describe("exec approval handlers", () => {
     const requestContext = {
       ...context,
       hasExecApprovalClients: () => true,
-      broadcast: (event: string, payload: unknown) => {
+      broadcast: vi.fn((event: string, payload: unknown) => {
         broadcasts.push({ event, payload });
-      },
+      }),
     };
 
     const requestPromise = requestExecApproval({
@@ -4122,7 +4129,7 @@ describe("exec approval handlers", () => {
         turnSourceThreadId: "thread-456",
       },
     });
-    await waitForRequestedExecApprovalPayload(broadcasts);
+    await waitForRequestedExecApprovalPayload(broadcasts, requestContext, requestPromise);
     await waitForFast(() => {
       expect(respond.mock.calls.some((call) => call[1]?.status === "accepted")).toBe(true);
     });
@@ -4201,6 +4208,7 @@ describe("exec approval handlers", () => {
       },
     });
 
+    await waitForApprovalRequested(context.broadcast, "exec.approval.requested", requestPromise);
     await waitForFast(() => {
       expect(lastMockCallArg(respond)).toBe(true);
       expectRecordFields(lastMockCallArg(respond, 1), {
@@ -4281,9 +4289,8 @@ describe("exec approval handlers", () => {
       context,
       params: { timeoutMs: 60_000, id: "approval-ios-cleanup", host: "gateway" },
     });
-    await waitForFast(() => {
-      expect(iosPushDelivery.handleRequested).toHaveBeenCalledTimes(1);
-    });
+    await waitForApprovalRequested(context.broadcast, "exec.approval.requested", requestPromise);
+    expect(iosPushDelivery.handleRequested).toHaveBeenCalledTimes(1);
 
     await resolveExecApprovalForTest({
       handlers,
@@ -4292,11 +4299,9 @@ describe("exec approval handlers", () => {
     });
     await requestPromise;
 
-    await waitForFast(() => {
-      expectRecordFields(mockCallArg(iosPushDelivery.handleResolved), {
-        id: "approval-ios-cleanup",
-        decision: "allow-once",
-      });
+    expectRecordFields(mockCallArg(iosPushDelivery.handleResolved), {
+      id: "approval-ios-cleanup",
+      decision: "allow-once",
     });
   });
 
@@ -4311,9 +4316,8 @@ describe("exec approval handlers", () => {
       context,
       params: { timeoutMs: 60_000, id: "approval-web-push-cleanup", host: "gateway" },
     });
-    await waitForFast(() => {
-      expect(webPushDelivery.handleRequested).toHaveBeenCalledTimes(1);
-    });
+    await waitForApprovalRequested(context.broadcast, "exec.approval.requested", requestPromise);
+    expect(webPushDelivery.handleRequested).toHaveBeenCalledTimes(1);
 
     await resolveExecApprovalForTest({
       handlers,
@@ -4322,11 +4326,9 @@ describe("exec approval handlers", () => {
     });
     await requestPromise;
 
-    await waitForFast(() => {
-      expectRecordFields(mockCallArg(webPushDelivery.handleResolved), {
-        id: "approval-web-push-cleanup",
-        decision: "allow-once",
-      });
+    expectRecordFields(mockCallArg(webPushDelivery.handleResolved), {
+      id: "approval-web-push-cleanup",
+      decision: "allow-once",
     });
   });
 
@@ -4359,10 +4361,8 @@ describe("exec approval handlers", () => {
       await vi.advanceTimersByTimeAsync(250);
       await requestPromise;
 
-      await waitForFast(() => {
-        expectRecordFields(mockCallArg(iosPushDelivery.handleExpired), {
-          id: "approval-ios-expire",
-        });
+      expectRecordFields(mockCallArg(iosPushDelivery.handleExpired), {
+        id: "approval-ios-expire",
       });
     } finally {
       vi.useRealTimers();
@@ -4390,6 +4390,7 @@ describe("exec approval handlers", () => {
         },
       });
 
+      await waitForApprovalRequested(context.broadcast, "exec.approval.requested", requestPromise);
       await waitForFast(() => {
         expect(lastMockCallArg(respond)).toBe(true);
         expectRecordFields(lastMockCallArg(respond, 1), {
@@ -4421,9 +4422,8 @@ describe("exec approval handlers", () => {
       context,
       params: { timeoutMs: 60_000, id: "approval-forwarded", host: "gateway" },
     });
-    await waitForFast(() => {
-      expect(forwarder.handleRequested).toHaveBeenCalledTimes(1);
-    });
+    await waitForApprovalRequested(context.broadcast, "exec.approval.requested", requestPromise);
+    expect(forwarder.handleRequested).toHaveBeenCalledTimes(1);
     expect(expireSpy).not.toHaveBeenCalled();
 
     const resolveRespond = await resolveExecApprovalForTest({
