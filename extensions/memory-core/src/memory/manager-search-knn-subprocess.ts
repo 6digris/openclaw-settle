@@ -277,8 +277,9 @@ async function runAdmittedVectorKnn(params: VectorKnnSubprocessParams): Promise<
         setChildReferenced(child, true);
         children.delete(params.databasePath);
         clearTimeout(ownedWorker.idleTimer);
-        child.stdin.destroy();
+        // Signal before closing stdin so EOF cannot win the retirement race.
         child.kill("SIGKILL");
+        child.stdin.destroy();
       },
     };
     const ownedWorker = worker;
