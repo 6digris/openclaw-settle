@@ -216,6 +216,12 @@ epoch, revision, and finality through `observeParticipationSource`; never accept
 these fields from model arguments. `inspectParticipationSource` returns a
 snapshot and a live guard for work that crosses asynchronous boundaries.
 
+Each session retains at most 1,024 live sources for two minutes from their first
+observation. Capacity admission and eviction use original observation order, not
+snapshot replay or correction time. Repeated snapshots preserve unchanged
+retained references and guards; older replayed sources cannot displace newer
+ones from a full live-source window.
+
 Browser adapters may implement `MeetingBrowserParticipationAdapter` and dispatch
 through `runMeetingParticipationWithBrowser`. The helper uses the existing tab
 lock, a pinned route, and the session guard. An optional preparation script may
@@ -226,6 +232,12 @@ await; later waits may observe the result but must not produce another effect.
 Only a rejected result that proves no requested effect occurred may set
 `correctable: true`. Other meeting platforms need no adapter change and continue
 to report unsupported participation.
+
+Cancellation after browser dispatch is best effort: the effect may occur before
+the host detects source expiry, correction, or session revocation. The runtime
+reports that outcome as `uncertain`; it must not be treated as proof of cancellation
+or permission to retry with a new request ID. Pre-dispatch authority checks and
+the adapter's final page-session and URL checks remain required.
 
 ## Other top-level `api` fields
 

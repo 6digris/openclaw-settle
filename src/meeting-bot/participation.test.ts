@@ -507,6 +507,104 @@ describe("meeting participation observed source identities", () => {
   });
 });
 
+describe("meeting participation live source capacity", () => {
+  function captions(count: number): MeetingParticipationSource[] {
+    return Array.from({ length: count }, (_, index) => ({
+      ...source,
+      kind: "caption",
+      id: `caption-${index}`,
+      text: `Request ${index}`,
+    }));
+  }
+
+  it.each([129, 1_025])(
+    "preserves retained references and issued guards when replaying %i unchanged captions",
+    async (count) => {
+      vi.useFakeTimers();
+      const { owner, effect } = harness();
+      const snapshot = captions(count);
+      for (const caption of snapshot) {
+        owner.observe(sessionId, caption);
+      }
+      const before = owner.context(sessionId);
+      const retained = before.sources.at(-1)!;
+      const inspection = owner.inspect(sessionId, retained.sourceId);
+      expect(inspection).toBeDefined();
+
+      for (const caption of snapshot) {
+        owner.observe(sessionId, caption);
+      }
+
+      expect(() => inspection!.assertCurrent()).not.toThrow();
+      expect(owner.context(sessionId)).toEqual(before);
+      await expect(
+        owner.execute(sessionId, { ...request, sourceId: retained.sourceId }),
+      ).resolves.toMatchObject({ status: "succeeded" });
+      expect(effect).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("retains 1024 sources and evicts only the oldest for a newer observation", () => {
+    vi.useFakeTimers();
+    const { owner } = harness();
+    const snapshot = captions(1_025);
+    for (const caption of snapshot) {
+      owner.observe(sessionId, caption);
+    }
+    const before = owner.context(sessionId).sources;
+    expect(before).toHaveLength(1_024);
+    expect(before.map((entry) => entry.id)).toEqual(snapshot.slice(1).map((entry) => entry.id));
+    const evicted = owner.inspect(sessionId, before[0]!.sourceId)!;
+    const retained = owner.inspect(sessionId, before.at(-1)!.sourceId)!;
+    expect(evicted).toBeDefined();
+    expect(retained).toBeDefined();
+
+    const next = owner.observe(sessionId, { ...source, kind: "caption", id: "next-caption" });
+    const after = owner.context(sessionId).sources;
+    expect(next).toBeTruthy();
+    expect(after).toHaveLength(1_024);
+    expect(after.slice(0, -1)).toEqual(before.slice(1));
+    expect(after.at(-1)).toMatchObject({ sourceId: next, order: 1_026 });
+    expect(() => evicted.assertCurrent()).toThrow();
+    expect(() => retained.assertCurrent()).not.toThrow();
+    expect(owner.inspect(sessionId, before[0]!.sourceId)).toBeUndefined();
+  });
+
+  it("evicts by original observation order after an interim correction is finalized", () => {
+    vi.useFakeTimers();
+    const { owner } = harness();
+    const snapshot = captions(1_024);
+    for (const caption of snapshot) {
+      owner.observe(sessionId, caption);
+    }
+    const before = owner.context(sessionId).sources;
+    expect(before).toHaveLength(1_024);
+    const original = owner.inspect(sessionId, before[0]!.sourceId)!;
+    const retained = owner.inspect(sessionId, before[1]!.sourceId)!;
+    expect(original).toBeDefined();
+    expect(retained).toBeDefined();
+    owner.observe(sessionId, { ...snapshot[0]!, revision: "2", finalized: false });
+    expect(() => original.assertCurrent()).toThrow();
+
+    const corrected = owner.observe(sessionId, {
+      ...snapshot[0]!,
+      revision: "3",
+      text: "Corrected request",
+    });
+    expect(corrected).toBeTruthy();
+    expect(corrected).not.toBe(before[0]!.sourceId);
+    const correctedSource = owner.inspect(sessionId, corrected!)!;
+    expect(correctedSource.source.order).toBe(1);
+    expect(() => correctedSource.assertCurrent()).not.toThrow();
+
+    owner.observe(sessionId, { ...source, kind: "caption", id: "next-caption" });
+    expect(owner.context(sessionId).sources).toHaveLength(1_024);
+    expect(() => correctedSource.assertCurrent()).toThrow();
+    expect(() => retained.assertCurrent()).not.toThrow();
+    expect(owner.inspect(sessionId, corrected!)).toBeUndefined();
+  });
+});
+
 describe("meeting participation bounded correction", () => {
   it("allows one correction retaining the source and action type", async () => {
     const { owner, effect } = harness();

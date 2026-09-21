@@ -10,7 +10,7 @@ import type {
 } from "./participation-types.js";
 
 const SOURCE_LIFETIME_MS = 120_000;
-const MAX_SOURCES = 128;
+const MAX_SOURCES = 1_024;
 
 function fingerprint(value: unknown): string {
   const canonical = (input: unknown): unknown => {
@@ -181,6 +181,20 @@ export class MeetingParticipation<TSession> {
     if (previous?.revision === source.revision && previous.text === source.text) {
       return previous.sourceId;
     }
+    let evictionKey: string | undefined;
+    if (!previous && sources.size >= MAX_SOURCES) {
+      // Replayed history must not displace newer live sources or invalidate their guards.
+      let oldestOrder = identity.order;
+      for (const [liveKey, liveSource] of sources) {
+        if (liveSource.order < oldestOrder) {
+          evictionKey = liveKey;
+          oldestOrder = liveSource.order;
+        }
+      }
+      if (evictionKey === undefined) {
+        return undefined;
+      }
+    }
     const entry = {
       ...source,
       sourceId: randomUUID(),
@@ -191,8 +205,8 @@ export class MeetingParticipation<TSession> {
     };
     identity.sourceId = entry.sourceId;
     sources.set(key, entry);
-    while (sources.size > MAX_SOURCES) {
-      sources.delete(sources.keys().next().value!);
+    if (evictionKey !== undefined) {
+      sources.delete(evictionKey);
     }
     return entry.sourceId;
   }
@@ -206,7 +220,7 @@ export class MeetingParticipation<TSession> {
       capabilities: current ? [...this.options.capabilities(current.session)] : [],
       sources: current
         ? [...(this.#sources.get(sessionId)?.values() ?? [])]
-            .filter((source) => Boolean(this.#findSource(sessionId, source.sourceId)))
+            .filter((source) => this.#isSourceCurrent(source))
             .map(({ observedAt: _at, assertOwnerCurrent: _assert, ...source }) => source)
         : [],
     };
@@ -489,16 +503,23 @@ export class MeetingParticipation<TSession> {
   }
 
   #findSource(sessionId: string, sourceId: string): LiveSource | undefined {
-    return [...(this.#sources.get(sessionId)?.values() ?? [])].find((source) => {
-      if (source.sourceId !== sourceId || Date.now() - source.observedAt > SOURCE_LIFETIME_MS) {
-        return false;
+    for (const source of this.#sources.get(sessionId)?.values() ?? []) {
+      if (source.sourceId === sourceId && this.#isSourceCurrent(source)) {
+        return source;
       }
-      try {
-        source.assertOwnerCurrent();
-        return true;
-      } catch {
-        return false;
-      }
-    });
+    }
+    return undefined;
+  }
+
+  #isSourceCurrent(source: LiveSource): boolean {
+    if (Date.now() - source.observedAt > SOURCE_LIFETIME_MS) {
+      return false;
+    }
+    try {
+      source.assertOwnerCurrent();
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

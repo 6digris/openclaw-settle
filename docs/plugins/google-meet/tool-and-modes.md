@@ -125,12 +125,23 @@ effect. An `uncertain` result means the effect may have occurred; do not generat
 a new ID to retry it. Stored results remain readable after leaving, without
 allowing any new action on the closed session.
 
+Cancellation is best effort for browser actions already dispatched. If the
+meeting ends or source authority changes during delivery, the effect may occur
+before the runtime detects that change. An `uncertain` result is not confirmation
+that the action was cancelled; do not retry it with a new request ID.
+
 Incoming chat or caption requests must keep the `sourceId` issued by their
 observer. A tool caller must not remove it to turn meeting input into an unrelated
 operator command. Sources expire after two minutes from their first observation;
 interim text, edits, own echoes, and page changes invalidate old references.
 Edits retain their original order and do not become fresh invitations. Direct
 operator commands may omit `sourceId`.
+
+Participation context retains at most 1,024 live sources, using their original
+observation order for capacity decisions. At capacity, rereading older history
+does not displace newer retained sources. A newer eligible observation replaces
+only the oldest retained source. Unchanged retained sources keep their references
+and live guards; rereading them does not extend the two-minute lifetime.
 
 A rejected request may return `correctionOf`. It permits one corrected request
 with a new `requestId`, that exact `correctionOf`, and the same source and action
