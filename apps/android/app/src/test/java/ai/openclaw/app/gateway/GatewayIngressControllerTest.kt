@@ -5213,68 +5213,122 @@ class GatewayIngressControllerTest {
       }
     }
 
+  @Test fun canonicalIpv6OriginsRestoreStorageRegistryAndAdmitCurrentLeases() =
+    runTest {
+      val context = RuntimeEnvironment.getApplication()
+      val prefs = SecurePrefs(context, context.getSharedPreferences("access-ipv6-" + UUID.randomUUID(), Context.MODE_PRIVATE))
+      val persistence = CloudflareAccessSessionStore.Persistence.securePrefs(prefs)
+      val expanded = CloudflareAccessOrigin.from("wss://[0:0:0:0:0:0:0:1]:8443/gateway/socket")
+      val canonical = CloudflareAccessOrigin.from("https://[::1]:8443")
+      val descriptor = application.copy(origin = expanded)
+      val session = sessionFor(descriptor)
+      assertTrue(persistence.save(expanded, session.encode()))
+      assertEquals(session.encode(), persistence.load(canonical))
+      val restoredStore = CloudflareAccessSessionStore(backgroundScope, persistence, retireTransports = {})
+      val snapshot = checkNotNull(restoredStore.snapshot(canonical))
+      assertEquals(descriptor, snapshot.session.application)
+      assertSame(snapshot, restoredStore.snapshot(expanded))
+
+      val target = GatewayEndpoint.manual("0:0:0:0:0:0:0:1", 8443, true, "/gateway/socket")
+      val registry = GatewayRegistryStore(prefs)
+      add(registry, target)
+      assertTrue(registry.setAccessOrigin(target.stableId, expanded))
+      val restoredRegistry = GatewayRegistryStore(prefs)
+      assertEquals("https://[::1]:8443", restoredRegistry.entries.value.single().accessOrigin)
+      var probes = 0
+      val owner =
+        GatewayIngressController(backgroundScope, restoredRegistry, persistence, { emptyMap() }, {},
+          clientForRoute = { _, _ ->
+            client(descriptor = { descriptor }, probe = { request ->
+              probes++
+              if (probes == 1) {
+                assertNull(request.header("Cf-Access-Token"))
+                true
+              } else {
+                assertEquals(session.authorizationHeader(request.url.toString()), request.header("Cf-Access-Token"))
+                false
+              }
+            })
+          })
+      val lease = checkNotNull(owner.prepare(target, GatewayTlsParams(true, null, false, target.stableId), false, owner.admissionCheckpoint()) { true })
+      for (url in listOf("wss://[::1]:8443/gateway/socket", "https://[0:0:0:0:0:0:0:1]:8443/media")) {
+        val request = Request.Builder().url(url).build()
+        lease.requireCurrent(request)
+        assertEquals(session.authorizationHeader(request.url.toString()), lease.authorizeUpgrade(request).header("Cf-Access-Token"))
+      }
+      assertEquals(4, probes)
+      for (url in listOf("https://[::2]:8443/media", "https://[::1]:8444/media", "http://[::1]:8443/media")) {
+        val failure = runCatching { lease.requireCurrent(Request.Builder().url(url).build()) }.exceptionOrNull()
+        assertTrue(failure is GatewayExternalAuthorizationException)
+      }
+      restoredStore.forget(expanded).task.await()
+      assertNull(persistence.load(canonical))
+    }
+
   @Test fun configuredRouteTlsFailurePreservesTrustErrorWithoutAccessSideEffects() =
     runBlocking {
       val (socketFactory, fingerprint) = gatewayTestTls()
-      for (mode in listOf("matching-pin", "wrong-pin", "system-trust")) {
-        val server = MockWebServer()
-        server.useHttps(socketFactory, false)
-        server.enqueue(MockResponse().setResponseCode(200))
-        val address = InetAddress.getLoopbackAddress()
-        server.start(address, 0)
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        try {
-          val target = GatewayEndpoint.manual(checkNotNull(address.hostAddress), server.port, true, "/gateway/socket")
-          val registry = registry()
-          add(registry, target)
-          val storage = Storage()
-          var prompts = 0
-          val pin =
-            when (mode) {
-              "matching-pin" -> fingerprint
-              "wrong-pin" -> "0".repeat(64)
-              else -> null
-            }
-          // Leave clientForRoute at its production default: the raw Access probe
-          // must use the same selected pin/platform trust as the Gateway transport.
-          val owner =
-            GatewayIngressController(scope, registry, storage.persistence, { emptyMap() }, {}, authenticate = { _, _ ->
-              prompts++
-              error("TLS rejection must not enter Access authentication")
-            })
-          val result =
-            runCatching {
-              withTimeout(8_000) {
-                owner.prepare(target, GatewayTlsParams(true, pin, false, target.stableId), true, owner.admissionCheckpoint()) { true }
+      for (host in listOf("127.0.0.1", "0:0:0:0:0:0:0:1")) {
+        for (mode in listOf("matching-pin", "wrong-pin", "system-trust")) {
+          val server = MockWebServer()
+          server.useHttps(socketFactory, false)
+          server.enqueue(MockResponse().setResponseCode(200))
+          val address = InetAddress.getByName(host)
+          server.start(address, 0)
+          val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+          try {
+            val target = GatewayEndpoint.manual(host, server.port, true, "/gateway/socket")
+            val registry = registry()
+            add(registry, target)
+            val storage = Storage()
+            var prompts = 0
+            val pin =
+              when (mode) {
+                "matching-pin" -> fingerprint
+                "wrong-pin" -> "0".repeat(64)
+                else -> null
               }
+            // Leave clientForRoute at its production default: the raw Access probe
+            // must use the same selected pin/platform trust as the Gateway transport.
+            val owner =
+              GatewayIngressController(scope, registry, storage.persistence, { emptyMap() }, {}, authenticate = { _, _ ->
+                prompts++
+                error("TLS rejection must not enter Access authentication")
+              })
+            val result =
+              runCatching {
+                withTimeout(8_000) {
+                  owner.prepare(target, GatewayTlsParams(true, pin, false, target.stableId), true, owner.admissionCheckpoint()) { true }
+                }
+              }
+            if (mode == "matching-pin") {
+              assertTrue(result.isSuccess)
+              assertNull(result.getOrNull())
+              assertEquals(1, server.requestCount)
+            } else {
+              val failure = result.exceptionOrNull()
+              if (failure !is SSLException) throw AssertionError("$mode: expected TLS rejection", failure)
+              if (mode == "wrong-pin") {
+                assertTrue(generateSequence<Throwable>(failure) { it.cause }.any { it.message == "gateway TLS fingerprint mismatch" })
+              }
+              assertEquals(0, server.requestCount)
             }
-          if (mode == "matching-pin") {
-            assertTrue(result.isSuccess)
-            assertNull(result.getOrNull())
-            assertEquals(1, server.requestCount)
-          } else {
-            val failure = result.exceptionOrNull()
-            if (failure !is SSLException) throw AssertionError("$mode: expected TLS rejection", failure)
-            if (mode == "wrong-pin") {
-              assertTrue(generateSequence<Throwable>(failure) { it.cause }.any { it.message == "gateway TLS fingerprint mismatch" })
+            assertEquals(0, prompts)
+            assertTrue(storage.values.isEmpty())
+            assertNull(owner.authorization(target))
+            assertNull(owner.presentation.value.attention)
+            assertNull(owner.presentation.value.browserLaunch)
+            assertNull(
+              registry.entries.value
+                .first { it.stableId == target.stableId }
+                .accessOrigin,
+            )
+          } finally {
+            withContext(NonCancellable) {
+              scope.cancel()
+              scope.coroutineContext[Job]?.join()
+              server.shutdown()
             }
-            assertEquals(0, server.requestCount)
-          }
-          assertEquals(0, prompts)
-          assertTrue(storage.values.isEmpty())
-          assertNull(owner.authorization(target))
-          assertNull(owner.presentation.value.attention)
-          assertNull(owner.presentation.value.browserLaunch)
-          assertNull(
-            registry.entries.value
-              .first { it.stableId == target.stableId }
-              .accessOrigin,
-          )
-        } finally {
-          withContext(NonCancellable) {
-            scope.cancel()
-            scope.coroutineContext[Job]?.join()
-            server.shutdown()
           }
         }
       }
