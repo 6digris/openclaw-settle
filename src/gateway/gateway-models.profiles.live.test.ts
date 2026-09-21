@@ -504,6 +504,36 @@ function assertGatewayLiveCompletedSomeModels(params: {
   );
 }
 
+const GATEWAY_LIVE_AVAILABILITY_FALLBACK_COUNT = 2;
+
+function resolveGatewayLiveCandidatePoolSize(params: {
+  candidateCount: number;
+  maxModels: number;
+  providerCount: number | undefined;
+  useExplicit: boolean;
+}): number {
+  if (params.maxModels <= 0) {
+    return params.candidateCount;
+  }
+  const requestedCount = Math.min(params.candidateCount, params.maxModels);
+  if (params.useExplicit || params.providerCount !== 1) {
+    return requestedCount;
+  }
+  return Math.min(
+    params.candidateCount,
+    params.maxModels + GATEWAY_LIVE_AVAILABILITY_FALLBACK_COUNT,
+  );
+}
+
+function hasReachedGatewayLiveSuccessTarget(params: {
+  passedCount: number;
+  successfulModelLimit: number | undefined;
+}): boolean {
+  return (
+    params.successfulModelLimit !== undefined && params.passedCount >= params.successfulModelLimit
+  );
+}
+
 function formatGatewayLiveFilterSet(filter: ReadonlySet<string> | null): string {
   if (!filter || filter.size === 0) {
     return "all";
@@ -1118,6 +1148,58 @@ describe("assertGatewayLiveCompletedSomeModels", () => {
         total: 2,
       }),
     ).toThrow(/completed zero successful live model run/);
+  });
+});
+
+describe("gateway live candidate fallback policy", () => {
+  it("adds a bounded fallback pool to capped single-provider sweeps", () => {
+    expect(
+      resolveGatewayLiveCandidatePoolSize({
+        candidateCount: 10,
+        maxModels: 1,
+        providerCount: 1,
+        useExplicit: false,
+      }),
+    ).toBe(3);
+    expect(
+      resolveGatewayLiveCandidatePoolSize({
+        candidateCount: 2,
+        maxModels: 1,
+        providerCount: 1,
+        useExplicit: false,
+      }),
+    ).toBe(2);
+  });
+
+  it("does not expand explicit or multi-provider sweeps", () => {
+    expect(
+      resolveGatewayLiveCandidatePoolSize({
+        candidateCount: 10,
+        maxModels: 1,
+        providerCount: 2,
+        useExplicit: false,
+      }),
+    ).toBe(1);
+    expect(
+      resolveGatewayLiveCandidatePoolSize({
+        candidateCount: 10,
+        maxModels: 1,
+        providerCount: 1,
+        useExplicit: true,
+      }),
+    ).toBe(1);
+  });
+
+  it("stops after the capped number of successful models", () => {
+    expect(hasReachedGatewayLiveSuccessTarget({ passedCount: 0, successfulModelLimit: 1 })).toBe(
+      false,
+    );
+    expect(hasReachedGatewayLiveSuccessTarget({ passedCount: 1, successfulModelLimit: 1 })).toBe(
+      true,
+    );
+    expect(
+      hasReachedGatewayLiveSuccessTarget({ passedCount: 3, successfulModelLimit: undefined }),
+    ).toBe(false);
   });
 });
 
@@ -4157,6 +4239,7 @@ type GatewayModelSuiteParams = {
   extraToolProbes: boolean;
   extraImageProbes: boolean;
   thinkingLevel: string;
+  successfulModelLimit?: number;
   providerOverrides?: Record<string, ModelProviderConfig>;
 };
 
@@ -5664,6 +5747,17 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
     const total = params.candidates.length;
 
     for (const [index, { model }] of params.candidates.entries()) {
+      if (
+        hasReachedGatewayLiveSuccessTarget({
+          passedCount,
+          successfulModelLimit: params.successfulModelLimit,
+        })
+      ) {
+        logProgress(
+          `[${params.label}] reached ${passedCount}/${params.successfulModelLimit} successful model target`,
+        );
+        break;
+      }
       const modelKey = `${model.provider}/${model.id}`;
       const progressLabel = `[${params.label}] ${index + 1}/${total} ${modelKey}`;
       const strictUltraProof = isOpenAIGpt56UltraTarget(model, params.thinkingLevel);
@@ -6658,16 +6752,26 @@ describeLive("gateway live (dev agent, profile keys)", () => {
           skipped,
         });
         const selectCandidates = useSmall ? selectSmallLiveItems : selectHighSignalLiveItems;
+        const candidatePoolSize = resolveGatewayLiveCandidatePoolSize({
+          candidateCount: candidates.length,
+          maxModels,
+          providerCount: providerList?.length,
+          useExplicit,
+        });
         const selectedCandidates = selectCandidates(
           candidates,
-          maxModels > 0 ? maxModels : candidates.length,
+          candidatePoolSize,
           ({ model }) => ({ provider: model.provider, id: model.id }),
           ({ model }) => model.provider,
         );
         logProgress(
           `[all-models] selection=${useExplicit ? "explicit" : useSmall ? "small" : "high-signal"}`,
         );
-        if (selectedCandidates.length < candidates.length) {
+        if (maxModels > 0 && selectedCandidates.length > Math.min(candidates.length, maxModels)) {
+          logProgress(
+            `[all-models] success target=${maxModels}; selected ${selectedCandidates.length} candidates with bounded availability fallbacks`,
+          );
+        } else if (selectedCandidates.length < candidates.length) {
           logProgress(
             `[all-models] capped to ${selectedCandidates.length}/${candidates.length} via OPENCLAW_LIVE_GATEWAY_MAX_MODELS=${maxModels}`,
           );
@@ -6688,6 +6792,7 @@ describeLive("gateway live (dev agent, profile keys)", () => {
           extraToolProbes: ENABLE_EXTRA_TOOL_PROBES,
           extraImageProbes: ENABLE_EXTRA_IMAGE_PROBES,
           thinkingLevel: THINKING_LEVEL,
+          successfulModelLimit: maxModels > 0 ? maxModels : undefined,
         });
 
         const minimaxCandidates = selectedCandidates.filter(({ model }) => {

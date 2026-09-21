@@ -78,6 +78,12 @@ describe("live test provider drift", () => {
         "Error Code unknown: Service temporarily unavailable. The model's availability is currently degraded.",
       ),
     ).toBe(true);
+    expect(
+      isLiveProviderUnavailableDrift(
+        "400 Upstream request failed: This Go model requires Global regions. Select Global in your workspace's Privacy settings to use it.",
+      ),
+    ).toBe(true);
+    expect(isLiveProviderUnavailableDrift("Select Global in your workspace settings.")).toBe(false);
   });
 
   it("returns explicit skip labels only for enabled drift classes", () => {
