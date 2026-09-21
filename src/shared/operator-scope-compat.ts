@@ -1,4 +1,3 @@
-// Role scope checks share operator implications and role-prefix boundaries.
 const OPERATOR_ROLE = "operator";
 const OPERATOR_ADMIN_SCOPE = "operator.admin";
 const OPERATOR_READ_SCOPE = "operator.read";
@@ -8,34 +7,24 @@ const OPERATOR_SESSION_READ_SCOPE = "operator.sessions.read";
 const OPERATOR_SESSION_WRITE_SCOPE = "operator.sessions.write";
 const OPERATOR_SCOPE_PREFIX = "operator.";
 
-function operatorScopeSatisfied(requestedScope: string, granted: Set<string>): boolean {
+export function operatorScopeSatisfied(
+  requestedScope: string,
+  granted: readonly string[],
+): boolean {
   if (!requestedScope.startsWith(OPERATOR_SCOPE_PREFIX)) {
     return false;
   }
-  if (granted.has(OPERATOR_ADMIN_SCOPE)) {
-    return true;
-  }
-  if (requestedScope === OPERATOR_READ_SCOPE) {
-    return granted.has(OPERATOR_READ_SCOPE) || granted.has(OPERATOR_WRITE_SCOPE);
-  }
-  if (requestedScope === OPERATOR_WRITE_SCOPE) {
-    return granted.has(OPERATOR_WRITE_SCOPE);
-  }
-  if (requestedScope === OPERATOR_TALK_SCOPE) {
-    return granted.has(OPERATOR_TALK_SCOPE) || granted.has(OPERATOR_WRITE_SCOPE);
-  }
-  if (requestedScope === OPERATOR_SESSION_READ_SCOPE) {
-    return (
-      granted.has(OPERATOR_SESSION_READ_SCOPE) ||
-      granted.has(OPERATOR_SESSION_WRITE_SCOPE) ||
-      granted.has(OPERATOR_READ_SCOPE) ||
-      granted.has(OPERATOR_WRITE_SCOPE)
-    );
-  }
-  if (requestedScope === OPERATOR_SESSION_WRITE_SCOPE) {
-    return granted.has(OPERATOR_SESSION_WRITE_SCOPE) || granted.has(OPERATOR_WRITE_SCOPE);
-  }
-  return granted.has(requestedScope);
+  return (
+    granted.includes(requestedScope) ||
+    granted.includes(OPERATOR_ADMIN_SCOPE) ||
+    ((requestedScope === OPERATOR_READ_SCOPE || requestedScope === OPERATOR_TALK_SCOPE) &&
+      granted.includes(OPERATOR_WRITE_SCOPE)) ||
+    (requestedScope === OPERATOR_SESSION_READ_SCOPE &&
+      (granted.includes(OPERATOR_SESSION_WRITE_SCOPE) ||
+        granted.includes(OPERATOR_READ_SCOPE) ||
+        granted.includes(OPERATOR_WRITE_SCOPE))) ||
+    (requestedScope === OPERATOR_SESSION_WRITE_SCOPE && granted.includes(OPERATOR_WRITE_SCOPE))
+  );
 }
 
 /** Retains grants within a role ceiling, including explicitly selected narrower session access. */
@@ -43,15 +32,16 @@ export function applyOperatorRoleScopeCeiling(
   scopes: readonly string[],
   allowedScopes: readonly string[],
 ): string[] {
-  const granted = new Set(scopes);
-  const allowed = new Set(allowedScopes);
-  const result = scopes.filter((scope) => operatorScopeSatisfied(scope, allowed));
-  if (allowed.has(OPERATOR_SESSION_READ_SCOPE) || allowed.has(OPERATOR_SESSION_WRITE_SCOPE)) {
+  const result = scopes.filter((scope) => operatorScopeSatisfied(scope, allowedScopes));
+  if (
+    allowedScopes.includes(OPERATOR_SESSION_READ_SCOPE) ||
+    allowedScopes.includes(OPERATOR_SESSION_WRITE_SCOPE)
+  ) {
     for (const scope of [OPERATOR_SESSION_WRITE_SCOPE, OPERATOR_SESSION_READ_SCOPE]) {
       if (
-        operatorScopeSatisfied(scope, allowed) &&
-        operatorScopeSatisfied(scope, granted) &&
-        !operatorScopeSatisfied(scope, new Set(result))
+        operatorScopeSatisfied(scope, allowedScopes) &&
+        operatorScopeSatisfied(scope, scopes) &&
+        !operatorScopeSatisfied(scope, result)
       ) {
         result.push(scope);
       }
@@ -77,7 +67,7 @@ export function resolveMissingRequestedScope(params: {
 }): string | null {
   const role = params.role.trim();
   const prefix = `${role}.`;
-  const allowedSet = new Set(params.allowedScopes.map((scope) => scope.trim()));
+  const allowedScopes = params.allowedScopes.map((scope) => scope.trim());
   for (const scope of params.requestedScopes) {
     const requestedScope = scope.trim();
     if (!requestedScope) {
@@ -85,8 +75,8 @@ export function resolveMissingRequestedScope(params: {
     }
     const satisfied =
       role === OPERATOR_ROLE
-        ? operatorScopeSatisfied(requestedScope, allowedSet)
-        : requestedScope.startsWith(prefix) && allowedSet.has(requestedScope);
+        ? operatorScopeSatisfied(requestedScope, allowedScopes)
+        : requestedScope.startsWith(prefix) && allowedScopes.includes(requestedScope);
     if (!satisfied) {
       return scope;
     }
@@ -99,15 +89,10 @@ export function resolveScopeOutsideRequestedRoles(params: {
   requestedRoles: readonly string[];
   requestedScopes: readonly string[];
 }): string | null {
+  const prefixes = params.requestedRoles.map((role) => `${role.trim()}.`);
   for (const scope of params.requestedScopes) {
-    const matchesRequestedRole = params.requestedRoles.some((role) =>
-      roleScopesAllow({
-        role,
-        requestedScopes: [scope],
-        allowedScopes: [scope],
-      }),
-    );
-    if (!matchesRequestedRole) {
+    const requestedScope = scope.trim();
+    if (!prefixes.some((prefix) => !requestedScope || requestedScope.startsWith(prefix))) {
       return scope;
     }
   }
