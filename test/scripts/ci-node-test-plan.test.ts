@@ -2760,6 +2760,27 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       ...listMatchedTestFiles(createGatewayServerIsolatedVitestConfig({})),
       ...listMatchedTestFiles(createGatewayDatabaseWorkersVitestConfig({})),
     ];
+    const gatewayFilesByConfig = new Map([
+      [
+        "test/vitest/vitest.gateway-methods.config.ts",
+        listMatchedTestFiles(createGatewayMethodsVitestConfig({})),
+      ],
+      [
+        "test/vitest/vitest.gateway-methods-isolated.config.ts",
+        listMatchedTestFiles(createGatewayMethodsIsolatedVitestConfig({})),
+      ],
+      [
+        "test/vitest/vitest.gateway-server-isolated.config.ts",
+        listMatchedTestFiles(createGatewayServerIsolatedVitestConfig({})),
+      ],
+      [
+        "test/vitest/vitest.gateway-database-workers.config.ts",
+        listMatchedTestFiles(createGatewayDatabaseWorkersVitestConfig({})),
+      ],
+    ]);
+    const materializedIncludes = (group: CompactNodeTestShard["groups"][number]) =>
+      group.includePatterns ??
+      group.configs.flatMap((config) => gatewayFilesByConfig.get(config) ?? []);
     const compactGroups = compact.flatMap((shard) => shard.groups);
     const pullRequestCompactGroups = pullRequestCompact.flatMap((shard) => shard.groups);
     const expectedGroupNames = base.flatMap((shard) =>
@@ -2796,6 +2817,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       const retainsProofTests = [compact, githubCompact, hybridCompact].includes(plan);
       const retainedFiles = (files: string[]) =>
         files.filter((file) => retainsProofTests || !isCiProofTestFile(file));
+      const pluginOwners = plan
+        .flatMap((shard) => shard.groups)
+        .filter((group) =>
+          materializedIncludes(group).includes("test/plugins/codex-model-catalog.gateway.test.ts"),
+        );
+      expect(pluginOwners).toHaveLength(1);
+      expect(pluginOwners[0]?.configs).toContain(
+        "test/vitest/vitest.gateway-database-workers.config.ts",
+      );
+      expect(pluginOwners[0]?.pretestBuildMode).toBe("runtime");
       for (const owner of base) {
         const groups = plan
           .flatMap((shard) => shard.groups)
@@ -2852,9 +2883,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     // Pushes omit only the explicit low-signal families; PR fallback retains
     // their include-pattern coverage when special setup prevents targeting.
     expect(
-      compactGroups
-        .flatMap((group) => group.includePatterns ?? [])
-        .toSorted((a, b) => a.localeCompare(b)),
+      compactGroups.flatMap(materializedIncludes).toSorted((a, b) => a.localeCompare(b)),
     ).toEqual(
       base
         .filter((shard) => !pushExcludedShardNames.has(shard.shardName))
@@ -2871,9 +2900,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         .toSorted((a, b) => a.localeCompare(b)),
     );
     expect(
-      pullRequestCompactGroups
-        .flatMap((group) => group.includePatterns ?? [])
-        .toSorted((a, b) => a.localeCompare(b)),
+      pullRequestCompactGroups.flatMap(materializedIncludes).toSorted((a, b) => a.localeCompare(b)),
     ).toEqual(
       base
         .flatMap((shard) => shard.includePatterns ?? [])
@@ -5219,6 +5246,38 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(shardNames).toContain("agentic-gateway-methods");
     expect(shardNames).toContain("agentic-plugin-sdk");
   });
+
+  it.each(
+    (["blacksmith", "github", "hybrid"] as const).flatMap((runnerBackend) =>
+      [{ file: "test/plugins/codex-model-catalog.gateway.test.ts", buildMode: "runtime" }].map(
+        ({ file, buildMode }) => ({ file, buildMode, runnerBackend }),
+      ),
+    ),
+  )(
+    "keeps changed Gateway build selection for $file on $runnerBackend",
+    ({ file, buildMode, runnerBackend }) => {
+      const shards = createChangedNodeTestShards([file], { runnerBackend });
+      const owners = (shards ?? []).flatMap((shard) =>
+        (shard.groups ?? []).flatMap((group) =>
+          (group.includePatterns ?? [])
+            .filter((selected) => selected === file)
+            .map(() => ({ shard, group })),
+        ),
+      );
+      expect(owners).toHaveLength(1);
+      const owner = expectDefined(owners[0], "selected Gateway execution");
+      expect(owner.group.includePatterns).toEqual([file]);
+      expect(owner.group.configs.toSorted()).toEqual([
+        "test/vitest/vitest.gateway-database-workers.config.ts",
+        "test/vitest/vitest.gateway-server-isolated.config.ts",
+      ]);
+      expect(owner.group.pretestBuildMode).toBe(buildMode);
+      expect(owner.shard.planConcurrency).toBe(1);
+      if (buildMode) {
+        expect(owner.shard.pretestBuildMode).toBe(buildMode);
+      }
+    },
+  );
 
   it("keeps changed native browser tests in UI jobs and out of extension fallback", () => {
     const target = "extensions/workboard/browser/catalog.test.ts";

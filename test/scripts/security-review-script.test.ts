@@ -137,6 +137,27 @@ function evaluate(routes: Record<string, unknown> = {}, mode = "enforce", deadli
 }
 
 describe("combined security review entry point", () => {
+  it("recovers a temporary HTTP 500 without failing the review", () => {
+    const result = evaluate({
+      [`GET ${pullPath}`]: { responses: [{ httpError: 500 }, pr] },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.waits).toEqual([1_000]);
+    expect(result.combined.at(-1)).toBe("success");
+    expect(result.reviews.filter((entry) => entry.body?.state === "success")).toHaveLength(2);
+  });
+
+  it("exhausts HTTP 500 retries without publishing approval", () => {
+    const result = evaluate({ [`GET ${pullPath}`]: { httpError: 500 } });
+    expect(result.status).toBe(1);
+    expect(result.waits).toEqual([1_000, 2_000, 4_000]);
+    expect(result.requests.filter((entry) => entry.path === pullPath)).toHaveLength(4);
+    expect(result.stderr).toContain(`GitHub API GET ${pullPath} failed: 500`);
+    expect(
+      result.requests.every((entry) => entry.method === "GET" || entry.method === "WAIT"),
+    ).toBe(true);
+  });
+
   it.each([
     { name: "partial file list", initialPr: pr, initialFiles: files.slice(0, 1) },
     { name: "stale file count", initialPr: { ...pr, changed_files: 3 }, initialFiles: files },

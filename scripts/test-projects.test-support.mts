@@ -3722,7 +3722,10 @@ function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership 
   if (configTargetKind) {
     return configTargetKind;
   }
-  if (gatewayPluginTestFiles.includes(relative)) {
+  if (
+    gatewayPluginTestFiles.includes(relative) &&
+    (beforeDatabaseWorkerOwnership || !gatewayDatabaseWorkerTestFiles.includes(relative))
+  ) {
     return "gatewayMethods";
   }
   if (beforeDatabaseWorkerOwnership) {
@@ -3788,6 +3791,9 @@ function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership 
   // Otherwise a thin wrapper can move a stateful tooling test into a shared worker.
   if (isToolingIsolatedTestFile(relative)) {
     return "toolingIsolated";
+  }
+  if (isCliProcessTestFile(relative)) {
+    return "cliProcess";
   }
   if (resolveUnitFastTimerTestIncludePattern(relative)) {
     return "unitFastFakeTimers";
@@ -3883,9 +3889,6 @@ function classifyTarget(arg: string, cwd: string, beforeDatabaseWorkerOwnership 
   }
   if (isPathAtOrUnder(relative, "src/acp")) {
     return "acp";
-  }
-  if (isCliProcessTestFile(relative)) {
-    return "cliProcess";
   }
   if (isPathAtOrUnder(relative, "src/cli")) {
     return "cli";

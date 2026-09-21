@@ -95,6 +95,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/models-list.membership.integration.test.ts",
   "src/gateway/server-methods/models-list.native-lifecycle.integration.test.ts",
   "src/gateway/server-methods/models-list.worker-recovery.integration.test.ts",
+  "src/gateway/server-methods/models-manual-policy.integration.test.ts",
   "src/gateway/server-methods/native-hook-relay.test.ts",
   "src/gateway/server-methods/nodes.test.ts",
   "src/gateway/server-methods/projects.test.ts",
@@ -156,8 +157,10 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/worker-environments/provider-crabbox-runtime-preflight.test.ts",
   "src/gateway/worker-environments/provider-provisioning.cancellation.test.ts",
   "src/gateway/worker-environments/store-node-enrollment.test.ts",
+  "src/gateway/worker-environments/worker-session-tool-executor.test.ts",
   "src/gateway/worker-environments/workspace-result-ref-mutation.test.ts",
   "src/gateway/worker-environments/workspace-result-repository.test.ts",
+  "test/plugins/codex-model-catalog.gateway.test.ts",
 ];
 
 // Native Vitest subprocesses cold-import the real Gateway; keep their collection
@@ -203,6 +206,7 @@ export const gatewayMethodsIsolatedTestFiles = [
 
 // Gateway server tests that need a private module graph and the plain Vitest runner.
 export const gatewayServerIsolatedTestFiles = [
+  "src/gateway/server-worker-environment-startup.state.test.ts",
   // A failed native close permanently fences this process's metadata owner.
   "src/gateway/server-close.agent-databases.test.ts",
   "src/gateway/server.chat.canonical-publication.test.ts",
