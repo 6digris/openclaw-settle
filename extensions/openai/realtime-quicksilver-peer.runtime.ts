@@ -1,6 +1,7 @@
 // Control-plane facade; codecs, WebRTC sockets and packet clocks live in the worker.
 import { Worker } from "node:worker_threads";
 import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   resolveRuntimeWorkerArgv,
   resolveRuntimeWorkerUrl,
@@ -69,7 +70,7 @@ export class OpenAIQuicksilverAudioPeer implements OpenAIQuicksilverAudioPeerCon
     const abort = () => peer.close();
     params.signal?.addEventListener("abort", abort, { once: true });
     try {
-      await peer.ready;
+      await peer.ready.promise;
       params.signal?.throwIfAborted();
       return peer;
     } catch (error) {
@@ -91,9 +92,7 @@ export class OpenAIQuicksilverAudioPeer implements OpenAIQuicksilverAudioPeerCon
     number,
     { resolve(value: string): void; reject(error: Error): void }
   >();
-  private readonly ready: Promise<void>;
-  private resolveReady!: () => void;
-  private rejectReady!: (error: Error) => void;
+  private readonly ready = createDeferred<void>();
   private closeTimer: ReturnType<typeof setTimeout> | undefined;
 
   private constructor(
@@ -101,10 +100,6 @@ export class OpenAIQuicksilverAudioPeer implements OpenAIQuicksilverAudioPeerCon
     private readonly callbacks: OpenAIQuicksilverAudioPeerCallbacks,
     private readonly output?: RealtimeVoiceAudioOutputPort,
   ) {
-    this.ready = new Promise((resolve, reject) => {
-      this.resolveReady = resolve;
-      this.rejectReady = reject;
-    });
     worker.on("message", (message: QuicksilverAudioWorkerEvent) => {
       try {
         this.handleMessage(message);
@@ -169,7 +164,7 @@ export class OpenAIQuicksilverAudioPeer implements OpenAIQuicksilverAudioPeerCon
     }
     this.pendingAudio.clear();
     const error = new Error("GPT-Live audio worker closed");
-    this.rejectReady(error);
+    this.ready.reject(error);
     for (const request of this.requests.values()) {
       request.reject(error);
     }
@@ -204,8 +199,7 @@ export class OpenAIQuicksilverAudioPeer implements OpenAIQuicksilverAudioPeerCon
     if (this.closed || this.inputInFlight || this.pendingAudio.length === 0) {
       return;
     }
-    const audio = Buffer.alloc(this.pendingAudio.length);
-    this.pendingAudio.readInto(audio);
+    const audio = this.pendingAudio.take();
     this.inputInFlight = true;
     this.post({ type: "audio", audio }, [audio.buffer]);
   }
@@ -217,7 +211,7 @@ export class OpenAIQuicksilverAudioPeer implements OpenAIQuicksilverAudioPeerCon
     switch (message.type) {
       case "ready":
         this.started = true;
-        this.resolveReady();
+        this.ready.resolve();
         return;
       case "result":
       case "request-error": {
@@ -235,36 +229,28 @@ export class OpenAIQuicksilverAudioPeer implements OpenAIQuicksilverAudioPeerCon
         this.flushInput();
         return;
       case "audio":
-        try {
-          // A sideband clear can beat PCM already posted by the worker. Retire
-          // delivery here immediately, but always return its output credit below.
-          if (message.generation !== this.outputGeneration) {
-            return;
-          }
-          this.callbacks.onAudio(
-            Buffer.from(message.audio.buffer, message.audio.byteOffset, message.audio.byteLength),
-          );
-        } finally {
-          if (!this.closed) {
-            this.post({ type: "audio-ack" });
-          }
-        }
-        return;
       case "rtp":
-        try {
-          this.callbacks.onRtpPacket?.();
-        } finally {
-          if (!this.closed) {
-            this.post({ type: "rtp-ack" });
-          }
-        }
-        return;
       case "media-error":
         try {
-          this.callbacks.onMediaError?.(new Error(message.message));
+          if (message.type === "audio") {
+            // A clear can beat already-posted PCM; stale generations still return credit.
+            if (message.generation === this.outputGeneration) {
+              this.callbacks.onAudio(
+                Buffer.from(
+                  message.audio.buffer,
+                  message.audio.byteOffset,
+                  message.audio.byteLength,
+                ),
+              );
+            }
+          } else if (message.type === "rtp") {
+            this.callbacks.onRtpPacket?.();
+          } else {
+            this.callbacks.onMediaError?.(new Error(message.message));
+          }
         } finally {
           if (!this.closed) {
-            this.post({ type: "media-error-ack" });
+            this.post({ type: `${message.type}-ack` });
           }
         }
         return;
@@ -278,7 +264,7 @@ export class OpenAIQuicksilverAudioPeer implements OpenAIQuicksilverAudioPeerCon
       return;
     }
     const started = this.started;
-    this.rejectReady(error);
+    this.ready.reject(error);
     this.close();
     if (started) {
       this.callbacks.onError(error);
