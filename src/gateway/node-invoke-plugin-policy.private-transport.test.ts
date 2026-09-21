@@ -4,7 +4,7 @@ import type { PluginApprovalRequestPayload } from "../infra/plugin-approvals.js"
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import type { OpenClawPluginNodeInvokePolicyContext } from "../plugins/types.js";
-import { createTestApprovalManager } from "./exec-approval-manager.test-support.js";
+import { createPreparedTestApprovalManager } from "./exec-approval-manager.test-support.js";
 import {
   applyPluginNodeInvokePolicy,
   type PluginNodeInvokePrivateTransport,
@@ -17,10 +17,10 @@ import {
   createOperatorClient,
   DEMO_COMMAND,
   DEMO_PARAMS,
-  expectSinglePendingApproval,
   nodeCommandsConfig,
   setDangerousDemoCommandRegistry,
 } from "./node-invoke-plugin-policy.test-helpers.js";
+import { waitForApprovalRequested } from "./server-methods/approval-request.test-support.js";
 
 function createPrivateTransport() {
   const invoke = vi.fn<PluginNodeInvokePrivateTransport["invoke"]>(async (request) => {
@@ -39,9 +39,10 @@ describe("private node policy transport", () => {
   afterEach(resetPluginRuntimeStateForTest);
 
   it("uses the registered risk and approval policy without advertising the private capability", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
+    const { manager } = await createPreparedTestApprovalManager<PluginApprovalRequestPayload>(
+      testContext,
+      { approvalKind: "plugin" },
+    );
     const reviewer = createOperatorClient();
     const handle = vi.fn(async (policyContext: OpenClawPluginNodeInvokePolicyContext) => {
       expect(policyContext.risk).toEqual({ level: "high", family: "fixture_mutation" });
@@ -79,18 +80,35 @@ describe("private node policy transport", () => {
       onNodeCommandDispatched,
     });
 
-    const approval = await expectSinglePendingApproval(manager);
-    expect(privateTransport.invoke).not.toHaveBeenCalled();
-    expect(await manager.resolve(approval.id, "allow-once")).toBe(true);
-    await expect(result).resolves.toMatchObject({ ok: true, payload: { completed: true } });
-    expect(registration.policy.classifyRisk).toHaveBeenCalledOnce();
-    expect(handle).toHaveBeenCalledOnce();
-    expect(privateTransport.invoke).toHaveBeenCalledOnce();
-    expect(privateTransport.invoke.mock.calls[0]?.[0]).not.toHaveProperty("deadlineAtMs");
-    expect(onNodeCommandDispatched).toHaveBeenCalledOnce();
-    expect((await manager.getSnapshot(approval.id))?.consumedDecision).toBe("allow-once");
-    expect(node.commands).toEqual([]);
-    expect(invoke).not.toHaveBeenCalled();
+    // Failed assertions still retire and join the policy before fixture storage closes.
+    const completion = Promise.allSettled([result]);
+    try {
+      await waitForApprovalRequested(
+        context.broadcastToConnIds,
+        "plugin.approval.requested",
+        result,
+      );
+      const approvals = await manager.listPendingRecords();
+      expect(approvals).toHaveLength(1);
+      const approval = approvals[0]!;
+      expect(privateTransport.invoke).not.toHaveBeenCalled();
+      expect(await manager.resolve(approval.id, "allow-once")).toBe(true);
+      await expect(result).resolves.toMatchObject({ ok: true, payload: { completed: true } });
+      expect(registration.policy.classifyRisk).toHaveBeenCalledOnce();
+      expect(handle).toHaveBeenCalledOnce();
+      expect(privateTransport.invoke).toHaveBeenCalledOnce();
+      expect(privateTransport.invoke.mock.calls[0]?.[0]).not.toHaveProperty("deadlineAtMs");
+      expect(onNodeCommandDispatched).toHaveBeenCalledOnce();
+      expect((await manager.getSnapshot(approval.id))?.consumedDecision).toBe("allow-once");
+      expect(node.commands).toEqual([]);
+      expect(invoke).not.toHaveBeenCalled();
+    } finally {
+      try {
+        await manager.drain();
+      } finally {
+        await completion;
+      }
+    }
   });
 
   it.each(["missing-policy", "invalid-risk"] as const)(

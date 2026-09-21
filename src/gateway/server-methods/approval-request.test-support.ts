@@ -1,12 +1,11 @@
 import { vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import type { GatewayRequestContext, GatewayRequestHandler } from "./types.js";
 
 /** Observe the RPC event, including calls made before observation was installed. */
-export async function waitForApprovalRequested(
-  broadcast: GatewayRequestContext["broadcast"],
+export async function waitForApprovalRequested<TArgs extends unknown[], TResult>(
+  broadcast: (event: string, ...args: TArgs) => void,
   eventName: string,
-  request: ReturnType<GatewayRequestHandler>,
+  request: Promise<TResult> | void,
 ): Promise<void> {
   const mock = vi.mocked(broadcast);
   const observed = createDeferred();
