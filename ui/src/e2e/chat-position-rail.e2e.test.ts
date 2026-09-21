@@ -141,25 +141,25 @@ suite.define(() => {
             rail.locator('[aria-current="true"]').getAttribute("data-position-marker-id");
           const tabIntoCurrentPosition = async () => {
             // Layout can publish a new reader position between host-side browser calls.
-            const entry = await rail.evaluateHandle((rail) => {
+            const entry = await rail.evaluateHandle((element) => {
               let currentIds: Array<string | null> = [];
               let tabStopIds: Array<string | null> = [];
               const captureEntry = (event: KeyboardEvent) => {
                 if (event.key !== "Tab" || event.shiftKey) {
                   return;
                 }
-                currentIds = [...rail.querySelectorAll('[aria-current="true"]')].map((marker) =>
+                currentIds = [...element.querySelectorAll('[aria-current="true"]')].map((marker) =>
                   marker.getAttribute("data-position-marker-id"),
                 );
-                tabStopIds = [...rail.querySelectorAll('[tabindex="0"]')].map((marker) =>
+                tabStopIds = [...element.querySelectorAll('[tabindex="0"]')].map((marker) =>
                   marker.getAttribute("data-position-marker-id"),
                 );
               };
-              rail.ownerDocument.addEventListener("keydown", captureEntry, true);
+              element.ownerDocument.addEventListener("keydown", captureEntry, true);
               return {
                 read: () => ({ currentIds, tabStopIds }),
                 dispose: () =>
-                  rail.ownerDocument.removeEventListener("keydown", captureEntry, true),
+                  element.ownerDocument.removeEventListener("keydown", captureEntry, true),
               };
             });
             try {
