@@ -70,7 +70,8 @@ function createTalkClientAgentRuntime(params: {
   config: OpenClawConfig;
   rawSourceRef?: string;
   resolveGatewayContext?: GatewayRequestContext["resolveGatewayContext"];
-  assertCurrent?: () => void;
+  // Physical audio/control ownership is required only until this run is admitted.
+  assertAdmissionCurrent?: () => void;
   getAdditionalSystemPrompt?: () => string | undefined;
   bindOperationalRunInstance?: (instance: OperationalRunInstanceRef) => void;
 }) {
@@ -84,19 +85,24 @@ function createTalkClientAgentRuntime(params: {
       throw new Error("Talk consult requires its prepared transcript target");
     }
     const operationalRunInstance = execution.createOperationalRunInstanceRef(runParams.runId);
-    params.assertCurrent?.();
+    params.assertAdmissionCurrent?.();
     params.bindOperationalRunInstance?.(operationalRunInstance);
     const preparedRunAdmission = execution.prepareAgentRunAdmission({
       cfg: params.config,
       operationalRunInstance,
+      // Accepted work owns its execution signal and Gateway, not its audio transport.
+      // The canonical admitted-run lease separately fences close/replacement/release.
       assertSourceCurrent: () => {
-        params.assertCurrent?.();
         runParams.abortSignal?.throwIfAborted();
         if (params.resolveGatewayContext && !params.resolveGatewayContext()) {
           throw new Error("Talk consult Gateway owner is no longer active");
         }
       },
-      onAdmitted: (admitted) => bindGatewayContextResolver(admitted, params.resolveGatewayContext),
+      onAdmitted: (admitted) => {
+        params.assertAdmissionCurrent?.();
+        params.bindOperationalRunInstance?.(admitted.operationalRunInstance);
+        bindGatewayContextResolver(admitted, params.resolveGatewayContext);
+      },
       facts: {
         runId: runParams.runId,
         agentId,
@@ -263,7 +269,7 @@ export function createTalkClientAgentConsultRunner(params: {
       config: params.config,
       resolveGatewayContext,
       ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
-      assertCurrent,
+      assertAdmissionCurrent: assertCurrent,
       getAdditionalSystemPrompt,
       bindOperationalRunInstance: (instance) => {
         const identity = owner.identity;
@@ -325,7 +331,7 @@ export function createTalkClientAgentConsultRunner(params: {
               config: params.config,
               resolveGatewayContext,
               ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
-              assertCurrent,
+              assertAdmissionCurrent: assertCurrent,
               getAdditionalSystemPrompt,
             })
           : getAgentRuntime();

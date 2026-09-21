@@ -13,7 +13,11 @@ import {
   createIsolatedCodexAppServerClient,
 } from "../../../extensions/codex/test-api.js";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
-import type { PreparedAgentRunAdmission } from "../../agents/admitted-run-context.js";
+import {
+  closeAdmittedRunDelegatedAuthority,
+  prepareSystemAgentRunAdmission,
+  type PreparedAgentRunAdmission,
+} from "../../agents/admitted-run-context.js";
 import { createAgentHarnessHostCapabilities } from "../../agents/harness/host-capability.js";
 import {
   createGatewayToolCallerWrapper,
@@ -23,10 +27,16 @@ import { shouldUseInProcessGatewayTool } from "../../agents/tools/gateway.js";
 import { createNodesTool } from "../../agents/tools/nodes-tool.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { consultRealtimeVoiceAgent } from "../../talk/agent-consult-runtime.js";
+import {
+  closeClientVoiceSession,
+  createOrResumeClientVoiceSession,
+  resolveOpenClientVoiceSessionId,
+} from "../../talk/client-voice-session.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createAgentRuntimeApprovalAuthorityValidator } from "../agent-runtime-identity-token.js";
 import type { GatewayRequestContext, GatewayRequestOptions } from "../server-methods/types.js";
 import { createTalkClientAgentConsultRunner } from "./client-agent-consult.js";
+import { createTalkClientGatewayControlOwner } from "./client-gateway-control.js";
 
 type Consult = typeof consultRealtimeVoiceAgent;
 type CoreRun = typeof import("../../agents/embedded-agent.js").runEmbeddedAgent;
@@ -43,22 +53,37 @@ vi.mock("../server-methods.js", () => ({ handleGatewayRequest: mocks.dispatch })
 afterEach(() => vi.clearAllMocks());
 
 it.each([
-  "completed",
+  "logical-close",
+  "transport-replacement",
+  "logical-close-owned",
+  "transport-replacement-owned",
+  "closed-before-admission",
   "cancelled",
   "gateway-retired",
   "gateway-replaced",
   "source-revoked",
+  "execution-replaced",
 ] as const)(
-  "retains Talk's Gateway owner through native Codex and rejects tools after %s",
+  "preserves accepted native execution and fences its execution owner: %s",
   { timeout: 90_000 },
   async (mode) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const native = await createCodexNativeTestState(state.path("native"));
       const runId = "native-launch-repro";
       const controller = new AbortController();
-      let sourceCurrent = true;
+      const detachOnly =
+        mode.startsWith("logical-close") || mode.startsWith("transport-replacement");
+      let owner: ReturnType<typeof createTalkClientGatewayControlOwner> | undefined;
+      let replacement: ReturnType<typeof createTalkClientGatewayControlOwner> | undefined;
+      let createOwner: (() => ReturnType<typeof createTalkClientGatewayControlOwner>) | undefined;
       const sessionKey = "agent:main:native-launch-proof";
       const sessionId = "native-launch-proof";
+      const voiceSessionId = createOrResumeClientVoiceSession({
+        agentId: "main",
+        sessionKey,
+        origin: "client",
+        transcriptCapable: true,
+      });
       const gateway = {
         trackExecution: (run) => run(),
         getRuntimeConfig: () => ({}),
@@ -66,12 +91,13 @@ it.each([
       } as GatewayRequestContext;
       let currentGateway: GatewayRequestContext | undefined = gateway;
       const context = {
+        broadcastToConnIds: vi.fn(),
         chatAbortControllers: new Map(),
         logGateway: createSubsystemLogger("native-talk-test"),
         resolveGatewayContext: () => currentGateway,
       } as Pick<
         GatewayRequestContext,
-        "chatAbortControllers" | "logGateway" | "resolveGatewayContext"
+        "chatAbortControllers" | "logGateway" | "resolveGatewayContext" | "broadcastToConnIds"
       >;
       const operands: Array<{ run: boolean; inProcess: boolean; resolver: boolean }> = [];
       const received: string[] = [];
@@ -190,6 +216,7 @@ it.each([
       let client: Awaited<ReturnType<typeof createIsolatedCodexAppServerClient>> | undefined;
       let host: ReturnType<typeof createAgentHarnessHostCapabilities> | undefined;
       let admission: PreparedAgentRunAdmission | undefined;
+      let replacementAdmission: PreparedAgentRunAdmission | undefined;
       let bridge: ReturnType<typeof createCodexDynamicToolBridge> | undefined;
       const results: Awaited<ReturnType<NonNullable<typeof bridge>["handleToolCall"]>>[] = [];
       let completed = createDeferred<unknown>();
@@ -245,27 +272,41 @@ it.each([
           }
         });
         mocks.consult.mockImplementation(async (params) => {
-          await params.agentRuntime.runEmbeddedAgent({
-            runId,
-            sessionId,
-            abortSignal: params.abortSignal,
-            prompt: "Open fixture",
-            workspaceDir: native.cwd,
-            config: {},
-            timeoutMs: 60_000,
-            sessionTarget: {
-              agentId: "main",
+          const registration = params.onRunStarted?.({ runId, sessionId, timeoutMs: 60_000 });
+          const abortSignal = registration?.abortSignal
+            ? AbortSignal.any([
+                registration.abortSignal,
+                ...(params.abortSignal ? [params.abortSignal] : []),
+              ])
+            : params.abortSignal;
+          try {
+            await params.agentRuntime.runEmbeddedAgent({
+              runId,
               sessionId,
-              sessionKey,
-              storePath: state.path("sessions.sqlite"),
-            },
-          });
-          return { text: "done" };
+              abortSignal,
+              prompt: "Open fixture",
+              workspaceDir: native.cwd,
+              config: {},
+              timeoutMs: 60_000,
+              sessionTarget: {
+                agentId: "main",
+                sessionId,
+                sessionKey,
+                storePath: state.path("sessions.sqlite"),
+              },
+            });
+            return { text: "done" };
+          } finally {
+            registration?.cleanup?.();
+          }
         });
         mocks.run.mockImplementation(async (input) => {
           admission = input.preparedRunAdmission;
           if (!admission) {
             throw new Error("Talk did not prepare admission");
+          }
+          if (mode === "closed-before-admission") {
+            await owner!.close();
           }
           const admittedRunContext = await admission.admit("plugin-harness", "codex-native-proof");
           host = createAgentHarnessHostCapabilities({
@@ -314,11 +355,29 @@ it.each([
             { timeoutMs: 20_000 },
           );
           threadId = started.thread.id;
+          // The production control owner has accepted and admitted this consult.
+          // Retire/replace its presentation transport BEFORE the first native call.
+          if (!owner || !createOwner) {
+            throw new Error("Missing real control owner");
+          }
+          if (mode.startsWith("transport-replacement")) {
+            replacement = createOwner();
+            await replacement.adoptProvider(async () => {});
+            replacement.activate();
+          }
+          await owner.close();
+          expect(input.abortSignal?.aborted).toBe(false);
+          expect(Boolean(resolveOpenClientVoiceSessionId({ agentId: "main", sessionKey }))).toBe(
+            mode.startsWith("transport-replacement"),
+          );
+          await expect(owner.runAgentConsult({ prompt: "late admission" })).rejects.toThrow(
+            "closed",
+          );
           await nativeTurn();
-          expect(operands).toEqual([{ run: true, inProcess: true, resolver: true }]);
           expect(results[0]?.success, JSON.stringify(results[0])).toBe(true);
+          expect(operands).toEqual([{ run: true, inProcess: true, resolver: true }]);
           expect(received).toEqual(["node.list", "node.invoke"]);
-          if (mode !== "completed") {
+          if (!detachOnly) {
             if (mode === "cancelled") {
               controller.abort();
             }
@@ -329,7 +388,16 @@ it.each([
               currentGateway = { ...gateway };
             }
             if (mode === "source-revoked") {
-              sourceCurrent = false;
+              closeAdmittedRunDelegatedAuthority(admittedRunContext);
+            }
+            if (mode === "execution-replaced") {
+              replacementAdmission = prepareSystemAgentRunAdmission(
+                {},
+                runId,
+                "main",
+                "replacement-native-execution",
+              );
+              await replacementAdmission.admit("plugin-harness", "replacement-native-execution");
             }
             await nativeTurn();
           }
@@ -344,23 +412,50 @@ it.each([
             canonicalKey: sessionKey,
             storePath: state.path("sessions.sqlite"),
           },
-          getVoiceSessionId: () => "voice-proof",
+          ownerConnId: "native-control-connection",
+          getVoiceSessionId: () => voiceSessionId,
           initialItems: [],
           registerRun: vi.fn(),
           authority: { senderIsOwner: true },
         });
-        if (mode === "completed") {
-          await runner.runPrompt({ prompt: "Open fixture" });
-        } else {
-          await runner.runArgs({ question: "Open fixture" }, controller.signal, () => {
-            if (!sourceCurrent) {
-              throw new Error("Source caller revoked");
-            }
+        createOwner = () =>
+          createTalkClientGatewayControlOwner({
+            voiceSessionId,
+            sessionTarget: {
+              agentId: "main",
+              sessionKey,
+              canonicalKey: sessionKey,
+              storePath: state.path("sessions.sqlite"),
+            },
+            connId: "native-control-connection",
+            context,
+            runToolAgentConsult: runner.runArgs,
+            runAgentConsult: runner.runOwnedArgs,
+            appendTranscript: async () => {},
+            flushTranscript: async () => {},
+            closeLogicalSession: () =>
+              closeClientVoiceSession({ agentId: "main", sessionKey, voiceSessionId, config: {} }),
           });
+        owner = createOwner();
+        await owner.adoptProvider(async () => {});
+        owner.activate();
+        if (mode.endsWith("-owned")) {
+          owner.runAgentConsult.adoptCompletionClaims?.();
         }
-        // Talk closes admission on return. The actual native process retains the
-        // tool declaration, but cannot borrow authority for a second request.
-        if (mode === "completed") {
+        const accepted = owner.runAgentConsult({
+          prompt: "Open fixture",
+          signal: controller.signal,
+        });
+        if (mode === "closed-before-admission") {
+          await expect(accepted).rejects.toThrow("closed");
+          expect(results).toEqual([]);
+          expect(received).toEqual([]);
+          return;
+        }
+        await accepted;
+        runner.runOwnedArgs.claimFailureAppend?.();
+        // Completion closes execution authority even though native declarations remain.
+        if (detachOnly) {
           await nativeTurn();
         }
         expect(results[1]?.success).toBe(false);
@@ -368,8 +463,11 @@ it.each([
         expect(received).toEqual(["node.list", "node.invoke"]);
         currentGateway = undefined;
       } finally {
+        await replacement?.close();
+        await owner?.close();
         host?.close();
         admission?.close();
+        replacementAdmission?.close();
         if (client) {
           expect(await client.closeAndWait()).toMatchObject({ exited: true });
         }

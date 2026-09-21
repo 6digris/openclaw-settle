@@ -15,13 +15,17 @@ import {
 } from "../../auto-reply/reply-payload.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { resolveSendableOutboundReplyParts } from "../../infra/outbound/reply-payload-parts.js";
-import { getPluginRuntimeGatewayRequestScope } from "./gateway-request-scope.js";
+import {
+  bindGatewayContextResolver,
+  getPluginRuntimeGatewayRequestScope,
+} from "./gateway-request-scope.js";
 import type { PluginRuntime } from "./types.js";
 
 export const runPluginEmbeddedAgent: PluginRuntime["agent"]["runEmbeddedAgent"] = async (
   params,
 ) => {
-  const pluginId = getPluginRuntimeGatewayRequestScope()?.pluginId;
+  const scope = getPluginRuntimeGatewayRequestScope();
+  const pluginId = scope?.pluginId;
   if (!pluginId) {
     throw new Error("Plugin embedded-agent execution requires an active plugin runtime scope.");
   }
@@ -38,11 +42,30 @@ export const runPluginEmbeddedAgent: PluginRuntime["agent"]["runEmbeddedAgent"] 
     throw new Error("Plugin embedded-agent execution cannot supply host run authority.");
   }
   params.abortSignal?.throwIfAborted();
+  // Capture only the explicitly scoped host binding. Standalone invocations must
+  // not borrow a process-global or later callback's Gateway.
+  const sourceResolver = scope?.resolveGatewayContext;
+  const gateway = sourceResolver?.();
+  const resolveGatewayContext = sourceResolver
+    ? () => (sourceResolver() === gateway ? gateway : undefined)
+    : undefined;
+  if (resolveGatewayContext) {
+    bindGatewayContextResolver(resolveGatewayContext, sourceResolver);
+  }
   const decisionOccurrenceId = randomUUID();
   let admittedRunContext: AdmittedRunContext | undefined;
   const config = params.config ?? getRuntimeConfig();
   const preparedRunAdmission = prepareAgentRunAdmission({
     cfg: config,
+    ...(resolveGatewayContext
+      ? {
+          assertSourceCurrent: () => {
+            if (!resolveGatewayContext()) {
+              throw new Error("Plugin embedded-agent Gateway owner is no longer active");
+            }
+          },
+        }
+      : {}),
     operationalRunInstance: createOperationalRunInstanceRef(params.runId),
     facts: {
       runId: params.runId,
@@ -55,6 +78,7 @@ export const runPluginEmbeddedAgent: PluginRuntime["agent"]["runEmbeddedAgent"] 
       },
     },
     onAdmitted: (context) => {
+      bindGatewayContextResolver(context, resolveGatewayContext);
       admittedRunContext = context;
       const token = context.executionIdentityToken;
       recordRuntimeActionDecision({
