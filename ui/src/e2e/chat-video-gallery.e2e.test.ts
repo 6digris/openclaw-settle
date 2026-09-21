@@ -122,7 +122,7 @@ suite.define(() => {
             .poll(() => player.evaluate((media: HTMLVideoElement) => media.readyState))
             .toBeGreaterThanOrEqual(2);
           await expect.poll(async () => (await counter.textContent())?.trim()).toBe("1 / 3");
-          await page.screenshot({ path: `${dir}/expanded-first.png` });
+          await page.screenshot({ path: `${dir}/expanded-first.png`, animations: "disabled" });
           await page.keyboard.press("ArrowRight");
           await expect.poll(() => player.getAttribute("src")).toContain("after.mp4");
           await page.keyboard.press("ArrowRight");
@@ -131,11 +131,10 @@ suite.define(() => {
           expect((await counter.textContent())?.trim()).toBe("3 / 3");
           await page.keyboard.press("ArrowLeft");
           await expect.poll(() => player.getAttribute("src")).toContain("after.mp4");
-          await page.screenshot({ path: `${dir}/expanded-next.png` });
-
           await expect
             .poll(() => player.evaluate((media: HTMLVideoElement) => media.readyState))
             .toBeGreaterThanOrEqual(2);
+          await page.screenshot({ path: `${dir}/expanded-next.png`, animations: "disabled" });
           const controls = await context.newCDPSession(page);
           const clickNative = async (name: string, fraction = 0.5) => {
             await player.hover();

@@ -22,6 +22,10 @@ export class ImageLightboxGalleryController {
   current: ImageLightboxItem | undefined;
   busy = false;
   failed = false;
+  videoStatus: "preparing" | "ready" | "unavailable" = "preparing";
+  videoRetryable = true;
+  private video?: HTMLVideoElement;
+  private disconnectVideo?: () => void;
   private gallery: ImageLightboxGallery | undefined;
   private generation = 0;
   private readonly images = new Map<number, Promise<ImageLightboxItem | null>>();
@@ -73,6 +77,7 @@ export class ImageLightboxGalleryController {
   }
 
   dispose() {
+    this.stopPlayer();
     this.generation += 1;
     for (const image of this.images.values()) {
       void image.then((item) => item?.release?.());
@@ -105,12 +110,61 @@ export class ImageLightboxGalleryController {
     this.busy = false;
     this.failed = !item;
     if (item) {
+      this.stopPlayer();
       this.index = next;
       this.current = item;
       this.preloadNeighbors();
     }
     this.notify();
     return item !== null;
+  }
+
+  connectPlayer(video?: HTMLVideoElement, retryFailed = false) {
+    const item = this.current;
+    if (!video || item?.kind !== "video" || this.video === video) {
+      return;
+    }
+    this.stopPlayer();
+    this.video = video;
+    this.videoStatus = "preparing";
+    if (item.connectVideo) {
+      this.disconnectVideo = item.connectVideo(
+        video,
+        (status, retryable = true) => {
+          if (this.video !== video || this.current !== item) {
+            return;
+          }
+          this.videoStatus = status === "ready" && video.readyState < 2 ? "preparing" : status;
+          this.videoRetryable = retryable;
+          this.notify();
+        },
+        retryFailed,
+      );
+    } else {
+      video.src = item.src;
+    }
+  }
+
+  videoReady() {
+    this.videoStatus = "ready";
+    this.notify();
+  }
+
+  stopPlayer() {
+    this.disconnectVideo?.();
+    this.disconnectVideo = undefined;
+    if (this.video?.hasAttribute("src")) {
+      this.video.pause();
+      this.video.removeAttribute("src");
+      this.video.load();
+    }
+    this.video = undefined;
+  }
+
+  retryVideo() {
+    const video = this.video;
+    this.stopPlayer();
+    this.connectPlayer(video, true);
   }
 
   private load(index: number, retryFailed = false): Promise<ImageLightboxItem | null> {

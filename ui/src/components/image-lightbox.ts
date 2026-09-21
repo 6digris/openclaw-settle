@@ -10,16 +10,32 @@ import {
   exitLightboxVideoFullscreen,
   trapLightboxTabFocus,
 } from "./image-lightbox-gallery.ts";
-import { ImageLightboxOriginal } from "./image-lightbox-original.ts";
 import { imageLightboxStyles } from "./image-lightbox.styles.ts";
 import type { ImageLightboxGallery, ImageLightboxItem } from "./image-lightbox.types.ts";
 import "./modal-dialog.ts";
+
+const SAFE_TOP_LEVEL_IMAGE_BLOB_TYPES = new Set([
+  "image/avif",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
 
 const MAX_SCALE = 4;
 const DOUBLE_TAP_SCALE = 2.5;
 const SWIPE_THRESHOLD_PX = 56;
 const SWIPE_AXIS_THRESHOLD_PX = 8;
 const SLIDE_DURATION_MS = 180;
+
+function mimeTypeEssence(value: string): string {
+  return value.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+}
+
+function dataUrlMimeType(source: string): string | undefined {
+  const mediaType = /^data:([^,]*)/i.exec(source)?.[1];
+  return mediaType === undefined ? undefined : mimeTypeEssence(mediaType);
+}
 
 class OpenClawImageLightbox extends OpenClawLitElement {
   @property({ attribute: false }) connectVideo?: ImageLightboxItem["connectVideo"];
@@ -36,14 +52,12 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   @query(".video") private video?: HTMLVideoElement;
   @query(".image") private image?: HTMLImageElement;
   @queryAll(".action, video[controls]") private focusables!: NodeListOf<HTMLElement>;
-  private readonly original = new ImageLightboxOriginal(() => this.requestUpdate());
+  @state() private openOriginalUrl = "";
+  @state() private resolvingOriginal = false;
+  private originalBlobUrl = "";
+  private originalUrlRequest = 0;
   @state() private scale = 1;
   @state() private imageReady = false;
-
-  @state() private videoStatus: "preparing" | "ready" | "unavailable" = "preparing";
-  @state() private videoRetryable = true;
-  private disconnectVideo?: () => void;
-  private connectedVideoItem?: ImageLightboxItem;
 
   private panzoom?: PanzoomObject;
   private panzoomImage?: HTMLImageElement;
@@ -103,7 +117,6 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   }
 
   override disconnectedCallback() {
-    this.stopVideo();
     this.galleryController.dispose();
     this.cancelSwipe();
     this.touchPointers.clear();
@@ -111,12 +124,12 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     this.motionQuery?.removeEventListener("change", this.handleMotionPreferenceChange);
     this.motionQuery = undefined;
     this.destroyPanzoom();
-    this.original.dispose();
+    this.originalUrlRequest += 1;
+    this.revokeOriginalBlobUrl();
     super.disconnectedCallback();
   }
 
   private resetGallery() {
-    this.stopVideo();
     this.galleryController.reset(this.gallery, {
       kind: this.mediaKind,
       connectVideo: this.connectVideo,
@@ -129,20 +142,24 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     });
   }
 
+  private galleryChanged(changed: PropertyValues) {
+    return [
+      "src",
+      "originalSrc",
+      "gallery",
+      "loadFullResolution",
+      "imageWidth",
+      "imageHeight",
+      "connectVideo",
+      "mediaKind",
+    ].some((key) => changed.has(key));
+  }
+
   protected override willUpdate(changed: PropertyValues) {
     if (!this.isConnected) {
       return;
     }
-    if (
-      changed.has("src") ||
-      changed.has("originalSrc") ||
-      changed.has("gallery") ||
-      changed.has("loadFullResolution") ||
-      changed.has("imageWidth") ||
-      changed.has("imageHeight") ||
-      changed.has("connectVideo") ||
-      changed.has("mediaKind")
-    ) {
+    if (this.galleryChanged(changed)) {
       this.cancelSwipe();
       this.resetGallery();
     }
@@ -153,22 +170,14 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       return;
     }
     const selectionChanged =
-      changed.has("src") ||
-      changed.has("originalSrc") ||
-      changed.has("gallery") ||
-      changed.has("loadFullResolution") ||
-      changed.has("imageWidth") ||
-      changed.has("imageHeight") ||
-      changed.has("connectVideo") ||
-      changed.has("mediaKind") ||
-      this.displayedIndex !== this.galleryController.index;
+      this.galleryChanged(changed) || this.displayedIndex !== this.galleryController.index;
     if (selectionChanged) {
       this.displayedIndex = this.galleryController.index;
       this.destroyPanzoom();
       this.scale = 1;
     }
-    this.syncVideo();
-    const source = this.currentImage?.src ?? this.src;
+    this.galleryController.connectPlayer(this.video);
+    const source = this.video?.getAttribute("src") ?? this.currentImage?.src ?? this.src;
     if (selectionChanged || this.displayedSource !== source) {
       this.displayedSource = source;
       void this.resolveOriginalUrl();
@@ -209,13 +218,13 @@ class OpenClawImageLightbox extends OpenClawLitElement {
             <strong class="title">${title}</strong>
             <div class="actions">
               ${
-                this.original.url || (this.hasGallery && this.original.busy)
+                this.openOriginalUrl || (this.hasGallery && this.resolvingOriginal)
                   ? html`
                       <a
                         class="action open-original"
-                        href=${this.original.url || nothing}
-                        aria-disabled=${!this.original.url}
-                        tabindex=${this.original.url ? 0 : -1}
+                        href=${this.openOriginalUrl || nothing}
+                        aria-disabled=${!this.openOriginalUrl}
+                        tabindex=${this.openOriginalUrl ? 0 : -1}
                         target="_blank"
                         rel="noreferrer"
                         aria-label=${t("chat.imageLightbox.openOriginal")}
@@ -253,10 +262,11 @@ class OpenClawImageLightbox extends OpenClawLitElement {
               this.mediaKind === "video"
                 ? html`<video
                     class="video"
-                    @loadeddata=${this.handleVideoReady}
-                    @playing=${this.handleVideoReady}
+                    @loadeddata=${() => this.galleryController.videoReady()}
+                    @playing=${() => this.galleryController.videoReady()}
                     @error=${() => {
-                      this.videoStatus = "unavailable";
+                      this.galleryController.videoStatus = "unavailable";
+                      this.requestUpdate();
                     }}
                     aria-label=${title}
                     controls
@@ -313,10 +323,10 @@ class OpenClawImageLightbox extends OpenClawLitElement {
               : nothing
           }
           ${
-            this.mediaKind === "video" && this.videoStatus !== "ready"
+            this.mediaKind === "video" && this.galleryController.videoStatus !== "ready"
               ? html`<p class="gallery-error" role="status">
-                  ${this.videoStatus === "preparing" ? t("chat.mediaPlayer.preparing") : t("chat.attachments.previewUnavailable")}
-                  ${this.videoStatus === "unavailable" && this.videoRetryable ? html`<button class="action" @click=${this.retryVideo}>${t("common.retry")}</button>` : nothing}
+                  ${this.galleryController.videoStatus === "preparing" ? t("chat.mediaPlayer.preparing") : t("chat.attachments.previewUnavailable")}
+                  ${this.galleryController.videoStatus === "unavailable" && this.galleryController.videoRetryable ? html`<button class="action" @click=${() => this.galleryController.retryVideo()}>${t("common.retry")}</button>` : nothing}
                 </p>`
               : nothing
           }
@@ -357,53 +367,6 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       </openclaw-modal-dialog>
     `;
   }
-
-  private handleVideoReady = () => {
-    this.videoStatus = "ready";
-  };
-
-  private stopVideo() {
-    this.disconnectVideo?.();
-    this.disconnectVideo = undefined;
-    this.connectedVideoItem = undefined;
-    const video = this.video;
-    if (video?.hasAttribute("src")) {
-      video.pause();
-      video.removeAttribute("src");
-      video.load();
-    }
-  }
-
-  private syncVideo(retryFailed = false) {
-    const video = this.video;
-    const item = this.galleryController.current;
-    if (!video || !item || item.kind !== "video" || this.connectedVideoItem === item) {
-      return;
-    }
-    this.stopVideo();
-    this.connectedVideoItem = item;
-    this.videoStatus = "preparing";
-    if (item.connectVideo) {
-      this.disconnectVideo = item.connectVideo(
-        video,
-        (status, retryable = true) => {
-          if (this.isConnected && this.connectedVideoItem === item) {
-            this.videoRetryable = retryable;
-            this.videoStatus = status === "ready" && video.readyState < 2 ? "preparing" : status;
-            void this.resolveOriginalUrl();
-          }
-        },
-        retryFailed,
-      );
-    } else {
-      video.src = item.src;
-    }
-  }
-
-  private retryVideo = () => {
-    this.stopVideo();
-    this.syncVideo(true);
-  };
 
   private handleImageLoad = (event: Event) => {
     const image = event.currentTarget;
@@ -653,17 +616,70 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   private zoomOut = () => this.panzoom?.zoomOut();
   private resetZoom = () => this.panzoom?.reset({ animate: false });
 
-  private resolveOriginalUrl() {
+  private revokeOriginalBlobUrl() {
+    if (!this.originalBlobUrl) {
+      return;
+    }
+    URL.revokeObjectURL(this.originalBlobUrl);
+    this.originalBlobUrl = "";
+  }
+
+  private async resolveOriginalUrl() {
+    const request = ++this.originalUrlRequest;
+    this.revokeOriginalBlobUrl();
+    this.resolvingOriginal = false;
+    if (this.currentImage?.loadFullResolution) {
+      this.openOriginalUrl = "";
+      return;
+    }
     const current = this.currentImage;
-    return this.original.resolve(
-      current?.loadFullResolution
-        ? ""
-        : this.mediaKind === "video"
-          ? current?.connectVideo
-            ? (this.video?.getAttribute("src") ?? "")
-            : current?.originalSrc || current?.src || this.originalSrc || this.src
-          : current?.originalSrc || current?.src || this.originalSrc || this.src,
-    );
+    const source = (
+      current?.connectVideo
+        ? (this.video?.getAttribute("src") ?? "")
+        : current?.originalSrc || current?.src || this.originalSrc || this.src
+    ).trim();
+    if (!source) {
+      this.openOriginalUrl = "";
+      return;
+    }
+    const sourcePrefix = source.slice(0, 5).toLowerCase();
+    const isDataUrl = sourcePrefix === "data:";
+    const isBlobUrl = sourcePrefix === "blob:";
+    if (!isDataUrl && !isBlobUrl) {
+      this.openOriginalUrl = source;
+      return;
+    }
+    this.openOriginalUrl = "";
+    const sourceType = isDataUrl ? dataUrlMimeType(source) : undefined;
+    // Reject active data formats before fetching. Incoming blob URLs still need
+    // their fetched MIME checked because top-level blobs inherit the app origin.
+    if (isDataUrl && (!sourceType || !SAFE_TOP_LEVEL_IMAGE_BLOB_TYPES.has(sourceType))) {
+      return;
+    }
+    this.resolvingOriginal = true;
+    try {
+      const response = await fetch(source);
+      const blob = await response.blob();
+      if (
+        !this.isConnected ||
+        request !== this.originalUrlRequest ||
+        !SAFE_TOP_LEVEL_IMAGE_BLOB_TYPES.has(mimeTypeEssence(blob.type))
+      ) {
+        return;
+      }
+      if (isBlobUrl) {
+        this.openOriginalUrl = source;
+        return;
+      }
+      this.originalBlobUrl = URL.createObjectURL(blob);
+      this.openOriginalUrl = this.originalBlobUrl;
+    } catch {
+      // The image remains viewable inline; omit an unusable original-link action.
+    } finally {
+      if (request === this.originalUrlRequest) {
+        this.resolvingOriginal = false;
+      }
+    }
   }
 
   private handleKeydown = (event: KeyboardEvent) => {
@@ -706,7 +722,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     if (event?.type === "modal-cancel" && exitLightboxVideoFullscreen(this.video, event)) {
       return;
     }
-    this.stopVideo();
+    this.galleryController.stopPlayer();
     this.dispatchEvent(
       new CustomEvent("image-lightbox-close", {
         bubbles: true,

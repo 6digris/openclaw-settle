@@ -2,7 +2,6 @@
 import { render, nothing } from "lit";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
-import { resolveAttachmentSource } from "./chat-attachment-source.ts";
 import { renderAssistantAttachments } from "./chat-message-attachments.ts";
 import { releaseChatMediaResourceSubscriber, type AttachmentItem } from "./chat-message-media.ts";
 
@@ -169,10 +168,8 @@ it("explicit retry clears a cached recoverable neighbor failure through its sour
   const background = vi.fn();
   try {
     const options = { resolveArtifactDownload: resolve, onRequestUpdate: background };
-    resolveAttachmentSource(next.attachment, options);
-    await vi.waitFor(() =>
-      expect(resolveAttachmentSource(next.attachment, options).status).toBe("unavailable"),
-    );
+    renderAssistantAttachments([next], options);
+    await vi.waitFor(() => expect(background).toHaveBeenCalled());
     const item = await opened.gallery!.items[1]!();
     const media = document.createElement("video");
     const notify = vi.fn();
