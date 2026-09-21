@@ -20,8 +20,8 @@ import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import { VERSION } from "../../version.js";
 import { installGatewayRunRuntimeHooks } from "./runtime-hooks.js";
 
-type GatewayLoopParams = import("./run.option-collisions.test-harness.js").GatewayLoopParams;
-type GatewayLoopStart = import("./run.option-collisions.test-harness.js").GatewayLoopStart;
+type GatewayLoopParams = Parameters<typeof runGatewayLoop>[0];
+type GatewayLoopStart = GatewayLoopParams["start"];
 
 const {
   beforeRun,

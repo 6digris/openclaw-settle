@@ -33,8 +33,8 @@ export const isTerminalInteractive = vi.fn(() => true);
 export const offerInvalidConfigRecovery = vi.fn(async () => ({ status: "declined" as const }));
 export const parkCurrentLaunchAgentForMaintenance = vi.fn(async () => false);
 export const ensureDevGatewayConfig = vi.fn(async (_opts?: unknown) => {});
-export type GatewayLoopStart = (params?: { startupStartedAt?: number }) => Promise<unknown>;
-export type GatewayLoopParams = {
+type GatewayLoopStart = (params?: { startupStartedAt?: number }) => Promise<unknown>;
+type GatewayLoopParams = {
   start: GatewayLoopStart;
   completeBoot?: (completion: unknown) => void;
   ownsProcessLifecycle?: boolean;
