@@ -7,6 +7,7 @@ import {
   loadSessionEntry,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import type { ModelDefinitionConfig } from "../../config/types.models.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../../state/user-profiles.js";
@@ -48,7 +49,14 @@ function createFixture(
       providers: {
         example: {
           baseUrl: "https://example.invalid",
-          models: catalog.map(({ id, name }) => ({ id, name })),
+          models: catalog.map<ModelDefinitionConfig>(({ id, name }) => ({
+            id,
+            name,
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            maxTokens: 4096,
+          })),
         },
       },
     },
