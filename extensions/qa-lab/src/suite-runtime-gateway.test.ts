@@ -283,6 +283,68 @@ describe("qa suite gateway helpers", () => {
     ]);
   });
 
+  it("retries healthy gateway responses until their guard releases successfully", async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const released = Promise.withResolvers<void>();
+    fetchWithSsrFGuardMock
+      .mockResolvedValueOnce({
+        response: new Response(
+          new ReadableStream<Uint8Array>({
+            cancel() {
+              events.push("first:cancel");
+            },
+          }),
+        ),
+        release: async () => {
+          events.push("first:release");
+          throw new Error("release failed");
+        },
+      })
+      .mockResolvedValueOnce({
+        response: new Response(
+          new ReadableStream<Uint8Array>({
+            cancel() {
+              events.push("second:cancel");
+            },
+          }),
+        ),
+        release: async () => {
+          events.push("second:release");
+          await released.promise;
+        },
+      });
+    let ready = false;
+    const readiness = waitForGatewayHealthy(
+      { gateway: { baseUrl: "http://127.0.0.1:43123" } } as never,
+      1_000,
+    ).then(() => {
+      ready = true;
+    });
+
+    const settled = readiness.catch(() => undefined);
+
+    try {
+      await vi.advanceTimersByTimeAsync(249);
+      expect(events).toEqual(["first:cancel", "first:release"]);
+      expect(fetchWithSsrFGuardMock).toHaveBeenCalledOnce();
+      expect(ready).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(events).toEqual(["first:cancel", "first:release", "second:cancel", "second:release"]);
+      expect(fetchWithSsrFGuardMock).toHaveBeenCalledTimes(2);
+      expect(ready).toBe(false);
+
+      released.resolve();
+      await expect(readiness).resolves.toBeUndefined();
+      expect(ready).toBe(true);
+    } finally {
+      released.resolve();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await settled;
+    }
+  });
+
   it("bounds a hung gateway health request by the remaining readiness deadline", async () => {
     vi.useFakeTimers();
     fetchWithSsrFGuardMock.mockImplementation(
