@@ -427,6 +427,8 @@ export class ChatPane extends ChatPaneLayoutRender {
       },
       onDismissProgressCard,
       gatewayQuestionPrompts,
+      asyncQuestionStorage:
+        !catalogKey && !suggestionViewer ? this.chatState.durableComposerScope : null,
       ...createChatQuestionActions({
         state,
         questionState: this.questionPromptState,

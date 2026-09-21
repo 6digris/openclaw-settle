@@ -1,16 +1,17 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { SESSION_READ_SCOPE } from "../gateway/operator-scopes.js";
 import { isIncognitoSessionKey } from "./incognito-session-key.js";
 
 export type SessionMutationOperatorScope = "operator.write" | "operator.admin";
 
 /** Shared static read floors consumed by Gateway descriptors and browser admission. */
 export const SESSION_READ_METHOD_SCOPES = {
-  "models.list": "operator.sessions.read",
-  "chat.startup": "operator.sessions.read",
-  "chat.metadata": "operator.sessions.read",
+  "models.list": SESSION_READ_SCOPE,
+  "chat.startup": SESSION_READ_SCOPE,
+  "chat.metadata": SESSION_READ_SCOPE,
 } as const;
 
-const sessionReadMethodScopes: ReadonlyMap<string, "operator.sessions.read"> = new Map(
+const sessionReadMethodScopes: ReadonlyMap<string, typeof SESSION_READ_SCOPE> = new Map(
   Object.entries(SESSION_READ_METHOD_SCOPES),
 );
 
