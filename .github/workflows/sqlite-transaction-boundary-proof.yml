@@ -38,15 +38,15 @@ jobs:
       MAIN_SHA: a7c27c04a3d6e797b8974ad6ee22724724918e8a
       COMMON_OWNER_SHA: 8dae34392c93066d965ada4a6e99f681eac7e4e7
       COMMON_OWNER_TREE: 06859a897518aafb3bc68a1dd7f4d24786a76e17
-      PREVIOUS_CARRIER_SHA: 5889eadd38e98d3d2640969a793b266a56115e39
-      PREVIOUS_CARRIER_TREE: 719c7f0127172d54751d4a3b7b6e97315deaeaad
+      PREVIOUS_CARRIER_SHA: 8a7b543c3a7ce59fe13535261b981f599dee9e16
+      PREVIOUS_CARRIER_TREE: 1a36d694f0a2100b7cc8f67daf4d07a77857ce61
       CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
       WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 4
+          fetch-depth: 5
           persist-credentials: false
       - name: Bind the carrier, final product and reviewed composition
         run: |
@@ -54,7 +54,8 @@ jobs:
           [[ "$CARRIER_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
-          test "$(git show -s --format=%P HEAD)" = "$PREVIOUS_CARRIER_SHA $CANDIDATE_SHA"
+          test "$(git show -s --format=%P HEAD)" = "$PREVIOUS_CARRIER_SHA"
+          test "$(git show -s --format=%P "$PREVIOUS_CARRIER_SHA")" = "5889eadd38e98d3d2640969a793b266a56115e39 $CANDIDATE_SHA"
           test "$(git rev-parse "$PREVIOUS_CARRIER_SHA^{tree}")" = "$PREVIOUS_CARRIER_TREE"
           test "$(git show -s --format=%P "$CANDIDATE_SHA")" = "$CANDIDATE_PARENT_SHA $MAIN_SHA"
           test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
@@ -260,28 +261,54 @@ jobs:
             src/state/openclaw-state-read-worker.test.ts
             test/scripts/check-sqlite-transaction-boundary.test.ts
             test/scripts/eager-import-closure.test.ts
-            src/gateway/worker-environments/workspace-actual-manifest.test.ts
             src/infra/update-candidate-plugin-tree.test.ts
           )
+          gateway_test=src/gateway/worker-environments/workspace-actual-manifest.test.ts
           export TEST_STARTED_MS="$(date +%s%3N)"
+          export OWNER_STARTED_MS="$TEST_STARTED_MS"
           node scripts/run-vitest.mjs "${tests[@]}" --reporter=default --reporter=json \
-            --outputFile.json="$RUNNER_TEMP/sqlite-owner-tests.json"
-          export TEST_FINISHED_MS="$(date +%s%3N)"
-          node --input-type=module - "${tests[@]}" <<'NODE'
-          import assert from 'node:assert/strict'; import fs from 'node:fs'; import path from 'node:path';
-          const r=JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/sqlite-owner-tests.json`));
-          assert.equal(r.success,true); assert(r.numPassedTests>0);
-          for(const key of ['numFailedTests','numPendingTests','numTodoTests','numFailedTestSuites']) assert.equal(r[key],0);
-          const files=r.testResults.map(f=>path.relative(process.cwd(),f.name));
-          assert.equal(files.length,20); assert.equal(new Set(files).size,20);
-          assert.deepEqual(files.toSorted(),process.argv.slice(2).toSorted());
-          const assertions=r.testResults.flatMap(f=>f.assertionResults); assert(assertions.length>0);
-          assert(assertions.every(a=>a.status==='passed'));
-          const receipt={source:process.env.CANDIDATE_SHA,files,passed:r.numPassedTests,skipped:0,
-            commandWallMs:Number(process.env.TEST_FINISHED_MS)-Number(process.env.TEST_STARTED_MS),
-            assertions:r.testResults.map(f=>({file:path.relative(process.cwd(),f.name),reportedDurationMs:f.endTime-f.startTime,tests:f.assertionResults.map(a=>({title:a.fullName,status:a.status,durationMs:a.duration??null}))}))};
+            --outputFile.json="$RUNNER_TEMP/sqlite-boundary-proof/owner-tests.json"
+          export OWNER_FINISHED_MS="$(date +%s%3N)"
+          # Gateway's inline project leaves require their own native JSON invocation.
+          # Keep its actual report separate; only the proof inventory is combined below.
+          export GATEWAY_STARTED_MS="$(date +%s%3N)"
+          node scripts/run-vitest.mjs "$gateway_test" --reporter=default --reporter=json \
+            --outputFile.json="$RUNNER_TEMP/sqlite-boundary-proof/gateway-tests.json"
+          export GATEWAY_FINISHED_MS="$(date +%s%3N)"
+          export TEST_FINISHED_MS="$GATEWAY_FINISHED_MS"
+          node --input-type=module - "${tests[@]}" "$gateway_test" <<'NODE'
+          import assert from 'node:assert/strict'; import fs from 'node:fs'; import path from 'node:path'; import {createHash} from 'node:crypto';
+          const expected=process.argv.slice(2);assert.equal(expected.length,20);assert.equal(new Set(expected).size,20);
+          const groups=[
+            {name:'owner',expected:expected.slice(0,-1),start:Number(process.env.OWNER_STARTED_MS),end:Number(process.env.OWNER_FINISHED_MS)},
+            {name:'gateway',expected:expected.slice(-1),start:Number(process.env.GATEWAY_STARTED_MS),end:Number(process.env.GATEWAY_FINISHED_MS)},
+          ];
+          const commands=[],modules=[];
+          for(const group of groups) {
+            const report=`${process.env.RUNNER_TEMP}/sqlite-boundary-proof/${group.name}-tests.json`;
+            const bytes=fs.readFileSync(report),r=JSON.parse(bytes);
+            assert.equal(r.success,true);assert(r.numTotalTests>0);assert.equal(r.numPassedTests,r.numTotalTests);
+            for(const key of ['numFailedTests','numPendingTests','numTodoTests','numFailedTestSuites']) assert.equal(r[key],0);
+            const files=r.testResults.map(f=>path.relative(process.cwd(),f.name));
+            assert.equal(files.length,group.expected.length);assert.equal(new Set(files).size,files.length);
+            assert.deepEqual(files.toSorted(),group.expected.toSorted());
+            const assertions=r.testResults.flatMap(f=>f.assertionResults);assert.equal(assertions.length,r.numTotalTests);
+            assert(r.testResults.every(f=>f.assertionResults.length>0));assert(assertions.every(a=>a.status==='passed'));
+            assert(Number.isFinite(group.start)&&Number.isFinite(group.end)&&group.end>=group.start);
+            commands.push({files,command:['node','scripts/run-vitest.mjs',...group.expected,'--reporter=default','--reporter=json',`--outputFile.json=${report}`],
+              startedMs:group.start,finishedMs:group.end,commandWallMs:group.end-group.start,passed:r.numPassedTests,skipped:0,
+              nativeReport:path.basename(report),nativeReportSha256:createHash('sha256').update(bytes).digest('hex')});
+            modules.push(...r.testResults);
+          }
+          const files=modules.map(f=>path.relative(process.cwd(),f.name));
+          assert.equal(files.length,20);assert.equal(new Set(files).size,20);assert.deepEqual(files.toSorted(),expected.toSorted());
+          const started=Number(process.env.TEST_STARTED_MS),finished=Number(process.env.TEST_FINISHED_MS);
+          assert.equal(started,groups[0].start);assert.equal(finished,groups[1].end);assert(groups[1].start>=groups[0].end);
+          const receipt={source:process.env.CANDIDATE_SHA,files,passed:commands.reduce((sum,c)=>sum+c.passed,0),skipped:0,
+            commands,combinedCommandSpanMs:finished-started,
+            assertions:modules.map(f=>({file:path.relative(process.cwd(),f.name),reportedDurationMs:f.endTime-f.startTime,tests:f.assertionResults.map(a=>({title:a.fullName,status:a.status,durationMs:a.duration??null}))}))};
           fs.writeFileSync(`${process.env.RUNNER_TEMP}/sqlite-boundary-proof/tests.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
-          console.log(JSON.stringify({source:receipt.source,files,passed:receipt.passed,skipped:0}));
+          console.log(JSON.stringify({source:receipt.source,files,passed:receipt.passed,skipped:0,commands:receipt.commands,combinedCommandSpanMs:receipt.combinedCommandSpanMs}));
           NODE
           pnpm run lint:kysely
           pnpm run lint:tmp:sqlite-transaction-boundary
