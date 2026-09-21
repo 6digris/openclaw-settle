@@ -24,7 +24,7 @@ export async function runAgentHarnessToolInvocation<TResult>(params: {
   assertCurrent?: () => void;
   beforeExecute?: () => void | Promise<void>;
   validateArguments?: (args: unknown) => void | Promise<void>;
-  snapshotResult?: (result: AgentToolResult<unknown>) => AgentToolResult<unknown>;
+  snapshotResult?: (result: AgentToolResult<unknown>) => unknown;
   applyMiddleware: (event: AgentToolResultMiddlewareEvent) => Promise<AgentToolResult<unknown>>;
   onExecutionResult?: (execution: AgentHarnessToolExecution) => void;
   onResult: (result: AgentHarnessToolPresentation) => TResult | Promise<TResult>;
@@ -131,7 +131,7 @@ type AgentHarnessToolExecution = {
   startedAt: number;
   executedArguments: Record<string, unknown>;
   rawResult: AgentToolResult<unknown>;
-  rawResultSnapshot: AgentToolResult<unknown>;
+  rawResultSnapshot: unknown;
   rawIsError: boolean;
   rawFailureKind: ReturnType<typeof resolveToolResultFailureKind>;
 };

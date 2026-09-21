@@ -22,7 +22,6 @@ import {
   isAsyncStartedToolResult,
   isReplaySafeToolCall,
   isToolWrappedWithBeforeToolCallHook,
-  isToolResultError,
   isMessagingTool,
   resolveToolExecutionErrorKind,
   runAgentHarnessAfterToolCallHook,
@@ -671,6 +670,8 @@ export function createCodexDynamicToolBridge(params: {
         applyMiddleware: async (event) =>
           legacyExtensionRunner.applyToolResultExtensions({
             ...event,
+            threadId: call.threadId,
+            turnId: call.turnId,
             result: await middlewareRunner.applyToolResultMiddleware(event),
           }),
         onExecutionResult: ({ rawResult }) => {
