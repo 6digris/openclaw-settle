@@ -137,6 +137,15 @@ The updater retains them in the run report shown by `openclaw update status`,
 including when an intentional open channel policy requires no configuration change.
 Error findings and failed check execution still refuse the update.
 
+In the private migration rehearsal, Doctor lint defers optional core inspections
+until after activation. This includes per-agent model and tool-schema diagnostics;
+lint does not prepare their runtime metadata when those checks are deferred.
+Each omitted inspection records a warning with its check ID and a command to run
+after the update. Required migration, configuration, plugin, and Gateway readiness
+checks still run. Standalone Doctor lint and explicitly selected `--only` checks
+keep their normal scope. The candidate recognizes the private-copy markers already
+set by the published 2026.9.4 updater, so this reduces work on that first hop too.
+
 The new version answers the updater's native service capability probe before
 loading configuration or initializing debug capture. Probing capability does not
 open or migrate shared state, so the old Gateway can keep serving while its
