@@ -16,18 +16,25 @@ const admissionEnv = { ...process.env };
 let started = false;
 let finished = false;
 
+function handleSendFailure(error: Error): void {
+  if (!started || finished) {
+    process.exit(1);
+  }
+  controller.abort(error);
+}
+
 function send(message: UpdateRepairWorkerMessage, complete?: () => void): void {
   if (
     !process.connected ||
     !process.send ||
     Buffer.byteLength(JSON.stringify(message)) > UPDATE_REPAIR_IPC_MAX_BYTES
   ) {
-    controller.abort(new Error("Repair orchestrator disconnected."));
+    handleSendFailure(new Error("Repair orchestrator disconnected."));
     return;
   }
   process.send(message, (error) => {
     if (error) {
-      controller.abort(error);
+      handleSendFailure(error);
       return;
     }
     complete?.();
