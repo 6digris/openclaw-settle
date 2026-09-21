@@ -38,7 +38,18 @@ export function chatModelUnavailableBanner(
   provider: string | null | undefined,
   catalog: ModelCatalogEntry[],
   onSetup: () => void,
+  catalogState?: { retired: boolean; error: string | null },
 ): ChatComposerDisabledBanner | undefined {
+  if (catalogState?.retired) {
+    return {
+      kind: "above-composer",
+      text: t(
+        catalogState.error
+          ? "chat.modelControls.modelsUnavailable"
+          : "chat.modelControls.loadingModels",
+      ),
+    };
+  }
   const message = chatModelUnavailableMessage(
     resolveChatModelUnavailableReason(model, provider, catalog),
   );

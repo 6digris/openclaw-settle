@@ -83,13 +83,14 @@ enum AppKitTestSupport {
     static func openMenu(
         _ button: AnyObject,
         in window: NSWindow,
+        waitForDismissal: Bool = false,
         file: StaticString = #fileID,
         line: UInt = #line,
         inspect: @escaping (NSMenu) throws -> Void) async throws
     {
         let role: NSAccessibility.Role? = button.accessibilityRole?()
         let controlType = String(reflecting: type(of: button))
-        let tracking = AppKitTestMenuTracking(inspect: inspect)
+        let tracking = AppKitTestMenuTracking(waitForDismissal: waitForDismissal, inspect: inspect)
         tracking.start()
         defer { tracking.stop() }
         try Task.checkCancellation()
@@ -154,7 +155,7 @@ enum AppKitTestSupport {
             }
         }
         await tracking.waitForCompletion()
-        let completed = tracking.observed && tracking.inspectionCompleted && !tracking.timedOut
+        let completed = tracking.observed && tracking.completed && !tracking.timedOut
         print("""
         Menu interaction at \(file):\(line)
         action=\(action) result=\(String(describing: actionResult))
@@ -163,7 +164,7 @@ enum AppKitTestSupport {
         """)
         if let error = tracking.error { throw error }
         try Task.checkCancellation()
-        // The inspection cancels tracking; its completion matters, not popup selection.
+        // Ordinary inspections cancel tracking; lifecycle proofs wait for the owning menu to close itself.
         guard completed else {
             throw InteractionFailure(message: "The native menu inspection must complete before its tracking deadline")
         }
@@ -282,17 +283,25 @@ private final class AppKitTestMenuTracking: NSObject {
     private static let timeout: TimeInterval = 3
     let inspect: (NSMenu) throws -> Void
     let expiresAt: ContinuousClock.Instant
+    let waitForDismissal: Bool
     private(set) var observed = false
     private(set) var inspectionCompleted = false
     private(set) var timedOut = false
     private(set) var error: Error?
+    private var dismissalObserved = false
+    private var inspectionStarted = false
     private var menu: NSMenu?
     private var inspection: Timer?
     private var deadline: Timer?
     private var completion: CheckedContinuation<Void, Never>?
 
-    init(inspect: @escaping (NSMenu) throws -> Void) {
+    var completed: Bool {
+        self.inspectionCompleted && (!self.waitForDismissal || self.dismissalObserved)
+    }
+
+    init(waitForDismissal: Bool, inspect: @escaping (NSMenu) throws -> Void) {
         self.inspect = inspect
+        self.waitForDismissal = waitForDismissal
         self.expiresAt = ContinuousClock.now + .seconds(Self.timeout)
     }
 
@@ -303,6 +312,12 @@ private final class AppKitTestMenuTracking: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(self.endedTracking(_:)),
             name: NSMenu.didEndTrackingNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(self.applicationUpdated(_:)),
+            name: NSApplication.didUpdateNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(self.applicationUpdated(_:)),
+            name: NSWindow.didUpdateNotification, object: nil)
         let deadline = Timer(
             timeInterval: Self.timeout,
             target: self,
@@ -316,7 +331,7 @@ private final class AppKitTestMenuTracking: NSObject {
     }
 
     func waitForCompletion() async {
-        guard !self.inspectionCompleted, !self.timedOut else { return }
+        guard !self.completed, !self.timedOut, self.error == nil else { return }
         await withCheckedContinuation { self.completion = $0 }
     }
 
@@ -344,25 +359,42 @@ private final class AppKitTestMenuTracking: NSObject {
     @objc private func endedTracking(_ notification: Notification) {
         guard let menu = notification.object as? NSMenu, self.menu === menu else { return }
         self.menu = nil
+        self.dismissalObserved = true
+        if self.completed {
+            self.deadline?.invalidate()
+            self.resumeWaiter()
+        }
+    }
+
+    @objc private func applicationUpdated(_: Notification) {
+        self.inspectMenu()
     }
 
     @objc private func inspectMenu() {
-        guard let menu = self.menu else { return }
+        guard !self.inspectionStarted, let menu = self.menu else { return }
         guard !self.timedOut, ContinuousClock.now < self.expiresAt else {
             self.expire()
             return
         }
+        // didBeginTracking can precede the actual popup window; capture only a rendered popup.
+        guard NSApp.windows.contains(where: { $0.level == .popUpMenu && $0.isVisible }) else { return }
+        self.inspectionStarted = true
         defer {
             self.inspectionCompleted = true
-            self.deadline?.invalidate()
-            self.cancelTracking()
-            self.resumeWaiter()
+            if !self.waitForDismissal || self.error != nil {
+                self.deadline?.invalidate()
+                self.cancelTracking()
+                self.resumeWaiter()
+            } else if self.dismissalObserved {
+                self.deadline?.invalidate()
+                self.resumeWaiter()
+            }
         }
         do { try self.inspect(menu) } catch { self.error = error }
     }
 
     @objc private func expire() {
-        guard !self.inspectionCompleted else { return }
+        guard !self.completed else { return }
         self.timedOut = true
         self.cancelTracking()
         self.resumeWaiter()

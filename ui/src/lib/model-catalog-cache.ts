@@ -220,6 +220,7 @@ export function publishModelCatalogResult(
     : undefined;
   cache.entries.delete(key);
   cache.entries.set(key, entry);
+  cache.requiresSnapshot = result.modelSelectionPolicy?.restricted === true;
   for (const lane of cache.requests.get(key)?.values() ?? []) {
     for (const pending of [lane.active, lane.queued]) {
       if (pending && discoverySucceeded && (params.refresh || !pending.refresh)) {
@@ -256,10 +257,16 @@ export function invalidateModelCatalogEntry(
 }
 
 /** A connection boundary retires even the last accepted display snapshot. */
-export function clearModelCatalogCache(client: ModelCatalogClient): void {
+export function clearModelCatalogCache(
+  client: ModelCatalogClient,
+  options?: { requireSnapshot?: boolean },
+): void {
   const cache = modelCatalogCache.get(client);
   modelCatalogCache.delete(client);
-  getModelCatalogCache(client).requiresSnapshot = true;
+  getModelCatalogCache(client).requiresSnapshot =
+    options?.requireSnapshot === true ||
+    cache?.requiresSnapshot === true ||
+    Array.from(cache?.entries.values() ?? []).some((entry) => entry.result !== undefined);
   for (const budgets of cache?.requests.values() ?? []) {
     for (const lane of budgets.values()) {
       lane.active?.reject(new DOMException("Model catalog connection retired", "AbortError"));

@@ -4,6 +4,24 @@ extension OpenClawChatViewModel {
     public nonisolated static let defaultModelSelectionID = "__default__"
     public nonisolated static let inheritedThinkingSelectionID = "__inherited__"
 
+    func projectedModelSelectionID(_ requested: String) -> String {
+        guard !self.modelCatalogInvalidated else { return Self.defaultModelSelectionID }
+        guard self.modelSelectionPolicy?.restricted == true else { return requested }
+        return self.modelChoices.contains(where: { $0.selectionID == requested || $0.modelID == requested })
+            ? requested : Self.defaultModelSelectionID
+    }
+
+    public var defaultModelLabel: String {
+        let defaults = self.modelPickerDefault
+        guard let defaultModelID = normalizedModelSelectionID(defaults.model, provider: defaults.provider) else {
+            return "Default"
+        }
+        let label = self.modelChoices.first(where: {
+            $0.selectionID == defaultModelID || $0.modelID == defaultModelID
+        })?.displayLabel ?? defaultModelID
+        return "Default: \(label)"
+    }
+
     func invalidateModelChoices() {
         self.nextModelCatalogRequestID &+= 1
         self.modelCatalogInvalidated = true

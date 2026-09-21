@@ -141,6 +141,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       selectedSession?.modelProvider,
       state.chatModelCatalog,
       () => this.context.navigate("model-setup"),
+      { retired: state.chatModelCatalogRetired, error: state.chatModelCatalogError },
     );
     const modelSetupRequired = requiresChatModelSetup({
       catalog: catalogKey !== null,

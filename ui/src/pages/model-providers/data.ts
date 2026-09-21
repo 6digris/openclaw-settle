@@ -9,6 +9,7 @@ import type {
 } from "../../../../src/infra/provider-usage.types.js";
 import type { SessionModelUsage } from "../../../../src/infra/session-cost-usage.types.js";
 import type {
+  FastMode,
   ModelAuthStatusProvider,
   ModelAuthStatusProfile,
   ModelAuthStatusResult,
@@ -22,7 +23,6 @@ import {
   listEffectiveModelAuthProviders,
 } from "../../lib/model-auth.ts";
 import type { ModelCatalogPresentation } from "../../lib/model-catalog-store.ts";
-import type { ModelBehaviorConfig } from "./config-mutation.ts";
 
 export type ModelProviderAuthKind = "ok" | "expiring" | "expired" | "missing" | "api-key";
 
@@ -431,6 +431,12 @@ export type DefaultModelSelection = {
 };
 
 export type ModelPickerEntry = ModelCatalogEntry & { selectionRef?: string };
+export type ModelBehaviorConfig = {
+  thinkingLevel: string | undefined;
+  thinkingOverridden: boolean;
+  fastMode: FastMode | undefined;
+  fastModeOverridden: boolean;
+};
 export type DefaultsDraft = DefaultModelSelection & ModelBehaviorConfig;
 
 export function resolveDefaultModelPresentation(
@@ -467,7 +473,7 @@ export function modelCatalogRef(model: ModelPickerEntry): string {
   return model.id.startsWith(`${model.provider}/`) ? model.id : `${model.provider}/${model.id}`;
 }
 
-export function buildSelectableDefaultModels(
+function buildSelectableDefaultModels(
   models: ModelCatalogEntry[] | null,
   selection: DefaultModelSelection,
 ): ModelPickerEntry[] {

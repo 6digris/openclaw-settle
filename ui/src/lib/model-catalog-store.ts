@@ -54,16 +54,18 @@ export type ModelCatalogPresentation = ModelCatalogResult & {
 /** Settings readers share the catalog's accepted display receipt and retirement boundary. */
 export function readAgentModelCatalog(
   client: ModelCatalogClient | null | undefined,
-  agentId: string,
+  agentId: string | null | undefined,
 ): ModelCatalogPresentation {
+  if (!client || !agentId) {
+    return { models: [], hasSnapshot: false, retired: false };
+  }
   const scope = { agentId };
-  const catalog =
-    client && agentId ? peekModelCatalog(client, scope, { allowStale: true }) : undefined;
+  const catalog = peekModelCatalog(client, scope, { allowStale: true });
   return {
     ...catalog,
     models: catalog?.models ?? [],
     hasSnapshot: catalog !== undefined,
-    retired: Boolean(client && isModelCatalogRetired(client, scope)),
+    retired: isModelCatalogRetired(client, scope),
   };
 }
 

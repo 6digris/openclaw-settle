@@ -723,11 +723,6 @@ public struct OpenClawChatMetadataCapabilities: Codable, Sendable, Equatable {
 public struct OpenClawChatModelSelectionPolicy: Codable, Sendable, Equatable {
     public let restricted: Bool
     public let defaultModel: String?
-
-    public init(restricted: Bool, defaultModel: String?) {
-        self.restricted = restricted
-        self.defaultModel = defaultModel
-    }
 }
 
 public struct OpenClawChatModelCatalogSnapshot: Sendable, Equatable {

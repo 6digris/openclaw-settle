@@ -107,7 +107,7 @@ export function resolveDraftModelControls(params: {
   };
 }
 
-export function resolveDraftContextWindowTarget(
+function resolveDraftContextWindowTarget(
   entry: ModelRuntimeEntry | undefined,
   contextWindow: string,
 ) {
@@ -121,7 +121,7 @@ export function resolveDraftContextWindowTarget(
     : undefined;
 }
 
-export function resolveDraftThinkingTarget(
+function resolveDraftThinkingTarget(
   target: DraftModelTarget | null,
   agent?: GatewayAgentRow,
   selection?: { thinkingLevel?: string; agentRuntime?: string },
@@ -139,7 +139,7 @@ export function resolveDraftThinkingTarget(
   };
 }
 
-export function resolveDraftThinkingDefaults(
+function resolveDraftThinkingDefaults(
   target: DraftModelTarget | null,
   agent: GatewayAgentRow | undefined,
   defaults: SessionsListResult["defaults"] | undefined,

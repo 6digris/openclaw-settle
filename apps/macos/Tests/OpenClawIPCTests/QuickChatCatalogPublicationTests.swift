@@ -17,6 +17,13 @@ struct QuickChatCatalogPublicationTests {
         modelSelectionChanged: Bool,
         retiresChoices: Bool) async throws
     {
+        let policy: OpenClawChatModelSelectionPolicy? = if modelSelectionChanged {
+            try JSONDecoder().decode(
+                OpenClawChatModelSelectionPolicy.self,
+                from: Data(#"{"restricted":true,"defaultModel":null}"#.utf8))
+        } else {
+            nil
+        }
         func publication(_ seq: Int) -> Data {
             let payload = modelSelectionChanged ? #"{"modelSelectionChanged":true}"# : "{}"
             return Data(
@@ -58,8 +65,7 @@ struct QuickChatCatalogPublicationTests {
                     currentThinkingLevel: nil,
                     thinkingOptions: [],
                     defaultProvider: "fixture",
-                    modelSelectionPolicy: modelSelectionChanged
-                        ? .init(restricted: true, defaultModel: nil) : nil)
+                    modelSelectionPolicy: policy)
             },
             modelCatalogEventsProvider: {
                 let events = await gateway.subscribe()

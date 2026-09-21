@@ -50,21 +50,12 @@ public final class OpenClawChatViewModel {
     public internal(set) var preferredVerboseLevel: String
     var prefersExplicitVerboseLevel: Bool
     private var requestedModelSelectionID: String = "__default__"
+
     public private(set) var modelSelectionID: String {
-        get {
-            guard !self.modelCatalogInvalidated else { return Self.defaultModelSelectionID }
-            guard let policy = self.modelSelectionPolicy, policy.restricted else {
-                return self.requestedModelSelectionID
-            }
-            if self.modelChoices.contains(where: {
-                $0.selectionID == self.requestedModelSelectionID || $0.modelID == self.requestedModelSelectionID
-            }) {
-                return self.requestedModelSelectionID
-            }
-            return Self.defaultModelSelectionID
-        }
+        get { self.projectedModelSelectionID(self.requestedModelSelectionID) }
         set { self.requestedModelSelectionID = newValue }
     }
+
     public internal(set) var modelChoices: [OpenClawChatModelChoice] = []
     var modelAvailabilityIsSessionScoped = false
     var modelSelectionPolicy: OpenClawChatModelSelectionPolicy?
@@ -760,14 +751,6 @@ public final class OpenClawChatViewModel {
 
     public var showsModelPicker: Bool {
         !self.modelChoices.isEmpty
-    }
-
-    public var defaultModelLabel: String {
-        let defaults = self.modelPickerDefault
-        guard let defaultModelID = normalizedModelSelectionID(defaults.model, provider: defaults.provider) else {
-            return "Default"
-        }
-        return "Default: \(modelLabel(for: defaultModelID))"
     }
 }
 
@@ -1579,7 +1562,7 @@ extension OpenClawChatViewModel {
         return trimmed
     }
 
-    private func normalizedModelSelectionID(_ modelID: String?, provider: String? = nil) -> String? {
+    func normalizedModelSelectionID(_ modelID: String?, provider: String? = nil) -> String? {
         guard let modelID else { return nil }
         let trimmed = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -1609,11 +1592,6 @@ extension OpenClawChatViewModel {
             return nil
         }
         return normalized
-    }
-
-    private func modelLabel(for modelID: String) -> String {
-        self.modelChoices.first(where: { $0.selectionID == modelID || $0.modelID == modelID })?.displayLabel ??
-            modelID
     }
 
     private func applySuccessfulModelSelection(

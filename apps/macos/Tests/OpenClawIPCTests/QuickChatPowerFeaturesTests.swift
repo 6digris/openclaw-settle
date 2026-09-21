@@ -166,6 +166,10 @@ struct QuickChatPowerFeaturesTests {
 
     @Test(arguments: [false, true])
     func `restricted controls project a saved forbidden model onto the server default`(hasDefault: Bool) throws {
+        let policy = try JSONDecoder().decode(OpenClawChatModelSelectionPolicy.self, from: Data(
+            """
+            {"restricted":true,"defaultModel":\(hasDefault ? "\"fixture/allowed\"" : "null")}
+            """.utf8))
         let sessions = try JSONDecoder().decode(OpenClawChatSessionsListResponse.self, from: Data(
             #"{"sessions":[{"key":"agent:main:main","model":"historical","modelProvider":"fixture"}]}"#.utf8))
         let snapshot = QuickChatModelControlLogic.snapshot(
@@ -173,7 +177,7 @@ struct QuickChatPowerFeaturesTests {
             models: [.init(modelID: "allowed", name: "Allowed", provider: "fixture", contextWindow: nil)],
             sessions: sessions,
             agents: nil,
-            modelSelectionPolicy: .init(restricted: true, defaultModel: hasDefault ? "fixture/allowed" : nil))
+            modelSelectionPolicy: policy)
 
         #expect(snapshot.currentModelSelectionID == (hasDefault ? "fixture/allowed" : nil))
         #expect(snapshot.defaultProvider == (hasDefault ? "fixture" : nil))

@@ -3,6 +3,21 @@ import { isIncognitoSessionKey } from "./incognito-session-key.js";
 
 export type SessionMutationOperatorScope = "operator.write" | "operator.admin";
 
+/** Shared static read floors consumed by Gateway descriptors and browser admission. */
+export const SESSION_READ_METHOD_SCOPES = {
+  "models.list": "operator.sessions.read",
+  "chat.startup": "operator.sessions.read",
+  "chat.metadata": "operator.sessions.read",
+} as const;
+
+const sessionReadMethodScopes: ReadonlyMap<string, "operator.sessions.read"> = new Map(
+  Object.entries(SESSION_READ_METHOD_SCOPES),
+);
+
+export function resolveBaseSessionReadRequiredScope(method: string) {
+  return sessionReadMethodScopes.get(method);
+}
+
 const SESSIONS_PATCH_WRITE_SCOPE_MUTATIONS: ReadonlySet<string> = new Set([
   "label",
   "autoLabel",

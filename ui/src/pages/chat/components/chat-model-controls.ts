@@ -542,7 +542,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
   // picker availability. Refreshing that catalog must not hide a known selection.
   const selectionKnown = Boolean(currentOverride || (modelOverrideSource === null && defaultModel));
   const catalogTriggerStatus = retired
-    ? t("chat.modelControls.loadingModels")
+    ? resolveCatalogTriggerStatus(managedCatalog, 0, false)
     : policy?.restricted && !currentOverride && !defaultModel
       ? t(
           modelOptions.length

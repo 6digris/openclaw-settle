@@ -83,7 +83,7 @@ export function invalidateChatMetadataStore(
 ): void {
   // Catalog readers share this lifecycle; retire their copies before metadata listeners reload.
   if (retireCatalog) {
-    clearModelCatalogCache(client);
+    clearModelCatalogCache(client, { requireSnapshot: true });
   } else {
     invalidateModelCatalogCache(client, scope, sessionDefaults);
   }

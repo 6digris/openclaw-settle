@@ -198,6 +198,7 @@ final class QuickChatModel {
     private(set) var thinkingOptions: [OpenClawChatThinkingLevelOption] = []
     private(set) var speed = OpenClawChatFastModeProfile.resolve(session: nil, model: nil)
     private var requestedModelSelectionID: String?
+
     private(set) var selectedModelSelectionID: String? {
         get {
             guard !self.modelCatalogInvalidated else { return nil }
@@ -210,6 +211,7 @@ final class QuickChatModel {
         }
         set { self.requestedModelSelectionID = newValue }
     }
+
     private(set) var selectedThinkingLevel: String?
     private(set) var modelDefaultProvider: String?
     private(set) var modelSelectionPolicy: OpenClawChatModelSelectionPolicy?

@@ -26,7 +26,7 @@ describe("New Session policy presentation", () => {
     const { context, request } = contextWith(models);
     const wire = createDeferred<ModelCatalogResult>();
     request.mockReturnValue(wire.promise);
-    const ready = createDeferred<void>();
+    const ready = createDeferred();
     const control = new NewSessionModelControl(() => {
       if (
         renderControl(control, context, "main", agent).querySelector(
@@ -78,8 +78,8 @@ describe("New Session policy presentation", () => {
     "handles $event while replacement fails (clears: $clearsChoices)",
     async ({ event, payload, clearsChoices }) => {
       const { context, request, emitCatalogChanged } = contextWith(models);
-      const ready = createDeferred<void>();
-      const failed = createDeferred<void>();
+      const ready = createDeferred();
+      const failed = createDeferred();
       const control = new NewSessionModelControl(() => {
         const container = renderControl(control, context, "main", agent);
         if (container.querySelector('[data-chat-model-option="fixture/permitted"]')) {
