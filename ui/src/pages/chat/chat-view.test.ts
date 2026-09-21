@@ -5504,16 +5504,14 @@ describe("chat attachment picker", () => {
     });
     document.body.append(remounted);
     await waitForFast(() => {
-      expect(remounted.querySelector(".chat-selection-annotations__chip")?.textContent).toContain(
+      expect(remounted.querySelector(".chat-attachment-file__open")?.textContent).toContain(
         "First words from a remounted p…",
       );
     });
     expect(attachments[0]?.origin).toBe("paste");
-    requireElement(
-      remounted,
-      ".chat-selection-annotations__chip",
-      "pasted text chip",
-    ).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    requireElement(remounted, ".chat-attachment-file__open", "pasted text excerpt").dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
     requireElement(
       sidebar.container,
       ".chat-attachment-text-action",
