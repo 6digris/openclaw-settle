@@ -1,5 +1,3 @@
-import { expectDefined } from "@openclaw/normalization-core";
-import { isVitestRuntimeEnv } from "../../../infra/env.js";
 import {
   emitSessionLifecycleEvent,
   type SessionLifecycleEvent,
@@ -19,22 +17,26 @@ import {
 } from "./subagent-registry-persistence.js";
 import { publishSubagentRunChanges } from "./subagent-registry-publication.js";
 import {
-  acceptedFullSnapshot,
-  consumeSubagentRuns,
-  mergeSelectedFullRuns,
   applySubagentRunChanges,
   assertSubagentReadContext,
   captureSubagentFactsAdmission,
   getSessionListLookup,
+  getSubagentRunsSnapshot,
+  indexedSnapshotRows,
   getPersistedSubagentRunsSnapshot,
   loadPersistedSubagentRunsForRead,
   prepareSubagentRunsCache,
   readCompactSubagentRuns,
-  readFullSubagentRuns,
   rememberSubagentRunsSnapshot,
+  shouldReadPersistedSubagentRuns,
   SubagentSessionListUnavailableError,
   type SubagentRunsCache,
 } from "./subagent-registry-read-cache.js";
+import {
+  prepareSubagentRunReadSnapshot,
+  type PreparedSubagentRunsRead,
+  type SubagentRunReadSelection,
+} from "./subagent-registry-read-snapshot.js";
 import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
 /**
  * Subagent registry state persistence bridge.
@@ -204,10 +206,6 @@ export function publishSubagentRunsAfterAtomicStore(
   });
 }
 
-function shouldReadPersistedSubagentRuns(): boolean {
-  return !isVitestRuntimeEnv() || process.env.OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE === "1";
-}
-
 /** Existing resident facts, fenced by the physical source rather than a publisher's scope. */
 export function getSubagentSessionListReadSnapshotIdentity(): object | undefined {
   if (!shouldReadPersistedSubagentRuns()) {
@@ -253,34 +251,6 @@ export async function prepareOptionalSubagentSessionListReadCache(): Promise<boo
     assertSubagentReadContext(context);
     return false;
   }
-}
-
-/** Captured Maps remain caller-owned, including prompt overlays of full result records. */
-async function readSubagentSessionListRunsSnapshot(
-  inMemoryRuns: Map<string, SubagentRunRecord>,
-): Promise<Map<string, SubagentRunReadRecord>> {
-  const context = shouldReadPersistedSubagentRuns()
-    ? captureOpenClawStateWorkerContext()
-    : undefined;
-  const runs = shouldReadPersistedSubagentRuns()
-    ? new Map(
-        await prepareSubagentRunsCache(
-          persistedSubagentSessionListRunsReadCache,
-          readCompactSubagentRuns,
-        ),
-      )
-    : new Map<string, SubagentRunReadRecord>();
-  if (context) {
-    assertSubagentReadContext(context);
-  }
-  for (const [runId, entry] of inMemoryRuns) {
-    runs.set(runId, projectSubagentRunForSessionList(entry));
-  }
-  return runs;
-}
-
-function indexedSnapshotRows<T>(snapshot: Map<string, T>, keys: readonly string[]): T[] {
-  return keys.map((key) => expectDefined(snapshot.get(key), "indexed subagent cache entry"));
 }
 
 export function clearSubagentRunsReadCacheForTest(): void {
@@ -380,63 +350,6 @@ export function restoreSubagentRunsFromDisk(params: {
   return added;
 }
 
-function getSubagentRunsSnapshot<T extends SubagentRunReadRecord>(
-  inMemoryRuns: Map<string, SubagentRunRecord>,
-  cache: SubagentRunsCache<T>,
-  scope?: {
-    load?: () => Iterable<T>;
-    fresh?: boolean;
-    borrowPersisted?: boolean;
-    matches: (entry: SubagentRunReadRecord) => boolean;
-  },
-): Map<string, T> {
-  if (
-    shouldReadPersistedSubagentRuns() &&
-    !cache.load &&
-    !getPersistedSubagentRunsSnapshot(cache)
-  ) {
-    throw new Error("Subagent session-list facts must be prepared before synchronous reads");
-  }
-  const merged = new Map<string, T>();
-  if (shouldReadPersistedSubagentRuns()) {
-    try {
-      // Scoped reads use indexed SQL until a complete owner snapshot is available.
-      const cached = scope?.load && !scope.fresh ? getPersistedSubagentRunsSnapshot(cache) : null;
-      const persisted = scope?.load
-        ? (cached?.values() ?? scope.load())
-        : loadPersistedSubagentRunsForRead(cache).values();
-      for (const entry of persisted) {
-        if (!scope || scope.matches(entry)) {
-          merged.set(
-            entry.runId,
-            scope?.load && !scope.borrowPersisted ? structuredClone(entry) : entry,
-          );
-        }
-      }
-    } catch {
-      // Ignore disk read failures and fall back to local memory.
-    }
-  }
-  if (shouldReadPersistedSubagentRuns()) {
-    for (const [runId, entry] of cache.state.changes ?? []) {
-      if (entry && (!scope || scope.matches(entry))) {
-        merged.set(runId, scope?.load && !scope.borrowPersisted ? structuredClone(entry) : entry);
-      } else {
-        merged.delete(runId);
-      }
-    }
-  }
-  for (const [runId, entry] of inMemoryRuns) {
-    if (!scope || scope.matches(entry)) {
-      merged.set(runId, cache.project(entry));
-    } else {
-      // Live memory wins even when a run moved out of the persisted scope.
-      merged.delete(runId);
-    }
-  }
-  return merged;
-}
-
 export function getSubagentRunsSnapshotForRead(
   inMemoryRuns: Map<string, SubagentRunRecord>,
 ): Map<string, SubagentRunRecord> {
@@ -480,141 +393,56 @@ export function getSubagentMaintenanceRunsSnapshotForRead(
   return getSubagentRunsSnapshot(inMemoryRuns, persistedSubagentMaintenanceRunsReadCache);
 }
 
-type SubagentRunReadSelection = {
-  runIds: readonly string[];
-  sessionKeys: readonly string[];
-};
-
 /** Hydrate selected payloads, then capture their current graph and raw owners in one frame. */
 export async function withSubagentRunReadSnapshot<S extends SubagentRunReadSelection, T>(
   inMemoryRuns: Map<string, SubagentRunRecord>,
   select: (snapshot: Map<string, SubagentRunReadRecord>) => S,
   consume: (selection: S, runs: ReadonlyMap<string, SubagentRunRecord>) => T,
 ): Promise<T> {
-  const context = shouldReadPersistedSubagentRuns()
-    ? captureOpenClawStateWorkerContext()
-    : undefined;
-  let snapshot = await readSubagentSessionListRunsSnapshot(inMemoryRuns);
-  let refreshedMissingRows = false;
   for (;;) {
-    const selected = select(snapshot);
-    const runIds = new Set(selected.runIds);
-    const sessionKeys = new Set(selected.sessionKeys);
-    const matches = (entry: SubagentRunReadRecord) =>
-      runIds.has(entry.runId) ||
-      sessionKeys.has(entry.requesterSessionKey.trim()) ||
-      Boolean(entry.controllerSessionKey && sessionKeys.has(entry.controllerSessionKey.trim()));
-    let persisted = context
-      ? acceptedFullSnapshot(persistedSubagentRunsReadCache, context)
-      : undefined;
-    if (!persisted) {
-      persisted = new Map<string, SubagentRunRecord>();
-      if (context) {
-        const scopes = [
-          { kind: "ids" as const, runIds: [...runIds] },
-          ...[...sessionKeys].map((sessionKey) => ({ kind: "session" as const, sessionKey })),
-        ];
-        for (const scope of scopes) {
-          for (const [runId, entry] of await readFullSubagentRuns(context, scope)) {
-            persisted.set(runId, entry);
-          }
-        }
-      }
-    }
-    if (context) {
-      assertSubagentReadContext(context);
-    }
-    snapshot = getActiveOpenClawStateDatabaseReadSnapshot()
-      ? await readSubagentSessionListRunsSnapshot(inMemoryRuns)
-      : getSubagentSessionListRunsSnapshotForRead(inMemoryRuns);
-    if (context) {
-      assertSubagentReadContext(context);
-    }
-    const full = mergeSelectedFullRuns(
-      persistedSubagentRunsReadCache,
+    const prepared = await prepareSubagentRunReadSnapshot({
       inMemoryRuns,
-      persisted,
-      matches,
-      context,
-    );
-    for (const entry of full.values()) {
-      snapshot.set(entry.runId, projectSubagentRunForSessionList(entry));
+      fullCache: persistedSubagentRunsReadCache,
+      compactCache: persistedSubagentSessionListRunsReadCache,
+      select,
+    });
+    const result = prepared.consume(consume);
+    if (result.ready) {
+      return result.value;
     }
-    const current = select(snapshot);
-    if (!refreshedMissingRows && current.runIds.some((runId) => !full.has(runId))) {
-      // A durable replacement may precede this process's bridge publication.
-      if (!getActiveOpenClawStateDatabaseReadSnapshot()) {
-        persistedSubagentSessionListRunsReadCache.state = {};
-      }
-      snapshot = await readSubagentSessionListRunsSnapshot(inMemoryRuns);
-      refreshedMissingRows = true;
-      continue;
-    }
-    if (
-      current.sessionKeys.some((key) => !sessionKeys.has(key)) ||
-      current.runIds.some((runId) => {
-        const entry = snapshot.get(runId);
-        return entry && !matches(entry);
-      })
-    ) {
-      continue;
-    }
-    return consumeSubagentRuns(full, (runs) => consume(current, runs));
   }
 }
 
-export async function withSubagentRunsSnapshotForRunIds<T>(
+export async function prepareSubagentRunsSnapshotForRunIds(
   inMemoryRuns: Map<string, SubagentRunRecord>,
   runIds: readonly string[],
-  consume: (runs: ReadonlyMap<string, SubagentRunRecord>) => T,
-): Promise<T> {
+): Promise<PreparedSubagentRunsRead> {
   const requested = new Set(runIds.map((runId) => runId.trim()));
-  if (requested.size === 0) {
-    return consumeSubagentRuns(new Map(), consume);
-  }
   const matches = (entry: SubagentRunReadRecord) =>
     requested.has(entry.runId) || Boolean(entry.swarmRunId && requested.has(entry.swarmRunId));
-  const context = shouldReadPersistedSubagentRuns()
-    ? captureOpenClawStateWorkerContext()
-    : undefined;
-  let persisted = context
-    ? acceptedFullSnapshot(persistedSubagentRunsReadCache, context)
-    : undefined;
-  if (context && !persisted) {
-    const readSelected = async () => {
-      const projection = await prepareSubagentRunsCache(
-        persistedSubagentSessionListRunsReadCache,
-        readCompactSubagentRuns,
-      );
-      assertSubagentReadContext(context);
-      const physicalRunIds = [...projection.values()].filter(matches).map((entry) => entry.runId);
-      return {
-        physicalRunIds,
-        entries: await readFullSubagentRuns(context, { kind: "ids", runIds: physicalRunIds }),
-      };
-    };
-    let selected = await readSelected();
-    if (
-      selected.entries.size !== selected.physicalRunIds.length ||
-      [...selected.entries.values()].some((entry) => !matches(entry))
-    ) {
-      // Stable collector aliases can move to a different physical row in another process.
-      persistedSubagentSessionListRunsReadCache.state = {};
-      selected = await readSelected();
-    }
-    persisted = selected.entries;
-  }
-  if (context) {
-    assertSubagentReadContext(context);
-  }
-  const runs = mergeSelectedFullRuns(
-    persistedSubagentRunsReadCache,
+  const prepared = await prepareSubagentRunReadSnapshot({
     inMemoryRuns,
-    persisted ?? new Map(),
-    matches,
-    context,
-  );
-  return consumeSubagentRuns(runs, consume);
+    fullCache: persistedSubagentRunsReadCache,
+    compactCache: persistedSubagentSessionListRunsReadCache,
+    select: (snapshot) => ({
+      runIds: [...snapshot.values()].filter(matches).map((entry) => entry.runId),
+      sessionKeys: [],
+    }),
+  });
+  return {
+    consume(consume) {
+      return prepared.consume((selection, runs) => {
+        const selected = new Map<string, SubagentRunRecord>();
+        for (const runId of selection.runIds) {
+          const entry = runs.get(runId);
+          if (entry) {
+            selected.set(runId, entry);
+          }
+        }
+        return consume(selected);
+      });
+    },
+  };
 }
 
 export function getSubagentSessionListRunsSnapshotForRead(

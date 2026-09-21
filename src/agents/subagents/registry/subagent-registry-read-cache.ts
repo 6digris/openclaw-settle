@@ -1,4 +1,6 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
+import { isVitestRuntimeEnv } from "../../../infra/env.js";
 import { SqliteSnapshotCleanupError } from "../../../infra/sqlite-readonly-location-cleanup.js";
 import { getAsyncWorkSignal } from "../../../shared/async-work-scope.js";
 import {
@@ -50,6 +52,14 @@ export function getSessionListLookup<T extends SubagentRunReadRecord>(
     return undefined;
   }
   return (state.lookup ??= new SubagentSessionReadLookup(state.snapshot));
+}
+
+export function indexedSnapshotRows<T>(snapshot: Map<string, T>, keys: readonly string[]): T[] {
+  return keys.map((key) => expectDefined(snapshot.get(key), "indexed subagent cache entry"));
+}
+
+export function shouldReadPersistedSubagentRuns(): boolean {
+  return !isVitestRuntimeEnv() || process.env.OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE === "1";
 }
 
 export function captureSubagentFactsAdmission(databasePath = resolveOpenClawStateSqlitePath()) {
@@ -206,6 +216,63 @@ export function assertSubagentReadContext(context: OpenClawStateWorkerContext): 
   }
 }
 
+export function getSubagentRunsSnapshot<T extends SubagentRunReadRecord>(
+  inMemoryRuns: Map<string, SubagentRunRecord>,
+  cache: SubagentRunsCache<T>,
+  scope?: {
+    load?: () => Iterable<T>;
+    fresh?: boolean;
+    borrowPersisted?: boolean;
+    matches: (entry: SubagentRunReadRecord) => boolean;
+  },
+): Map<string, T> {
+  if (
+    shouldReadPersistedSubagentRuns() &&
+    !cache.load &&
+    !getPersistedSubagentRunsSnapshot(cache)
+  ) {
+    throw new Error("Subagent session-list facts must be prepared before synchronous reads");
+  }
+  const merged = new Map<string, T>();
+  if (shouldReadPersistedSubagentRuns()) {
+    try {
+      // Scoped reads use indexed SQL until a complete owner snapshot is available.
+      const cached = scope?.load && !scope.fresh ? getPersistedSubagentRunsSnapshot(cache) : null;
+      const persisted = scope?.load
+        ? (cached?.values() ?? scope.load())
+        : loadPersistedSubagentRunsForRead(cache).values();
+      for (const entry of persisted) {
+        if (!scope || scope.matches(entry)) {
+          merged.set(
+            entry.runId,
+            scope?.load && !scope.borrowPersisted ? structuredClone(entry) : entry,
+          );
+        }
+      }
+    } catch {
+      // Ignore disk read failures and fall back to local memory.
+    }
+  }
+  if (shouldReadPersistedSubagentRuns()) {
+    for (const [runId, entry] of cache.state.changes ?? []) {
+      if (entry && (!scope || scope.matches(entry))) {
+        merged.set(runId, scope?.load && !scope.borrowPersisted ? structuredClone(entry) : entry);
+      } else {
+        merged.delete(runId);
+      }
+    }
+  }
+  for (const [runId, entry] of inMemoryRuns) {
+    if (!scope || scope.matches(entry)) {
+      merged.set(runId, cache.project(entry));
+    } else {
+      // Live memory wins even when a run moved out of the persisted scope.
+      merged.delete(runId);
+    }
+  }
+  return merged;
+}
+
 export class SubagentSessionListUnavailableError extends Error {}
 
 export async function readCompactSubagentRuns(context: OpenClawStateWorkerContext) {
@@ -283,6 +350,9 @@ export async function prepareSubagentRunsCache<T extends SubagentRunReadRecord>(
     }
     if (!state.pending) {
       const sourceIdentity = context.admission.identity.key;
+      // Readiness checks must recognize the pending fill before its facts exist.
+      state.admission = captureSubagentFactsAdmission(context.admission.databasePath);
+      state.sourceIdentity = sourceIdentity;
       const fill: NonNullable<SubagentRunsCacheState<T>["pending"]> = {
         ownerAbortSignal: callerAbortSignal,
         promise: Promise.resolve().then(async () => {

@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
+import { createSubagentRunRecord } from "../agents/subagent-test-fixtures.test-helpers.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { publishSubagentRunChanges } from "../agents/subagents/registry/subagent-registry-publication.js";
 import * as registryRead from "../agents/subagents/registry/subagent-registry-read.js";
@@ -8,24 +9,149 @@ import {
   clearSubagentRunsReadCacheForTest,
   getSubagentSessionListReadSnapshotIdentity,
   persistSubagentRunsToDiskOrThrow,
+  withSubagentRunReadSnapshot,
 } from "../agents/subagents/registry/subagent-registry-state.js";
+import { saveSubagentRegistryToSqlite } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import { setRuntimeConfigSnapshot } from "../config/config.js";
-import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
+import { loadSessionEntry, replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import * as stateReads from "../state/openclaw-state-db-readonly.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
+import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
+import type { RespondFn } from "./server-methods/types.js";
+import { makeGatewayClient } from "./server-request-context.test-support.js";
+import { retainSessionListForegroundWork } from "./session-projection-work.js";
 import type { SessionRowReadView } from "./session-row-prepared-read.js";
+import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import * as materialization from "./session-row-projection-materialize.js";
 import { ready } from "./session-row-projection-record.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import { seedSessionRowProjectionTranscriptFixture } from "./session-row-projection.transcript-fixture.test-support.js";
+import { listProjectedSessions } from "./session-utils-list.js";
 import type { WorkerSessionPlacementProjection } from "./worker-environments/placement-read-projection.types.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
   subagentRuns.clear();
 });
+
+it.each(["existing", "new"] as const)(
+  "retains a %s archive publication while unrelated compact recovery is pending",
+  async (kind) => {
+    await withOpenClawTestState(
+      { scenario: "minimal", env: { OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE: "1" } },
+      async () => {
+        const cfg = { agents: { list: [{ id: "main", default: true }] } };
+        setRuntimeConfigSnapshot(cfg);
+        clearSubagentRunsReadCacheForTest();
+        const key = "agent:main:archive-during-recovery";
+        const target = { agentId: "main", sessionKey: key };
+        const sessionId = "archive-during-recovery";
+        const anchorKey = "agent:main:archive-recovery-anchor";
+        replaceSessionEntrySync(
+          { agentId: "main", sessionKey: anchorKey },
+          { sessionId: "archive-recovery-anchor", updatedAt: 1 },
+        );
+        if (kind === "existing") {
+          replaceSessionEntrySync(target, { sessionId, updatedAt: 1 });
+        }
+        const previous = createSubagentRunRecord({
+          runId: "previous-unrelated-run",
+          childSessionKey: "agent:main:unrelated-child",
+          requesterSessionKey: "agent:main:unrelated-parent",
+          generation: 1,
+          completion: { required: false },
+          delivery: { status: "not_required" },
+        });
+        saveSubagentRegistryToSqlite(new Map([[previous.runId, previous]]));
+        const releaseForeground = retainSessionListForegroundWork();
+        const context = createDirectChatContext({
+          getRuntimeConfig: () => cfg,
+          loadGatewayModelCatalog: async () => [],
+        });
+        const entered = createDeferredCore();
+        const release = createDeferredCore();
+        let projection: Awaited<ReturnType<typeof createSessionRowProjection>> | undefined;
+        let recovery: Promise<unknown> | undefined;
+        try {
+          projection = await createSessionRowProjection({ cfg, context, modelCatalog: [] });
+          bindSessionRowProjection(context, () => projection);
+          await projection.ensureMaterialized();
+          expect(projection.capture({ agentId: "main", key })?.entry?.sessionId).toBe(
+            kind === "existing" ? sessionId : undefined,
+          );
+          const executeRead = stateReads.executeExistingOpenClawStateRead;
+          vi.spyOn(stateReads, "executeExistingOpenClawStateRead").mockImplementation(
+            async (...args) => {
+              const result = await executeRead(...args);
+              if (args[1].type === "subagents.sessionList") {
+                entered.resolve();
+                await release.promise;
+              }
+              return result;
+            },
+          );
+          const replacement = { ...previous, runId: "replacement-unrelated-run", generation: 2 };
+          saveSubagentRegistryToSqlite(new Map([[replacement.runId, replacement]]));
+          recovery = withSubagentRunReadSnapshot(
+            new Map(),
+            (snapshot) => ({
+              runIds: [...snapshot.values()]
+                .filter((run) => run.childSessionKey === previous.childSessionKey)
+                .map((run) => run.runId),
+              sessionKeys: [],
+            }),
+            (selection) => selection.runIds,
+          ).then(
+            (value) => ({ value }),
+            (error: unknown) => ({ error }),
+          );
+          await entered.promise;
+          expect(getSubagentSessionListReadSnapshotIdentity()).toBeUndefined();
+          if (kind === "existing") {
+            const respond = vi.fn<RespondFn>();
+            await sessionMutationHandlers["sessions.patch"]!({
+              req: { type: "req", id: "archive-during-recovery", method: "sessions.patch" },
+              params: { key, archived: true, expectedSessionId: sessionId },
+              client: makeGatewayClient({
+                connId: "archive-during-recovery-client",
+                clientId: "openclaw-control-ui",
+                mode: "webchat",
+                scopes: ["operator.read", "operator.write"],
+              }),
+              isWebchatConnect: () => false,
+              context,
+              respond,
+            });
+            expect(respond).toHaveBeenCalledTimes(1);
+            expect(respond.mock.calls[0]?.[0]).toBe(true);
+          } else {
+            replaceSessionEntrySync(target, { sessionId, updatedAt: 2, archivedAt: 2 });
+          }
+          const archived = loadSessionEntry(target);
+          expect(archived).toMatchObject({ sessionId, archivedAt: expect.any(Number) });
+          release.resolve();
+          expect(await recovery).toEqual({ value: [replacement.runId] });
+          await projection.ensureMaterialized();
+          const active = await listProjectedSessions({ projection, opts: { archived: false } });
+          const archives = await listProjectedSessions({ projection, opts: { archived: true } });
+          expect(active.sessions.map((row) => row.key)).toEqual([anchorKey]);
+          expect(archives.sessions).toEqual([
+            expect.objectContaining({ key, sessionId, archivedAt: archived?.archivedAt }),
+          ]);
+        } finally {
+          release.resolve();
+          await recovery;
+          projection?.dispose();
+          releaseForeground();
+        }
+      },
+    );
+  },
+);
 
 it.each(["exact", "bulk"] as const)(
   "reprepares subagent facts invalidated during a pending %s placement read",

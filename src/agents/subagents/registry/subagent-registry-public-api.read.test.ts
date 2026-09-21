@@ -79,14 +79,21 @@ describe("subagent registry known-run reads", () => {
       const parse = vi.spyOn(JSON, "parse");
       const read = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
       try {
-        await api.withSubagentRunsByRunIds([" collector ", "same-alpha", "missing"], (selected) => {
-          expect([...selected.keys()]).toEqual([" collector ", "same-alpha"]);
-          expect(selected.get(" collector ")).toMatchObject({
-            runId: "same-zulu",
-            completion: { resultText: "result-same-zulu" },
-          });
-          expect(selected.get("same-alpha")?.runId).toBe("same-alpha");
-        });
+        const prepared = await api.prepareSubagentRunsByRunIds([
+          " collector ",
+          "same-alpha",
+          "missing",
+        ]);
+        expect(
+          prepared.consume((selected) => {
+            expect([...selected.keys()]).toEqual([" collector ", "same-alpha"]);
+            expect(selected.get(" collector ")).toMatchObject({
+              runId: "same-zulu",
+              completion: { resultText: "result-same-zulu" },
+            });
+            expect(selected.get("same-alpha")?.runId).toBe("same-alpha");
+          }),
+        ).toEqual({ ready: true, value: undefined });
         expect(read.mock.calls.map(([, command]) => command)).toEqual([
           { type: "subagents.sessionList" },
           {
@@ -114,18 +121,27 @@ describe("subagent registry known-run reads", () => {
       const memory = new Map<string, SubagentRunRecord>([[moved.runId, moved]]);
       const api = createReadApi(memory);
 
-      await api.withSubagentRunsByRunIds(["collector"], (selected) => {
-        expect(selected.get("collector")?.runId).toBe("collector");
-      });
+      const original = await api.prepareSubagentRunsByRunIds(["collector"]);
+      expect(
+        original.consume((selected) => {
+          expect(selected.get("collector")?.runId).toBe("collector");
+        }),
+      ).toEqual({ ready: true, value: undefined });
 
       const live = createRun("live", { swarmRunId: "collector", execution: { status: "queued" } });
       memory.set(live.runId, live);
-      await api.withSubagentRunsByRunIds(["collector"], (selected) => {
-        expect(selected.get("collector")).toBe(live);
-      });
-      await api.withSubagentRunsByRunIds(["different-collector"], (selected) => {
-        expect(selected.get("different-collector")).toBe(moved);
-      });
+      const current = await api.prepareSubagentRunsByRunIds(["collector"]);
+      expect(
+        current.consume((selected) => {
+          expect(selected.get("collector")).toBe(live);
+        }),
+      ).toEqual({ ready: true, value: undefined });
+      const different = await api.prepareSubagentRunsByRunIds(["different-collector"]);
+      expect(
+        different.consume((selected) => {
+          expect(selected.get("different-collector")).toBe(moved);
+        }),
+      ).toEqual({ ready: true, value: undefined });
     });
   });
 
@@ -143,17 +159,23 @@ describe("subagent registry known-run reads", () => {
       });
       saveSubagentRegistryToSqlite(new Map([[replacement.runId, replacement]]));
       const api = createReadApi();
-      await api.withSubagentRunsByRunIds(["collector"], (selected) => {
-        expect(selected.get("collector")).toMatchObject({
-          runId: "replacement",
-          swarmRequesterSessionKey: "agent:other:main",
-        });
-      });
+      const prepared = await api.prepareSubagentRunsByRunIds(["collector"]);
+      expect(
+        prepared.consume((selected) => {
+          expect(selected.get("collector")).toMatchObject({
+            runId: "replacement",
+            swarmRequesterSessionKey: "agent:other:main",
+          });
+        }),
+      ).toEqual({ ready: true, value: undefined });
 
       saveSubagentRegistryToSqlite(new Map());
-      await api.withSubagentRunsByRunIds(["collector"], (selected) => {
-        expect(selected.size).toBe(0);
-      });
+      const deleted = await api.prepareSubagentRunsByRunIds(["collector"]);
+      expect(
+        deleted.consume((selected) => {
+          expect(selected.size).toBe(0);
+        }),
+      ).toEqual({ ready: true, value: undefined });
     });
   });
 });

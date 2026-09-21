@@ -10,10 +10,11 @@ import {
   listSwarmRunsForGroupFromRuns,
   getLatestSubagentRunByChildSessionKeyFromRuns,
 } from "./subagent-registry-queries.js";
+import type { PreparedSubagentRunsRead } from "./subagent-registry-read-snapshot.js";
 import { markRequesterTurnYieldedInRuns } from "./subagent-registry-requester-yield.js";
 import {
   getSubagentRunsSnapshotForRead,
-  withSubagentRunsSnapshotForRunIds,
+  prepareSubagentRunsSnapshotForRunIds,
 } from "./subagent-registry-state.js";
 import type { SubagentRunRecord, SwarmStructuredOutputState } from "./subagent-registry.types.js";
 
@@ -88,28 +89,32 @@ export function createSubagentRegistryPublicApi(config: {
     return findRunById(readRuns(), runId.trim());
   }
 
-  function withSubagentRunsByRunIds<T>(
+  async function prepareSubagentRunsByRunIds(
     runIds: readonly string[],
-    consume: (entries: ReadonlyMap<string, SubagentRunRecord>) => T,
-  ): Promise<T> {
+  ): Promise<PreparedSubagentRunsRead> {
     // Waiters need only their targets; retained results must not expand every wake's maps.
-    return withSubagentRunsSnapshotForRunIds(runs, runIds, (selected) => {
-      const byId = new Map<string, SubagentRunRecord>();
-      for (const entry of selected.values()) {
-        byId.set(entry.runId, entry);
-        if (entry.swarmRunId) {
-          byId.set(entry.swarmRunId, entry);
-        }
-      }
-      return consume(
-        new Map(
-          runIds.flatMap((runId) => {
-            const entry = byId.get(runId.trim());
-            return entry ? [[runId, entry] as const] : [];
-          }),
-        ),
-      );
-    });
+    const prepared = await prepareSubagentRunsSnapshotForRunIds(runs, runIds);
+    return {
+      consume(consume) {
+        return prepared.consume((selected) => {
+          const byId = new Map<string, SubagentRunRecord>();
+          for (const entry of selected.values()) {
+            byId.set(entry.runId, entry);
+            if (entry.swarmRunId) {
+              byId.set(entry.swarmRunId, entry);
+            }
+          }
+          return consume(
+            new Map(
+              runIds.flatMap((runId) => {
+                const entry = byId.get(runId.trim());
+                return entry ? [[runId, entry] as const] : [];
+              }),
+            ),
+          );
+        });
+      },
+    };
   }
 
   function completeCollectorLaunchCleanup(runId: string): void {
@@ -210,7 +215,7 @@ export function createSubagentRegistryPublicApi(config: {
     ackPendingAgentSteeringItems,
     releasePendingAgentSteeringItems,
     getSubagentRunByRunId,
-    withSubagentRunsByRunIds,
+    prepareSubagentRunsByRunIds,
     completeCollectorLaunchCleanup,
     recordSwarmStructuredOutput,
     listSwarmRunsForGroup,

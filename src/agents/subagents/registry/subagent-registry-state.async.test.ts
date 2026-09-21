@@ -32,7 +32,7 @@ import {
   prepareSubagentSessionListReadCache,
   publishSubagentRunsAfterAtomicStore,
   withSubagentRunReadSnapshot,
-  withSubagentRunsSnapshotForRunIds,
+  prepareSubagentRunsSnapshotForRunIds,
 } from "./subagent-registry-state.js";
 import * as store from "./subagent-registry.store.sqlite.js";
 
@@ -209,6 +209,123 @@ it("reselects a durable controlled generation that replaced a cached physical ro
   ]);
 });
 
+it.each(
+  (["pending", "completed"] as const).flatMap((recovery) =>
+    (["child session", "run id", "collector alias", "moved collector alias"] as const).map(
+      (reader) => ({ recovery, reader }),
+    ),
+  ),
+)(
+  "joins compact recovery started by another reader during payload hydration ($reader, $recovery)",
+  async ({ recovery, reader }) => {
+    const firstRun = runs("first", "first").get("first")!;
+    firstRun.swarmRunId = "collector";
+    firstRun.collect = true;
+    firstRun.controllerSessionKey = "agent:main:previous-controller";
+    firstRun.requesterSessionKey = "agent:main:previous-requester";
+    firstRun.completion = { required: true };
+    const previous = runs("previous", "previous").get("previous")!;
+    store.saveSubagentRegistryToSqlite(
+      new Map([firstRun, previous].map((run) => [run.runId, run])),
+    );
+    await prepareSubagentSessionListReadCache();
+
+    const firstHydrated = createDeferredCore();
+    const releaseFirst = createDeferredCore();
+    const recoveryStarted = createDeferredCore();
+    const releaseRecovery = createDeferredCore();
+    const execute = stateReads.executeExistingOpenClawStateRead;
+    vi.spyOn(stateReads, "executeExistingOpenClawStateRead").mockImplementation(async (...args) => {
+      const result = await execute(...args);
+      const command = args[1];
+      if (
+        command.type === "subagents.runs" &&
+        command.scope.kind === "ids" &&
+        command.scope.runIds.includes(firstRun.runId)
+      ) {
+        firstHydrated.resolve();
+        await releaseFirst.promise;
+      } else if (command.type === "subagents.sessionList") {
+        recoveryStarted.resolve();
+        await releaseRecovery.promise;
+      }
+      return result;
+    });
+    const read = (childSessionKey: string) =>
+      withSubagentRunReadSnapshot(
+        new Map(),
+        (snapshot) => ({
+          runIds: [...snapshot.values()]
+            .filter((run) => run.childSessionKey === childSessionKey)
+            .map((run) => run.runId),
+          sessionKeys: [],
+        }),
+        (selection, snapshot) => selection.runIds.map((id) => snapshot.get(id)),
+      );
+    const first =
+      reader === "child session"
+        ? read(firstRun.childSessionKey)
+        : prepareSubagentRunsSnapshotForRunIds(new Map(), [
+            reader === "run id" ? firstRun.runId : "collector",
+          ]).then((prepared) => {
+            const result = prepared.consume((selected) => [...selected.values()]);
+            if (!result.ready) {
+              throw new Error("Recovered selected read unexpectedly needed more preparation");
+            }
+            return result.value;
+          });
+    const firstOutcome = first.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    let second: ReturnType<typeof read> | undefined;
+    try {
+      await firstHydrated.promise;
+      const replacement = {
+        ...previous,
+        runId: "replacement",
+        generation: 2,
+        model: "replacement",
+      };
+      const updatedFirst = createSubagentRunRecord({
+        ...firstRun,
+        runId: reader === "moved collector alias" ? "moved-first" : firstRun.runId,
+        model: "updated-first",
+        controllerSessionKey: "agent:main:current-controller",
+        requesterSessionKey: "agent:main:current-requester",
+        execution: { status: "terminal", endedAt: 200 },
+        completion: { required: true, resultText: "current completion", capturedAt: 200 },
+        collectorCompletion: {
+          status: "done",
+          structured: { answer: "current result" },
+          usage: { inputTokens: 13, outputTokens: 21 },
+        },
+      });
+      store.saveSubagentRegistryToSqlite(
+        new Map([updatedFirst, replacement].map((run) => [run.runId, run])),
+      );
+      second = read(previous.childSessionKey);
+      await recoveryStarted.promise;
+      if (recovery === "completed") {
+        releaseRecovery.resolve();
+        await second;
+      }
+      releaseFirst.resolve();
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      releaseRecovery.resolve();
+
+      expect(await firstOutcome).toEqual({ value: [updatedFirst] });
+      await expect(second).resolves.toEqual([replacement]);
+    } finally {
+      releaseFirst.resolve();
+      releaseRecovery.resolve();
+      await Promise.allSettled([first, second]);
+    }
+  },
+);
+
 it("captures parent and yielded-child facts after the final scoped hydration", async () => {
   const parent = runs("before", "parent").get("parent")!;
   parent.pauseReason = "sessions_yield";
@@ -317,23 +434,24 @@ it("consumes only selected full rows with current raw ownership after worker hyd
   );
   const memory = new Map<string, typeof retained>();
   const gate = holdFirstCompactRead("subagents.runs");
-  const read = withSubagentRunsSnapshotForRunIds(memory, ["collector"], (selected) => {
-    expect([...selected.keys()]).toEqual(["one"]);
-    expect(selected.get("one")?.task).toBe(retained.task);
-    return selected.get("one")?.requesterSessionKey;
-  });
+  const read = prepareSubagentRunsSnapshotForRunIds(memory, ["collector"]);
   try {
     await gate.entered;
     memory.set("one", { ...retained, requesterSessionKey: "agent:other:parent" });
     gate.release();
-    expect(await read).toBe("agent:other:parent");
+    const prepared = await read;
+    expect(
+      prepared.consume((selected) => {
+        expect([...selected.keys()]).toEqual(["one"]);
+        expect(selected.get("one")?.task).toBe(retained.task);
+        return selected.get("one")?.requesterSessionKey;
+      }),
+    ).toEqual({ ready: true, value: "agent:other:parent" });
     expect(gate.read.mock.calls.map(([, command]) => command)).toEqual([
       { type: "subagents.sessionList" },
       { type: "subagents.runs", scope: { kind: "ids", runIds: ["one"] } },
     ]);
-    await expect(
-      withSubagentRunsSnapshotForRunIds(memory, ["collector"], async () => "late"),
-    ).rejects.toThrow("consumers must remain synchronous");
+    expect(() => prepared.consume(async () => "late")).toThrow("consumers must remain synchronous");
   } finally {
     gate.release();
     await read.catch(() => {});

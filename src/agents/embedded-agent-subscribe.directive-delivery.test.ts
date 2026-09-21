@@ -4,6 +4,7 @@ import { consumeGoogleGenerateContentStream } from "../../packages/ai/src/provid
 import { createResponsesAssistantOutput } from "../../packages/ai/src/providers/openai-responses-shared.js";
 import { createAssistantOutput } from "../../packages/ai/src/transports/assistant-output.js";
 import { processResponsesStream } from "../../packages/ai/src/transports/openai-responses-stream-internal.js";
+import { markdownToIR } from "../../packages/markdown-core/src/ir.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import { isAudioPayload } from "../auto-reply/reply/agent-runner-helpers.js";
@@ -200,7 +201,8 @@ const cases = [
   {
     name: "authored indented code after a drained paragraph",
     chunks: ["Intro.\n\n", "    const value = 1;\n    use(value);\n\n"],
-    marker: "    const value = 1;\n    use(value);",
+    marker: "const value = 1;",
+    renderedCode: "const value = 1;\nuse(value);\n",
     literal: true,
   },
   ...inlineDirectiveCases,
@@ -458,6 +460,15 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
       const text = delivered.map((payload) => payload.text ?? "").join("");
       if ("literal" in scenario) {
         expect.soft(text).toContain(scenario.marker);
+        if ("renderedCode" in scenario) {
+          const code = delivered.flatMap((payload) => {
+            const ir = markdownToIR(payload.text ?? "");
+            return ir.styles
+              .filter((span) => span.style === "code_block")
+              .map((span) => ir.text.slice(span.start, span.end));
+          });
+          expect.soft(code).toEqual([scenario.renderedCode]);
+        }
         if ("literalText" in scenario) {
           expect
             .soft(delivered.find((payload) => payload.text?.includes(scenario.marker))?.text)

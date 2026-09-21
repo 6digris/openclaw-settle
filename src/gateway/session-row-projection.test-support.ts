@@ -42,6 +42,7 @@ export function createSessionRowProjectionFixture(params: {
   const rows = new Map<string, Row>();
   const store = { ...params.store };
   let revision = 0;
+  let revisionToken = {};
   const id = (row: Pick<Row, "agentId" | "key" | "storeTarget">) =>
     `${row.agentId}\0${row.storeTarget.storePath}\0${row.key}`;
   const describe: SessionRowProjection["describe"] = (
@@ -78,6 +79,7 @@ export function createSessionRowProjectionFixture(params: {
     const previous = rows.get(id(fields));
     delete store[key];
     revision++;
+    revisionToken = {};
     if (!entry || entry.incognito || isIncognitoSessionKey(key)) {
       rows.delete(id(fields));
       return;
@@ -192,7 +194,7 @@ export function createSessionRowProjectionFixture(params: {
     needsMaterialization: false,
     state: {
       get revision() {
-        return revision;
+        return revisionToken;
       },
       cfg,
       modelCatalog,
@@ -218,6 +220,7 @@ export function createSessionRowProjectionFixture(params: {
     },
     dispose: () => {
       revision++;
+      revisionToken = {};
       rows.clear();
     },
   };

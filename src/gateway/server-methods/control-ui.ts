@@ -364,7 +364,7 @@ export function createControlUiHandlers(
         return;
       }
       try {
-        if (!getSubagentSessionListReadSnapshotIdentity()) {
+        while (!getSubagentSessionListReadSnapshotIdentity()) {
           await prepareSubagentSessionListReadCache();
         }
         signal?.throwIfAborted();

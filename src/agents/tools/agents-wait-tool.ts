@@ -8,7 +8,7 @@ import { createAbortError } from "../../infra/abort-signal.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveSubagentCompletionResultText } from "../subagents/completion/subagent-completion-result.js";
 import { onSubagentRegistryPersisted } from "../subagents/registry/subagent-registry-state.js";
-import { withSubagentRunsByRunIds } from "../subagents/registry/subagent-registry.js";
+import { prepareSubagentRunsByRunIds } from "../subagents/registry/subagent-registry.js";
 import type { SubagentRunRecord } from "../subagents/registry/subagent-registry.types.js";
 import { markCollectorReaderTool } from "../subagents/swarm/swarm-collector-capability.js";
 import { resolveSwarmConfig } from "../subagents/swarm/swarm-config.js";
@@ -228,10 +228,11 @@ async function waitForCollector(params: {
     for (;;) {
       assertNotAborted();
       changed = false;
-      let state: ReturnType<typeof readWaitState>;
+      let read: { ready: true; value: ReturnType<typeof readWaitState> } | { ready: false };
       let callbackAbort: Error | undefined;
       try {
-        state = await withSubagentRunsByRunIds(params.ids, (entries) => {
+        const prepared = await prepareSubagentRunsByRunIds(params.ids);
+        read = prepared.consume((entries) => {
           if (params.signal?.aborted) {
             callbackAbort = params.abortError();
             throw callbackAbort;
@@ -254,6 +255,11 @@ async function waitForCollector(params: {
       }
       // Join the read before releasing listeners, even when cancellation wins.
       assertNotAborted();
+      if (!read.ready) {
+        await yieldToEventLoop();
+        continue;
+      }
+      const state = read.value;
       if (
         state.completed.length > 0 ||
         state.pending.length === 0 ||

@@ -19,7 +19,7 @@ import {
   getSubagentRunsSnapshotForController,
   getSubagentRunsSnapshotForRead,
   getSubagentRunsSnapshotForSessions,
-  withSubagentRunsSnapshotForRunIds,
+  prepareSubagentRunsSnapshotForRunIds,
   onSubagentRegistryPersisted,
   persistSubagentRunsToDisk,
   persistSubagentRunsToDiskOrThrow,
@@ -802,9 +802,12 @@ describe("subagent registry state read cache", () => {
     await prepareSubagentSessionListReadCache();
     getSubagentSessionListRunsSnapshotForRead(new Map());
 
-    await withSubagentRunsSnapshotForRunIds(new Map(), ["collector"], (runs) => {
-      expect([...runs.keys()]).toEqual(["selected"]);
-    });
+    const prepared = await prepareSubagentRunsSnapshotForRunIds(new Map(), ["collector"]);
+    expect(
+      prepared.consume((runs) => {
+        expect([...runs.keys()]).toEqual(["selected"]);
+      }),
+    ).toEqual({ ready: true, value: undefined });
     expect(mocks.readRunsByIds).toHaveBeenCalledExactlyOnceWith(["selected"]);
     expect(mocks.readCompactRuns).toHaveBeenCalledOnce();
     expect(mocks.loadSubagentRegistryFromSqlite).not.toHaveBeenCalled();

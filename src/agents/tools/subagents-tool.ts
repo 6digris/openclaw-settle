@@ -3,6 +3,7 @@
  *
  * Lists and cancels background work in the caller's session tree.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Type } from "typebox";
 import { resolveAcpSessionControlOwner } from "../../acp/runtime/session-control-owner.js";
 import { readAcpSessionEntry } from "../../acp/runtime/session-meta.js";
@@ -42,6 +43,7 @@ import {
 } from "../subagents/registry/subagent-list.js";
 import { buildLatestSubagentSessionListReadIndex } from "../subagents/registry/subagent-registry-read.js";
 import {
+  getSubagentSessionListReadSnapshotIdentity,
   onSubagentRegistryPersisted,
   prepareSubagentSessionListReadCache,
 } from "../subagents/registry/subagent-registry-state.js";
@@ -240,6 +242,8 @@ function waitForSelectedTasks(params: {
   timeoutMs: number;
   signal?: AbortSignal;
 }) {
+  // A publisher's temporary scope must not own preparation started by its wake.
+  const inWaitContext = AsyncLocalStorage.snapshot();
   const read = () => {
     const visible = new Map(params.readTasks().map((task) => [task.taskId, task]));
     const tasks = params.taskIds.flatMap((taskId) => {
@@ -272,39 +276,60 @@ function waitForSelectedTasks(params: {
   };
   return new Promise<ReturnType<typeof read>>((resolve, reject) => {
     let settled = false;
+    let preparation: Promise<void> | undefined;
+    let timedOut = params.timeoutMs === 0;
+    let abortError: Error | undefined;
     let unsubscribe = () => {};
-    const finish = (error?: Error, timeout = false) => {
-      if (settled) {
-        return;
-      }
-      try {
-        const state = error ? undefined : read();
-        if (!error && !timeout && !state?.reason) {
+    const cleanup = () => {
+      unsubscribe();
+      clearTimeout(timer);
+      params.signal?.removeEventListener("abort", onAbort);
+    };
+    const fail = (error: unknown) => {
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error(String(error), { cause: error }));
+    };
+    const finish = () =>
+      inWaitContext(() => {
+        if (settled || preparation) {
           return;
         }
-        settled = true;
-        unsubscribe();
-        clearTimeout(timer);
-        params.signal?.removeEventListener("abort", onAbort);
-        if (error) {
-          reject(error);
-        } else if (state) {
+        try {
+          if (abortError) {
+            fail(abortError);
+            return;
+          }
+          if (!getSubagentSessionListReadSnapshotIdentity()) {
+            preparation = prepareSubagentSessionListReadCache();
+            void preparation.then(
+              () => {
+                preparation = undefined;
+                finish();
+              },
+              (error: unknown) => {
+                preparation = undefined;
+                fail(error);
+              },
+            );
+            return;
+          }
+          const state = read();
+          if (!timedOut && !state.reason) {
+            return;
+          }
+          settled = true;
+          cleanup();
           resolve({ ...state, reason: state.reason ?? "timeout" });
+        } catch (error) {
+          fail(error);
         }
-      } catch (readError) {
-        settled = true;
-        unsubscribe();
-        clearTimeout(timer);
-        params.signal?.removeEventListener("abort", onAbort);
-        reject(
-          readError instanceof Error
-            ? readError
-            : new Error(String(readError), { cause: readError }),
-        );
-      }
+      });
+    const onAbort = () => {
+      abortError = createAbortError("subagents wait aborted; tasks continue running.");
+      // Accepted preparation keeps custody until both the read and cleanup settle.
+      finish();
     };
-    const onAbort = () =>
-      finish(createAbortError("subagents wait aborted; tasks continue running."));
     let wakeQueued = false;
     const wake = () => {
       if (wakeQueued || settled) {
@@ -332,12 +357,15 @@ function waitForSelectedTasks(params: {
       unsubscribeSubagents();
     };
     params.signal?.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(() => finish(undefined, true), params.timeoutMs);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      finish();
+    }, params.timeoutMs);
     if (params.signal?.aborted) {
       onAbort();
     } else {
       // Subscribe before reading so completion cannot be lost between those operations.
-      finish(undefined, params.timeoutMs === 0);
+      finish();
     }
   });
 }
@@ -405,7 +433,9 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
         recentMinutesRaw === undefined
           ? DEFAULT_RECENT_MINUTES
           : Math.min(MAX_RECENT_MINUTES, recentMinutesRaw);
-      await prepareSubagentSessionListReadCache();
+      while (!getSubagentSessionListReadSnapshotIdentity()) {
+        await prepareSubagentSessionListReadCache();
+      }
       const prepared =
         !opts.listTasks && (action === "list" || action === "wait")
           ? await prepareTaskRegistryRead()
@@ -549,7 +579,13 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
         const result = await withTaskCancellationContext(
           assertCancellationControl,
           () => (opts.cancelTask ?? cancelDetachedTaskRunById)({ cfg, taskId }),
-          target,
+          {
+            selectedTask: target,
+            prepareRead: () =>
+              getSubagentSessionListReadSnapshotIdentity()
+                ? undefined
+                : prepareSubagentSessionListReadCache(),
+          },
         );
         return jsonResult({
           status: result.cancelled ? "cancelled" : "error",

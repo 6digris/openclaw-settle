@@ -822,12 +822,20 @@ Controlled-run listing selects the latest visible child generations before
 hydrating their physical payload IDs. Descendant counts use compact facts;
 yielded-child execution and prompt-result readers retain scoped session reads
 that include retained generations.
-Collector waits subscribe before reading and consume current ownership and
-completion together after worker preparation. Cancellation joins the pending
+Collector waits subscribe before preparing selected payloads. Their consuming
+frame reselects current ownership and completion together, so unrelated
+publications cannot postpone an elapsed deadline. Cancellation joins the pending
 read before releasing listeners. Optional history child hints may be omitted
 after an ordinary query failure settles; admission, cancellation, and cleanup
 failures still propagate. Storage repair, schemas, retention, and update behavior
 remain unchanged.
+
+Approval audience discovery also prepares compact subagent lineage before
+registration. Stored parent links retain their existing session reader, including
+incognito routing. An unavailable optional registry query preserves live-memory
+lineage and stored-parent fallback; admission, cancellation, and cleanup failures
+still propagate. Registration rechecks current authority after preparation and
+at write admission.
 
 Gateway `session.members.list` and `session.members.listEvidence` read full
 membership rows through the existing session-transcript read worker. Both methods
@@ -970,6 +978,17 @@ Each scope reads fresh credentials and retains its original state root across
 preparation. Database close or a shared ownership change prevents delayed scope
 entry. Nested and concurrent scopes keep separate read-through views; OAuth
 refresh material remains with its existing owner.
+
+Embedded-run lazy entry loading prepares pinned library descriptions through the
+shared read-only worker owner. Each uncached load captures its library pin values
+and state context before workspace preparation and publishes combined entries only after
+both preparations and current-owner checks finish. Database close invalidates
+pending preparation even when the library entries are cached. Workspace source
+changes during preparation retry the in-flight load; completed cached entries
+remain stable, and concurrent loads retain the first complete publication.
+Workspace filtering still precedes appended library pins; workspace-only loads omit them. Workspace
+plugin discovery retains its existing synchronous metadata path. Schemas,
+retention, and update behavior are unchanged.
 
 Model-context reads and session transcript preparation use the session-transcript
 worker with separate bounded queues. Background preparation cannot occupy the
