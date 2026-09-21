@@ -705,6 +705,17 @@ describe("chat pane header", () => {
     expect(mountHeader().container.querySelector(".chat-pane__incognito")).toBeNull();
   });
 
+  it("keeps Incognito identity and limits visible when only the canonical key marks it private", () => {
+    const { container } = mountHeader({
+      session: row({ key: "agent:main:dashboard:incognito-private" }),
+    });
+    const notice = container.querySelector(".chat-pane__incognito-notice");
+    expect(container.querySelector(".chat-pane__incognito")?.textContent).toContain("Incognito");
+    expect(notice?.textContent).toContain("History expires 24 hours after creation");
+    expect(notice?.textContent).toContain("Tools, plugins, and uploads may save data.");
+    expect(mountHeader().container.querySelector(".chat-pane__incognito-notice")).toBeNull();
+  });
+
   it("hides one branch and lists multiple branches with the active tip marked", () => {
     const one = mountHeader({
       branches: [{ leafEntryId: "only", headline: "Only path", messageCount: 1, active: true }],

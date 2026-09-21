@@ -216,6 +216,37 @@
   display: inline-flex;
 }
 
+.chat-pane__incognito-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px dashed var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chat-pane__incognito-notice p {
+  margin: 0;
+}
+
+.chat-pane__incognito-limits {
+  color: var(--muted);
+}
+
+.chat-pane__incognito-notice-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding-top: 2px;
+}
+
+.chat-pane__incognito-notice-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
 .chat-pane__incognito svg,
 .chat-pane__workspace-chip svg {
   width: 14px;

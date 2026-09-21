@@ -107,7 +107,7 @@ export function renderNewSessionIncognitoNotice(active: boolean) {
       <span class="new-session-page__incognito-notice-icon" aria-hidden="true">
         ${icons.shredder}
       </span>
-      <span>${description}</span>
+      <span>${description} ${t("sessionsView.incognitoLimits")}</span>
     </div>
   `;
 }
