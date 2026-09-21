@@ -180,6 +180,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           authMethod: "trusted-proxy",
           user: "guest@example.test",
           trustDeclaredOperatorScopes: true,
+          operatorAccessAuthority: null,
           authenticatedUserProfile: {
             profileId: "profile-guest",
             displayName: "Guest",
@@ -294,6 +295,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
       authMethod: "trusted-proxy",
       user: "guest@example.test",
       trustDeclaredOperatorScopes: true,
+      operatorAccessAuthority: null,
       authenticatedUserProfile: {
         profileId: "profile-github-canonical",
         displayName: "GitHub User",
