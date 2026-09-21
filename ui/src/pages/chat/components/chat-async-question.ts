@@ -1,7 +1,9 @@
+import { readSessionMessageIdentity } from "@openclaw/gateway-client/browser";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { html } from "lit";
 import type { QuestionDraft } from "../../../app/question-prompt.ts";
 import { t } from "../../../i18n/index.ts";
+import { extractTextCached } from "../../../lib/chat/message-extract.ts";
 import { questionDraftValues } from "./chat-question-answer-controls.ts";
 import type { QuestionPanelOptions, QuestionPanelProps } from "./chat-question-card.ts";
 
@@ -20,6 +22,7 @@ export type AsyncQuestionPresentation = {
   scope: string;
   pending: AsyncQuestions[];
   drafts: Map<string, AsyncQuestionDraft>;
+  resolved?: Map<string, AsyncQuestionDraft>;
   onChange: () => void;
   submit?: (message: string) => Promise<boolean>;
 };
@@ -49,19 +52,44 @@ export function createAsyncQuestionPresentation(
   const isCurrent = () =>
     state.asyncQuestionScope === scope && state.asyncQuestionDrafts === drafts;
   const questions = new Map<string, AsyncQuestions>();
+  const resolved = new Map<string, AsyncQuestionDraft>();
   for (const message of props.messages ?? []) {
     const question = readAsyncQuestions(message);
     if (question) {
       questions.set(question.itemId, question);
+      continue;
+    }
+    const identity = readSessionMessageIdentity(message);
+    if (
+      identity?.role !== "user" ||
+      !identity.id ||
+      identity.sequence === null ||
+      identity.isImported
+    ) {
+      continue;
+    }
+    const text = extractTextCached(message);
+    if (!text) {
+      continue;
+    }
+    // Match only the generated answer format, and do not guess between duplicate titles.
+    const matches = [...questions.values()]
+      .filter((entry) => !resolved.has(entry.itemId))
+      .map((entry) => ({ entry, answers: parseGeneratedAsyncAnswer(entry, text) }))
+      .filter((match) => match.answers !== null);
+    const match = matches.length === 1 ? matches[0] : undefined;
+    if (match?.answers) {
+      resolved.set(match.entry.itemId, { status: "submitted", answers: match.answers });
     }
   }
   return {
     scope,
     pending: [...questions.values()].filter((question) => {
-      const status = drafts.get(question.itemId)?.status;
+      const status = resolved.get(question.itemId)?.status ?? drafts.get(question.itemId)?.status;
       return status !== "submitted" && status !== "skipped";
     }),
     drafts,
+    resolved,
     onChange: () => {
       if (isCurrent()) {
         state.asyncQuestionRevision += 1;
@@ -113,6 +141,65 @@ export function readAsyncQuestions(message: unknown): AsyncQuestions | null {
     questions.push({ title: question.title, options: question.options });
   }
   return { itemId: metadata.itemId, questions };
+}
+
+function draftForAnswer(
+  question: AsyncQuestions["questions"][number],
+  answer: string,
+): QuestionDraft {
+  const values = answer ? answer.split(", ") : [];
+  const selected =
+    values.length > 0 &&
+    values.every((value) => question.options?.includes(value)) &&
+    values.join(", ") === answer
+      ? new Set(values)
+      : new Set<string>();
+  return { selected, freeText: selected.size > 0 ? "" : answer };
+}
+
+function parseGeneratedAsyncAnswer(
+  question: AsyncQuestions,
+  message: string,
+): Map<string, QuestionDraft> | null {
+  let offset = 0;
+  const answers: string[] = [];
+  for (let index = 0; index < question.questions.length; index += 1) {
+    const current = question.questions[index];
+    if (!current) {
+      return null;
+    }
+    const prefix = `${quoteQuestion(current.title)}\n\n`;
+    if (!message.startsWith(prefix, offset)) {
+      return null;
+    }
+    offset += prefix.length;
+    if (index === question.questions.length - 1) {
+      answers.push(message.slice(offset));
+      offset = message.length;
+      break;
+    }
+    const next = question.questions[index + 1];
+    if (!next) {
+      return null;
+    }
+    const separator = `\n\n${quoteQuestion(next.title)}\n\n`;
+    const answerEnd = message.indexOf(separator, offset);
+    // Free text can contain quoted headings. Do not guess a section boundary.
+    if (answerEnd < offset || message.indexOf(separator, answerEnd + separator.length) !== -1) {
+      return null;
+    }
+    answers.push(message.slice(offset, answerEnd));
+    offset = answerEnd + 2;
+  }
+  if (offset !== message.length || answers.length !== question.questions.length) {
+    return null;
+  }
+  return new Map(
+    question.questions.map((entry, index) => [
+      String(index),
+      draftForAnswer(entry, answers[index] ?? ""),
+    ]),
+  );
 }
 
 function quoteQuestion(title: string): string {
@@ -220,7 +307,8 @@ export function renderAsyncQuestionSummary(
   questions: AsyncQuestions,
   presentation: AsyncQuestionPresentation,
 ) {
-  const draft = presentation.drafts.get(questions.itemId);
+  const draft =
+    presentation.resolved?.get(questions.itemId) ?? presentation.drafts.get(questions.itemId);
   return html`<div class="chat-question-summary" role="status">
     ${questions.questions.map(
       (question, index) => html`<div>
