@@ -24,6 +24,7 @@ vi.mock("openclaw/plugin-sdk/provider-http", async (importActual) => {
     // REAL byte-bounded JSON reader under test — not stubbed.
     assertProviderBinaryResponseContent: actual.assertProviderBinaryResponseContent,
     readProviderJsonResponse: actual.readProviderJsonResponse,
+    readProviderJsonObjectResponse: actual.readProviderJsonObjectResponse,
     postJsonRequest: postJsonRequestMock,
     pollProviderOperationJson: async (params: {
       url: string;
@@ -565,6 +566,32 @@ describe("byteplus video generation provider", () => {
     });
 
     expect(result.metadata).toMatchObject({ duration: undefined });
+  });
+
+  it.each([
+    { name: "null", payload: null, error: "failed: malformed JSON response" },
+    { name: "array", payload: [], error: "failed: malformed JSON response" },
+    { name: "string", payload: "task-id", error: "failed: malformed JSON response" },
+    { name: "missing id", payload: {}, error: "response missing task id" },
+    { name: "numeric id", payload: { id: 42 }, error: "response missing task id" },
+    { name: "blank id", payload: { id: " " }, error: "response missing task id" },
+  ])("rejects $name submit responses without polling", async ({ payload, error }) => {
+    const release = vi.fn(async () => {});
+    postJsonRequestMock.mockResolvedValue({
+      response: streamedJsonResponse(payload),
+      release,
+    });
+
+    await expect(
+      buildBytePlusVideoGenerationProvider().generateVideo({
+        provider: "byteplus",
+        model: "seedance-1-0-pro-250528",
+        prompt: "invalid submit response",
+        cfg: {},
+      }),
+    ).rejects.toMatchObject({ message: `BytePlus video generation ${error}` });
+    expect(release).toHaveBeenCalledOnce();
+    expect(fetchWithTimeoutMock).not.toHaveBeenCalled();
   });
 
   it("reports malformed create JSON with a provider-owned error", async () => {

@@ -12,7 +12,7 @@ import {
   fetchProviderDownloadResponse,
   pollProviderOperationJson,
   postJsonRequest,
-  readProviderJsonResponse,
+  readProviderJsonObjectResponse,
   resolveProviderOperationTimeoutMs,
   resolveProviderHttpRequestConfig,
   type ProviderOperationTimeoutMs,
@@ -40,10 +40,6 @@ const MAX_DURATION_SECONDS = 10;
 
 type RunwayTaskStatus = "PENDING" | "RUNNING" | "THROTTLED" | "SUCCEEDED" | "FAILED" | "CANCELLED";
 
-type RunwayTaskCreateResponse = {
-  id?: unknown;
-};
-
 type RunwayTaskDetailResponse = {
   id?: unknown;
   status?: unknown;
@@ -65,19 +61,6 @@ const IMAGE_MODELS = new Set([
 const VIDEO_MODELS = new Set(["gen4_aleph"]);
 const RUNWAY_TEXT_ASPECT_RATIOS = ["16:9", "9:16"] as const;
 const RUNWAY_EDIT_ASPECT_RATIOS = ["1:1", "16:9", "9:16", "3:4", "4:3", "21:9"] as const;
-
-async function readRunwayJsonResponse<T>(response: Response, label: string): Promise<T> {
-  // Runway submit/poll task bodies are read through the shared byte-bounded reader
-  // (readResponseWithLimit, via readProviderJsonResponse) so a hostile or buggy endpoint
-  // that streams an unbounded JSON body cannot force the runtime to buffer the whole
-  // payload before parsing. Overflow cancels the stream and throws a bounded error;
-  // malformed JSON keeps the existing `${label}: malformed JSON response` wrapping.
-  const payload = await readProviderJsonResponse<unknown>(response, label);
-  if (!isRecord(payload)) {
-    throw new Error(`${label}: malformed JSON response`);
-  }
-  return payload as T;
-}
 
 function readRunwayTaskStatus(payload: RunwayTaskDetailResponse): RunwayTaskStatus {
   const status = normalizeOptionalString(payload.status);
@@ -404,7 +387,7 @@ export function buildRunwayVideoGenerationProvider(): VideoGenerationProvider {
       });
       try {
         await assertOkOrThrowHttpError(response, "Runway video generation failed");
-        const submitted = await readRunwayJsonResponse<RunwayTaskCreateResponse>(
+        const submitted = await readProviderJsonObjectResponse(
           response,
           "Runway video generation failed",
         );

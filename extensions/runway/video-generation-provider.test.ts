@@ -430,6 +430,32 @@ describe("runway video generation provider", () => {
     expect(postJsonRequestMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { name: "null", payload: null, error: "failed: malformed JSON response" },
+    { name: "array", payload: [], error: "failed: malformed JSON response" },
+    { name: "string", payload: "task-id", error: "failed: malformed JSON response" },
+    { name: "missing id", payload: {}, error: "response missing task id" },
+    { name: "numeric id", payload: { id: 42 }, error: "response missing task id" },
+    { name: "blank id", payload: { id: " " }, error: "response missing task id" },
+  ])("rejects $name submit responses without polling", async ({ payload, error }) => {
+    const release = vi.fn(async () => {});
+    postJsonRequestMock.mockResolvedValue({
+      response: streamedJsonResponse(payload),
+      release,
+    });
+
+    await expect(
+      buildRunwayVideoGenerationProvider().generateVideo({
+        provider: "runway",
+        model: "gen4.5",
+        prompt: "invalid submit response",
+        cfg: {},
+      }),
+    ).rejects.toMatchObject({ message: `Runway video generation ${error}` });
+    expect(release).toHaveBeenCalledOnce();
+    expect(fetchWithTimeoutMock).not.toHaveBeenCalled();
+  });
+
   it("reports malformed create JSON with a provider-owned error", async () => {
     const release = vi.fn(async () => {});
     postJsonRequestMock.mockImplementation(async () => ({

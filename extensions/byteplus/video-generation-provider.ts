@@ -15,7 +15,7 @@ import {
   fetchProviderDownloadResponse,
   pollProviderOperationJson,
   postJsonRequest,
-  readProviderJsonResponse,
+  readProviderJsonObjectResponse,
   resolveProviderOperationTimeoutMs,
   resolveProviderHttpRequestConfig,
   type ProviderOperationTimeoutMs,
@@ -40,10 +40,6 @@ const BYTEPLUS_SEED_MAX = 2_147_483_647;
 const BYTEPLUS_MIN_DURATION_SECONDS = 2;
 const BYTEPLUS_MAX_DURATION_SECONDS = 12;
 
-type BytePlusTaskCreateResponse = {
-  id?: unknown;
-};
-
 type BytePlusTaskResponse = {
   id?: unknown;
   model?: unknown;
@@ -56,19 +52,6 @@ type BytePlusTaskResponse = {
 };
 
 type BytePlusTaskStatus = "running" | "failed" | "queued" | "succeeded" | "cancelled";
-
-async function readBytePlusJsonResponse<T>(response: Response, label: string): Promise<T> {
-  // BytePlus submit/poll task bodies are read through the shared byte-bounded reader
-  // (readResponseWithLimit, via readProviderJsonResponse) so a hostile or buggy endpoint
-  // that streams an unbounded JSON body cannot force the runtime to buffer the whole
-  // payload before parsing. Overflow cancels the stream and throws a bounded error;
-  // malformed JSON keeps the existing `${label}: malformed JSON response` wrapping.
-  const payload = await readProviderJsonResponse<unknown>(response, label);
-  if (!isRecord(payload)) {
-    throw new Error(`${label}: malformed JSON response`);
-  }
-  return payload as T;
-}
 
 function readBytePlusTaskStatus(payload: BytePlusTaskResponse): BytePlusTaskStatus {
   const status = normalizeOptionalString(payload.status);
@@ -339,7 +322,7 @@ export function buildBytePlusVideoGenerationProvider(): VideoGenerationProvider 
       });
       try {
         await assertOkOrThrowHttpError(response, "BytePlus video generation failed");
-        const submitted = await readBytePlusJsonResponse<BytePlusTaskCreateResponse>(
+        const submitted = await readProviderJsonObjectResponse(
           response,
           "BytePlus video generation failed",
         );
