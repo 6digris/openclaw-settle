@@ -38,7 +38,8 @@ export function buildRequesterSettleWakeMessage(params: {
     ...(params.parentOnly
       ? []
       : [
-          "[Subagent Context] Child settlement ends this batch, not necessarily the original user request. Verify the child evidence and requested outcome, then reply. Do not start new filesystem migrations, bulk edits, or long sync jobs in this settle turn — spawn a follow-up child for remaining work.",
+          `[Subagent Context] ${SUBAGENT_COMPLETION_OUTCOME_INSTRUCTION}`,
+          "[Subagent Context] Do not start new filesystem migrations, bulk edits, or long sync jobs in this settle turn — verify child evidence and reply, or spawn a follow-up child for remaining work.",
         ]),
     params.parentOnly
       ? `[Subagent Context] ${SUBAGENT_PRIVATE_COMPLETION_INSTRUCTION}`

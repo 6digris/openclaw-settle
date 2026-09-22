@@ -6,7 +6,6 @@ import type { AgentMessage } from "../runtime/index.js";
 import {
   getHistoryLimitFromSessionKey,
   limitHistoryTurns,
-  REQUESTER_SETTLE_HISTORY_USER_TURN_CAP,
   resolveHistoryLimitForAttempt,
 } from "./history.js";
 
@@ -617,7 +616,7 @@ describe("resolveHistoryLimitForAttempt", () => {
         config: {},
         inputProvenance: { sourceTool: "subagent_settle" },
       }),
-    ).toBe(REQUESTER_SETTLE_HISTORY_USER_TURN_CAP);
+    ).toBe(4);
   });
 
   it("takes the min of configured DM limit and the settle cap", () => {
@@ -627,7 +626,7 @@ describe("resolveHistoryLimitForAttempt", () => {
         config,
         inputProvenance: { sourceTool: "subagent_settle" },
       }),
-    ).toBe(REQUESTER_SETTLE_HISTORY_USER_TURN_CAP);
+    ).toBe(4);
 
     const tight = {
       channels: { telegram: { dmHistoryLimit: 2 } },
@@ -657,8 +656,6 @@ describe("resolveHistoryLimitForAttempt", () => {
         inputProvenance: { sourceTool: "subagent_settle" },
       }),
     );
-    expect(limited.filter((m) => m.role === "user").length).toBeLessThanOrEqual(
-      Math.ceil(REQUESTER_SETTLE_HISTORY_USER_TURN_CAP * 1.5),
-    );
+    expect(limited.filter((m) => m.role === "user").length).toBeLessThanOrEqual(Math.ceil(4 * 1.5));
   });
 });

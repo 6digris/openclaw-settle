@@ -222,7 +222,7 @@ export function getHistoryLimitFromSessionKey(
 }
 
 /** Cap applied to requester-settle wakes so they do not replay a fat DM transcript. */
-export const REQUESTER_SETTLE_HISTORY_USER_TURN_CAP = 4;
+const REQUESTER_SETTLE_HISTORY_USER_TURN_CAP = 4;
 
 /**
  * History limit for an embedded attempt. Requester-settle turns keep the same
