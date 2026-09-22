@@ -7,6 +7,7 @@ import {
   getHistoryLimitFromSessionKey,
   limitHistoryTurns,
   resolveHistoryLimitForAttempt,
+  type SettleHistoryLimit,
 } from "./history.js";
 
 describe("getHistoryLimitFromSessionKey", () => {
@@ -616,7 +617,7 @@ describe("resolveHistoryLimitForAttempt", () => {
         config: {},
         inputProvenance: { sourceTool: "subagent_settle" },
       }),
-    ).toBe(4);
+    ).toEqual({ limit: 4, keepFirstUser: true });
   });
 
   it("takes the min of configured DM limit and the settle cap", () => {
@@ -626,7 +627,7 @@ describe("resolveHistoryLimitForAttempt", () => {
         config,
         inputProvenance: { sourceTool: "subagent_settle" },
       }),
-    ).toBe(4);
+    ).toEqual({ limit: 4, keepFirstUser: true });
 
     const tight = {
       channels: { telegram: { dmHistoryLimit: 2 } },
@@ -640,7 +641,7 @@ describe("resolveHistoryLimitForAttempt", () => {
     ).toBe(2);
   });
 
-  it("trims a fat transcript on settle provenance", () => {
+  it("trims a fat transcript on settle provenance while keeping the first user turn", () => {
     const messages = Array.from(
       { length: 40 },
       (_, i) =>
@@ -654,8 +655,10 @@ describe("resolveHistoryLimitForAttempt", () => {
         sessionKey: "agent:main:telegram:dm:123",
         config: {},
         inputProvenance: { sourceTool: "subagent_settle" },
-      }),
+      }) as SettleHistoryLimit,
     );
-    expect(limited.filter((m) => m.role === "user").length).toBeLessThanOrEqual(Math.ceil(4 * 1.5));
+    const users = limited.filter((m) => m.role === "user");
+    expect(users.length).toBeLessThanOrEqual(Math.ceil(4 * 1.5));
+    expect(users[0]?.content).toBe("q0");
   });
 });

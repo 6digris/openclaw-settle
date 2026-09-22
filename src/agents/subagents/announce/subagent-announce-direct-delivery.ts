@@ -385,9 +385,9 @@ export async function sendSubagentAnnounceDirectly(params: {
         sourceChannel: INTERNAL_PROVENANCE_SOURCE_CHANNEL,
         sourceTool: params.sourceTool ?? "subagent_announce",
       },
-      // Settle keeps the requester session (routing + yield adoption) but skips
-      // full workspace bootstrap; history is capped in the embedded runner.
-      ...(sourceToolId === "subagent_settle" ? { bootstrapContextMode: "lightweight" } : {}),
+      // Settle keeps the requester session (routing + yield adoption) and keeps
+      // normal workspace bootstrap (AGENTS.md, SOUL.md, USER.md). History replay is
+      // capped in the embedded runner so the turn is cheap without losing system context.
       ...(completionSourceReplyDeliveryMode
         ? { sourceReplyDeliveryMode: completionSourceReplyDeliveryMode }
         : {}),
