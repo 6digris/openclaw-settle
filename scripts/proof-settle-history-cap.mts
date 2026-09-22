@@ -126,8 +126,6 @@ const candidate = scenario(
   }),
 );
 
-const results = { baseline, candidate };
-
 console.log("# Proof: settle history cap reduces input without dropping the original request\n");
 console.log(
   "Synthetic long DM session:",
